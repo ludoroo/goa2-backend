@@ -3,7 +3,9 @@
 import pytest
 
 from goa2.domain.events import GameEventType
+from goa2.domain.hex import Hex
 from goa2.domain.input import InputRequestType
+from goa2.domain.models import Token, TokenType
 from goa2.domain.models.effect import (
     AffectsFilter,
     DurationType,
@@ -51,6 +53,19 @@ def _option_set(run) -> set:
 def _pos(state, uid) -> tuple:
     h = state.entity_locations.get(uid)
     return (h.q, h.r, h.s) if h is not None else None
+
+
+def _place_passable_mine(state, at: tuple[int, int, int], owner_id: str) -> None:
+    mine = Token(
+        id="mine_1",
+        name="Mine",
+        token_type=TokenType.MINE_DUD,
+        owner_id=owner_id,
+        is_passable=True,
+    )
+    state.register_entity(mine, "token")
+    state.token_pool.setdefault(TokenType.MINE_DUD, []).append(mine)
+    state.place_entity("mine_1", Hex(q=at[0], r=at[1], s=at[2]))
 
 
 # =============================================================================
@@ -491,6 +506,73 @@ def test_this_way_moves_both_in_same_direction() -> None:
 
     assert _pos(state, "hero_hanu") == (2, 0, -2)
     assert _pos(state, "red_ally") == (2, 1, -3)  # same +q offset
+
+
+@pytest.mark.effect_flow
+@pytest.mark.parametrize(
+    "mine_hex",
+    [(1, 0, -1), (1, 1, -2)],
+    ids=["hanu-path", "ally-path"],
+)
+@pytest.mark.parametrize(
+    "mine_owner,should_trigger",
+    [("blue_mine_owner", True), ("red_mine_owner", False)],
+    ids=["enemy-mine", "same-team-mine"],
+)
+def test_this_way_crosses_passable_mine_regardless_of_owner(
+    mine_hex: tuple[int, int, int], mine_owner: str, should_trigger: bool
+) -> None:
+    state = (
+        EffectScenarioBuilder()
+        .with_hexes(_hex_disk(5))
+        .red_hero("hero_hanu", at=(0, 0, 0), current_card=hero_card("Hanu", "this_way"))
+        .red_hero("red_ally", at=(0, 1, -1))
+        .red_hero("red_mine_owner", at=(-4, 0, 4))
+        .blue_hero("blue_mine_owner", at=(-5, 0, 5))
+        .with_actor("hero_hanu")
+        .build()
+    )
+    _place_passable_mine(state, mine_hex, mine_owner)
+
+    destination = Hex(q=2, r=0, s=-2)
+    run = run_card(state, "hero_hanu")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("red_ally").expect_input(InputRequestType.SELECT_NUMBER)
+    run.choose(2).expect_input(InputRequestType.SELECT_HEX)
+
+    assert destination in _option_set(run)
+    run.choose(destination).finish()
+
+    assert _pos(state, "hero_hanu") == (2, 0, -2)
+    assert _pos(state, "red_ally") == (2, 1, -3)
+    triggered = [
+        event.target_id for event in run.events if event.event_type == GameEventType.MINE_TRIGGERED
+    ]
+    assert triggered == (["mine_1"] if should_trigger else [])
+    assert (_pos(state, "mine_1") is None) is should_trigger
+
+
+@pytest.mark.effect_flow
+def test_this_way_rejects_direction_when_ally_would_land_on_mine() -> None:
+    state = (
+        EffectScenarioBuilder()
+        .with_hexes(_hex_disk(5))
+        .red_hero("hero_hanu", at=(0, 0, 0), current_card=hero_card("Hanu", "this_way"))
+        .red_hero("red_ally", at=(0, 1, -1))
+        .red_hero("red_mine_owner", at=(-4, 0, 4))
+        .with_actor("hero_hanu")
+        .build()
+    )
+    _place_passable_mine(state, (2, 1, -3), "red_mine_owner")
+
+    run = run_card(state, "hero_hanu")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("red_ally").expect_input(InputRequestType.SELECT_NUMBER)
+    run.choose(2).expect_input(InputRequestType.SELECT_HEX)
+
+    assert Hex(q=2, r=0, s=-2) not in _option_set(run)
 
 
 @pytest.mark.effect_flow

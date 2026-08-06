@@ -38,6 +38,19 @@ def _add_pyro_pool(state) -> None:
     state.token_pool[TokenType.PYRO].append(token)
 
 
+def _place_passable_mine(state, at: Hex, owner_id: str) -> None:
+    mine = Token(
+        id="mine_1",
+        name="Mine",
+        token_type=TokenType.MINE_DUD,
+        owner_id=owner_id,
+        is_passable=True,
+    )
+    state.register_entity(mine, "token")
+    state.token_pool.setdefault(TokenType.MINE_DUD, []).append(mine)
+    state.place_entity("mine_1", at)
+
+
 def _activate_dragon_knight(state, hero_id: str = "hero_widget") -> None:
     """Configure widget so the dragon_knight ultimate passive is active."""
     from goa2.data.heroes.registry import HeroRegistry
@@ -467,6 +480,38 @@ def test_drag_off_drags_pyro_and_enemy_in_same_direction() -> None:
     assert state.entity_locations["blue_minion"] == enemy_dest
     assert any(e.event_type == GameEventType.TOKEN_MOVED for e in run.events)
     assert any(e.event_type == GameEventType.UNIT_MOVED for e in run.events)
+
+
+@pytest.mark.effect_flow
+def test_drag_off_crosses_passable_mine() -> None:
+    pyro_start = Hex(q=0, r=0, s=0)
+    pyro_dest = Hex(q=3, r=0, s=-3)
+    enemy_dest = Hex(q=4, r=0, s=-4)
+    mine_hex = Hex(q=2, r=0, s=-2)
+    state = (
+        EffectScenarioBuilder()
+        .with_hexes([*_DRAG_LINE, _WIDGET_PERCH])
+        .red_hero("hero_widget", at=_WIDGET_PERCH, current_card=hero_card("Widget", "drag_off"))
+        .blue_minion("blue_minion", at=(1, 0, -1))
+        .with_actor("hero_widget")
+        .build()
+    )
+    _add_pyro_pool(state)
+    state.place_entity("pyro_1", pyro_start)
+    _place_passable_mine(state, mine_hex, "hero_widget")
+
+    run = run_card(state, "hero_widget")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("blue_minion").expect_input(InputRequestType.SELECT_HEX)
+
+    assert pyro_dest in _option_set(run)
+    run.choose(pyro_dest).finish()
+
+    assert state.entity_locations["pyro_1"] == pyro_dest
+    assert state.entity_locations["blue_minion"] == enemy_dest
+    assert state.entity_locations["mine_1"] == mine_hex
+    assert not [event for event in run.events if event.event_type == GameEventType.MINE_TRIGGERED]
 
 
 @pytest.mark.effect_flow

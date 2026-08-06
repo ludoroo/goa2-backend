@@ -144,6 +144,8 @@ class MoveUnitStep(GameStep):
 
         use_straight_line = self.force_straight_line
         if is_valid and use_straight_line:
+            # TODO: Make StraightLinePathFilter topology-aware, then remove the
+            # separate InStraightLineFilter alignment check.
             from goa2.engine.filters_geometry import (
                 InStraightLineFilter,
                 StraightLinePathFilter,
@@ -154,7 +156,9 @@ class MoveUnitStep(GameStep):
             ) and StraightLinePathFilter(
                 origin_id=target_unit_id,
                 pass_through_obstacles=self.pass_through_obstacles,
-            ).apply(dest_hex, state, context)
+            ).apply(
+                dest_hex, state, context
+            )
 
         if not is_valid:
             logger.debug(
@@ -227,9 +231,7 @@ class MoveUnitStep(GameStep):
                                     self.model_copy(update={"mine_path_prechosen": True}),
                                 ],
                             )
-                        triggered_mines = (
-                            list(mine_options[0].mine_ids) if mine_options else []
-                        )
+                        triggered_mines = list(mine_options[0].mine_ids) if mine_options else []
 
         logger.debug(
             f"   [LOGIC] Moving {target_unit_id} from {start_hex} to {dest_hex} (Range {self.range_val})"
