@@ -854,23 +854,6 @@ def test_fight_and_flight_no_flee_when_no_straight_line_available() -> None:
     assert _pos(state, "hero_hanu") == (0, 0, 0)
 
 
-@pytest.mark.effect_flow
-def test_fight_and_flight_aborts_with_no_adjacent_unit() -> None:
-    state = (
-        EffectScenarioBuilder()
-        .with_hexes(_hex_disk(4))
-        .red_hero("hero_hanu", at=(0, 0, 0), current_card=hero_card("Hanu", "fight_and_flight"))
-        .blue_hero("blue_far", at=(3, 0, -3))  # not adjacent
-        .with_actor("hero_hanu")
-        .build()
-    )
-    run = run_card(state, "hero_hanu")
-    run.expect_input(InputRequestType.CHOOSE_ACTION)
-    run.choose("ATTACK").finish()  # no adjacent target -> abort
-    assert _pos(state, "hero_hanu") == (0, 0, 0)
-    assert _combat_values(run) == []
-
-
 # =============================================================================
 # SILVER — Hurry Up!: "Set the printed Initiative value of an unresolved card of
 # a hero in range to 11, until it is resolved, or otherwise changes state."

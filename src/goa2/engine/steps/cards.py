@@ -92,7 +92,11 @@ def action_passes_initial_target_gate(
                     return True  # mode choice, not a target gate
                 return step.has_valid_candidate(state, state.execution_context)
             if isinstance(step, AttackSequenceStep):
-                if step.target_id_key or not step.is_mandatory:
+                target_is_preselected = (
+                    step.target_id_key is not None
+                    and step.target_id_key in state.execution_context
+                )
+                if target_is_preselected or not step.is_mandatory:
                     return True  # target pre-selected, or optional
                 probe = SelectStep(
                     target_type=TargetType.UNIT,

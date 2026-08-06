@@ -13,6 +13,7 @@ from goa2.data.heroes.registry import HeroRegistry
 from goa2.domain.board import Board, Tile, Zone
 from goa2.domain.hex import Hex
 from goa2.domain.models import (
+    ActionType,
     Card,
     CardState,
     Hero,
@@ -22,8 +23,21 @@ from goa2.domain.models import (
     TeamColor,
 )
 from goa2.domain.state import GameState
+from goa2.engine.effects import CardEffect, CardEffectRegistry
 from goa2.engine.handler import process_stack, push_steps
-from goa2.engine.steps import ResolveCardStep
+from goa2.engine.steps import AttackSequenceStep, ResolveCardStep
+from goa2.engine.steps.cards import action_passes_initial_target_gate
+
+
+class _KeyedAttackEffect(CardEffect):
+    def build_steps(self, state, hero, card, stats):
+        return [
+            AttackSequenceStep(
+                damage=1,
+                range_val=1,
+                target_id_key="selected_target",
+            )
+        ]
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -103,6 +117,38 @@ def test_basic_attack_present_when_enemy_in_range(arena):
     arena.place_entity("hero_brogan", Hex(q=0, r=0, s=0))
     _enemy(arena, Hex(q=1, r=0, s=-1))  # adjacent
     assert "ATTACK" in _menu_ids(arena, hero)
+
+
+@pytest.mark.parametrize(
+    ("target_preselected", "expected"),
+    [(False, False), (True, True)],
+)
+def test_keyed_attack_requires_target_key_to_exist_in_context(
+    arena, monkeypatch, target_preselected, expected
+):
+    effect_id = "test_keyed_attack"
+    monkeypatch.setitem(CardEffectRegistry._effects, effect_id, _KeyedAttackEffect())
+
+    hero = Hero(id="hero_test", name="Test", team=TeamColor.RED, deck=[])
+    card = _card("Brogan", "onslaught")
+    card.effect_id = effect_id
+    hero.current_turn_card = card
+    arena.teams[TeamColor.RED].heroes.append(hero)
+    arena.current_actor_id = hero.id
+    arena.place_entity(hero.id, Hex(q=0, r=0, s=0))
+    if target_preselected:
+        arena.execution_context["selected_target"] = "existing_target"
+
+    assert (
+        action_passes_initial_target_gate(
+            arena,
+            hero,
+            card,
+            ActionType.ATTACK,
+            is_primary=True,
+        )
+        is expected
+    )
 
 
 # --- Move-then-target (Brogan mad_dash): must NOT be pruned when a dash
