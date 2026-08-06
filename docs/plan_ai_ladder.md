@@ -40,6 +40,47 @@ policy (Rung 3), so no signature will change when those land.
   intra-zone enemy-approach gradient. 39.5% → **93.5%** vs random; games no
   longer stall (heur-vs-heur terminates ~22 rounds). This strengthens the
   ISMCTS default policy *and* prior.
+- **Server integration (Tasks 1-9 of `plan_ai_backend_integration.md`): DONE.**
+  Random, Heuristic, and (bounded) ISMCTS bots can now be created through the
+  public `POST /games` API. See below.
+
+### Server bot integration (delivered)
+
+The `automata` search stack is now wired into `goa2.server` so a bot can share
+the same engine, persistence, replay, clock, and broadcast paths as a human
+opponent. What shipped:
+
+| Piece | Where | Notes |
+|-------|-------|-------|
+| Server-neutral driver | `src/automata/runtime/driver.py` | One-decision-at-a-time API used by both headless self-play and the live server. Handles Emmitt FINISH, upgrade scoping, team-addressed input, and refuses to answer for a human. |
+| Anchored ISMCTS | `src/automata/search/{agent,ismcts}.py` | Root decision-owner is explicit; a Wasp/Xargatha bot never speaks for its (potentially human) teammate. |
+| Persisted bot metadata | `src/goa2/server/bot_models.py`, `registry.py`, `engine/persistence.py` | `ManagedGame.bot_specs` round-trips through disk; legacy save files without the field still load. |
+| Coordinator | `src/goa2/server/bots.py` | Async worker: one decision per locked mutation, staleness revalidation, agent-cache seeding per game, tombstone-safe teardown, replay/log parity with human seams. |
+| Lifecycle wiring | `server/app.py`, `routes_games.py`, `ws.py`, `time_control.py` | `start_bot_lifecycle` runs on game **creation** (`POST /games`) and on lifespan **restore**; it auto-readies bot heroes, persists + reconciles the clock, and hands off to the coordinator. Ongoing REST / WebSocket / timer-driven mutations call the lighter, idempotent `schedule_bot_drive` (via `timed_rest_mutation` for REST and via the WS handler / deadline worker directly) so the coordinator resumes without repeating the ready / clock reconciliation work. |
+| Public request boundary | `server/models.py`, `docs/CLIENT_INTEGRATION_GUIDE.md` | Optional `bots` on `POST /games`; draft endpoints explicitly reject `bots` with a 422. |
+| Bounded ISMCTS | `automata/search/config.py`, `server/bots.py` | Process-wide semaphore, per-decision timeout, queue-wait timeout, cached per-hero Heuristic fallback, invalid-decision fallback, shutdown drain. `ismcts_metrics` counter exposes fallback / latency / late-completion / queue-depth. |
+
+Current supported production modes:
+
+- **Random-vs-Random** (smoke / low-difficulty).
+- **Heuristic-vs-Random** and **Heuristic-vs-Heuristic** (headline strength
+  today — see baselines below).
+- **Human-vs-Heuristic** and **Human-vs-Random** (single-player experience).
+- **Bounded ISMCTS** opt-in via `bots.<hero>.search` (`iterations`, and
+  `decision_timeout_seconds` capped at 5 s in production). Falls back to
+  Heuristic on any bound violation.
+
+Explicit non-goals for this integration (still parked):
+
+- **Draft-created bot games.** `POST /drafts` / `PATCH /drafts/{id}/settings`
+  reject a `bots` key with a 422; configure bots via a direct `POST /games`.
+- **Learned value / policy models.** Rungs 2-3 below.
+- **Distributed / process-pool search.** Thread-offload keeps the event loop
+  responsive but does not defeat the GIL. Bounded concurrency + tight
+  per-decision timeouts protect throughput today; a process pool is only
+  justified once measured load requires it.
+- **Client controls to swap bots mid-game.** Bot assignments are frozen at
+  game creation.
 
 ### Current baseline (`baselines.json`, 2v2 Wasp/Xargatha vs Arien/Brogan)
 
@@ -54,6 +95,12 @@ ISMCTS rows are tiny-sample (games are expensive); treat as directional until a
 larger deliberate run.
 
 ## Next rungs
+
+Even though bots are now in production for Random / Heuristic / bounded
+ISMCTS, the *strength* work below the ladder has not moved: the shipped bots
+use the same hand-crafted `HeuristicValue` / `HeuristicPrior` established at
+Rung 0. Improving strength further is orthogonal to server plumbing and stays
+on the ladder below.
 
 ### Rung 1 — Squeeze the search (no learning). **← next**
 Cheap, high-confidence wins before any ML:

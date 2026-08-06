@@ -3,11 +3,62 @@
 One knob-bag shared by the driver (`ismcts.py`) and the agent wrapper
 (`agent.py`). Defaults are deliberately conservative so a single decision stays
 in the low-hundreds-of-ms range on the ~3.4 ms clone cost.
+
+Production limits
+-----------------
+
+The constants below are the *server-side* upper bounds enforced when a client
+supplies bounded ISMCTS settings on ``POST /games``. They are deliberately
+lower than the algorithm's absolute worst case so a mis-configured client
+cannot force the coordinator to spend arbitrary time on a single decision.
+
+- ``PROD_MAX_ITERATIONS`` — hard cap on ``iterations``. Empirically a fresh
+  planning decision at ~200 iterations completes in a few hundred ms on the
+  reference clone cost; 1000 leaves headroom for wider positions without
+  ever approaching the event loop's tolerance.
+- ``PROD_MAX_DECISION_TIMEOUT_SECONDS`` — hard cap on wall-clock decision
+  time. The coordinator races the search against this deadline and falls
+  back to the cached ``HeuristicAgent`` on timeout, so this is also the
+  worst-case wait a mixed human/bot game will ever observe on a bot turn.
+- ``PROD_MIN_ITERATIONS`` / ``PROD_MIN_DECISION_TIMEOUT_SECONDS`` — lower
+  bounds so a request cannot degenerate to zero-iteration / zero-timeout
+  configurations that would always fall back before search made progress.
+
+These are the values the request-boundary schema validates against; the
+coordinator additionally guards against tampering (e.g. restored saves) by
+re-validating at agent build time.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+# --------------------------------------------------------------------------- #
+# Production bounds                                                           #
+# --------------------------------------------------------------------------- #
+
+PROD_MIN_ITERATIONS: int = 1
+PROD_MAX_ITERATIONS: int = 1000
+
+PROD_MIN_DECISION_TIMEOUT_SECONDS: float = 0.05
+PROD_MAX_DECISION_TIMEOUT_SECONDS: float = 5.0
+
+# Default production values applied when a client omits the field.
+PROD_DEFAULT_ITERATIONS: int = 200
+PROD_DEFAULT_DECISION_TIMEOUT_SECONDS: float = 2.0
+
+# Process-wide concurrency cap on live ISMCTS searches. The coordinator
+# guards ``asyncio.to_thread(search)`` with a semaphore of this size; extra
+# callers queue on the semaphore up to :data:`PROD_QUEUE_TIMEOUT_SECONDS`,
+# then fall back to :class:`HeuristicAgent`. Chosen small: search is
+# CPU-bound and Python threads share the GIL, so more than a couple of
+# concurrent searches degrade each other without any wall-clock gain.
+PROD_SEARCH_CONCURRENCY: int = 2
+
+# How long a caller may wait for a semaphore slot before falling back. This
+# is the queue-wait budget (distinct from ``decision_timeout_seconds`` which
+# only starts once the search actually runs).
+PROD_QUEUE_TIMEOUT_SECONDS: float = 1.0
 
 
 @dataclass(frozen=True)

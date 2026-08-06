@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from goa2.domain.input import InputRequest
+from goa2.domain.input import InputRequest, selection_value
 from goa2.domain.models import ActionType, TeamColor
 from goa2.domain.models.card import Card
 from goa2.domain.models.unit import Hero
@@ -22,7 +22,7 @@ from goa2.domain.state import GameState
 from goa2.domain.types import HeroID
 from goa2.engine.map_logic import zones_between
 
-from .base import HexLike, hex_distance, option_selection_value
+from .base import HexLike, hex_distance
 
 # CHOOSE_ACTION priority (higher = preferred as the played action).
 _ACTION_PRIORITY = {
@@ -104,7 +104,17 @@ class HeuristicAgent:
         return 3
 
     # --- resolution --------------------------------------------------------
-    def choose_input(self, state: GameState, request: InputRequest) -> Any:
+    def choose_input(
+        self,
+        state: GameState,
+        request: InputRequest,
+        *,
+        owned_hero_ids: frozenset[str] | None = None,
+    ) -> Any:
+        # ``owned_hero_ids`` is accepted for Agent-protocol compatibility with
+        # the runtime driver (see ``automata.agents.base.Agent``); the
+        # heuristic policy doesn't need it, but the driver passes it
+        # uniformly so search-backed agents can enforce ownership.
         rt = request.request_type.value
         opts = list(request.options)
 
@@ -115,7 +125,7 @@ class HeuristicAgent:
             return "SKIP" if request.can_skip else None
 
         best = max(opts, key=lambda o: self.score_option(state, request, o))
-        return option_selection_value(best)
+        return selection_value(best)
 
     def score_option(self, state: GameState, request: InputRequest, option: Any) -> float:
         """Static desirability of an input ``option`` (higher = better).
@@ -137,7 +147,7 @@ class HeuristicAgent:
 
         if rt == "SELECT_NUMBER":
             # More (push/move/repeat) is usually better.
-            return float(_as_int(option_selection_value(option)))
+            return float(_as_int(selection_value(option)))
 
         if rt in ("DEFENSE_CARD", "SELECT_CARD_OR_PASS"):
             # Prefer to defend (survive) rather than skip into defeat.

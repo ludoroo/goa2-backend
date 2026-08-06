@@ -2,13 +2,72 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from goa2.domain.time_control import TimeControlConfig
+from goa2.server.bot_models import SearchSettings
+
+
+def _reject_bots_key(data: Any) -> Any:
+    """Reject a top-level ``bots`` key on draft request bodies.
+
+    Draft-created games do **not** support bot configuration — bots are a
+    ``POST /games`` concern only. Rather than silently dropping the field
+    through the default ``extra="ignore"`` policy, we intercept it here so a
+    client that thought it could bot-fill a draft gets a clear, targeted
+    validation error naming the unsupported field. This is deliberately
+    *not* a global ``extra="forbid"`` — unrelated forward-compat fields
+    must continue to be silently ignored so a schema-additive client
+    change does not break older servers.
+
+    Called as a ``@model_validator(mode="before")`` on every draft request
+    that accepts a body from the network.
+    """
+    if isinstance(data, dict) and "bots" in data:
+        raise ValueError(
+            "'bots' is not supported on draft requests; configure bots via "
+            "POST /games instead"
+        )
+    return data
+
 
 # -- Requests --
+
+
+class CreateBotSpec(BaseModel):
+    """Public, request-only bot configuration.
+
+    Public schema:
+
+    - ``kind`` accepts ``"random"``, ``"heuristic"``, and ``"ismcts"``. Any
+      other value is rejected at Pydantic validation time (422) rather than
+      at the route boundary, so the generated OpenAPI schema advertises only
+      the kinds clients may actually use.
+    - ``search`` is optional and is **only** valid when ``kind == "ismcts"``.
+      Supplying it for any other kind fails validation with a
+      clear 422. Omitting it on an ``"ismcts"`` request uses the production
+      defaults declared in :mod:`automata.search.config`. The bounds on
+      each field (``iterations`` / ``decision_timeout_seconds``) come from
+      the shared :class:`goa2.server.bot_models.SearchSettings` model.
+    - ``extra="forbid"`` catches typos and forward-compat guesses at the
+      wire boundary.
+
+    Routes translate a :class:`CreateBotSpec` into an internal
+    :class:`goa2.server.bot_models.BotSpec` before persistence.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["random", "heuristic", "ismcts"]
+    search: SearchSettings | None = None
+
+    @model_validator(mode="after")
+    def _search_only_for_ismcts(self) -> CreateBotSpec:
+        if self.search is not None and self.kind != "ismcts":
+            raise ValueError("search settings are only valid for kind='ismcts'")
+        return self
 
 
 class CreateGameRequest(BaseModel):
@@ -18,6 +77,14 @@ class CreateGameRequest(BaseModel):
     cheats_enabled: bool = False
     game_type: str = "LONG"
     time_control: TimeControlConfig | None = None
+    # Optional server-managed bot configuration keyed by hero_id (e.g.
+    # ``"hero_wasp"``). Every referenced hero must be present in
+    # ``red_heroes`` / ``blue_heroes``. Uses the public :class:`CreateBotSpec`
+    # schema, which advertises ``kind='random'``, ``kind='heuristic'``, and
+    # ``kind='ismcts'``. Omitting the field or providing an empty mapping
+    # leaves the game fully human-controlled — the response shape is
+    # unchanged either way.
+    bots: dict[str, CreateBotSpec] | None = None
 
 
 class ReadyRequest(BaseModel):
@@ -129,6 +196,12 @@ class CreateDraftRequest(BaseModel):
     max_hero_stars: int = 4
     time_control: TimeControlConfig | None = None
 
+    # Targeted rejection of a top-level ``bots`` key. See
+    # :func:`_reject_bots_key`. Uses ``mode="before"`` so the raw payload is
+    # inspected *before* Pydantic's default ``extra="ignore"`` policy would
+    # otherwise silently drop the field.
+    _reject_bots = model_validator(mode="before")(_reject_bots_key)
+
 
 class UpdateDraftSettingsRequest(BaseModel):
     """Host-only, LOBBY-only. Any omitted field is left unchanged."""
@@ -140,6 +213,10 @@ class UpdateDraftSettingsRequest(BaseModel):
     max_hero_stars: int | None = None
     # Explicit null disables timers; omission leaves the setting unchanged.
     time_control: TimeControlConfig | None = None
+
+    # Same targeted ``bots``-key rejection as :class:`CreateDraftRequest`.
+    # Draft settings updates cannot introduce bot configuration either.
+    _reject_bots = model_validator(mode="before")(_reject_bots_key)
 
 
 class JoinDraftRequest(BaseModel):

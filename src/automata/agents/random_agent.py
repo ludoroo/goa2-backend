@@ -9,12 +9,10 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from goa2.domain.input import InputRequest
+from goa2.domain.input import InputRequest, selection_value
 from goa2.domain.models.card import Card
 from goa2.domain.models.unit import Hero
 from goa2.domain.state import GameState
-
-from .base import option_selection_value
 
 
 class RandomAgent:
@@ -26,7 +24,16 @@ class RandomAgent:
             return None
         return self._rng.choice(list(hero.hand))
 
-    def choose_input(self, state: GameState, request: InputRequest) -> Any:  # pyright: ignore[reportUnusedParameter]
+    def choose_input(
+        self,
+        state: GameState,
+        request: InputRequest,
+        *,
+        owned_hero_ids: frozenset[str] | None = None,
+    ) -> Any:  # pyright: ignore[reportUnusedParameter]
+        # ``owned_hero_ids`` is accepted for Agent-protocol compatibility with
+        # the runtime driver (see ``automata.agents.base.Agent``); a
+        # random policy doesn't use it, but the driver passes it uniformly.
         # UPGRADE_PHASE is a simultaneous, legacy-shaped request: pick one
         # (hero, upgrade card) among those still owing an upgrade. The engine
         # applies one per advance() and re-requests until pending_upgrades empty.
@@ -51,7 +58,7 @@ class RandomAgent:
         options = list(request.options)
         # If there are options, usually pick one; occasionally skip when allowed.
         if options and not (request.can_skip and self._rng.random() < 0.1):
-            return option_selection_value(self._rng.choice(options))
+            return selection_value(self._rng.choice(options))
         if request.can_skip:
             return "SKIP"
         # No options and cannot skip: return None and let the engine handle it.

@@ -201,6 +201,521 @@ def test_create_game_bad_map(client):
     assert resp.status_code == 404
 
 
+# ---- POST /games with bots ----
+
+
+_NO_BOTS_REQUEST = {
+    "map_name": "forgotten_island",
+    "red_heroes": ["Arien"],
+    "blue_heroes": ["Wasp"],
+}
+
+
+def _create_game_response_shape(data: dict) -> set[str]:
+    return set(data.keys())
+
+
+def test_create_game_without_bots_shape_unchanged(client):
+    """A creation request without a ``bots`` field must produce the same
+    top-level response shape as an untouched request (game_id, player_tokens,
+    spectator_token) — no extra fields leak in."""
+    resp = client.post("/games", json=_NO_BOTS_REQUEST)
+    assert resp.status_code == 201
+    data = resp.json()
+    assert _create_game_response_shape(data) == {
+        "game_id",
+        "player_tokens",
+        "spectator_token",
+    }
+    # Every hero, bot or not, still gets a player token.
+    hero_ids = {pt["hero_id"] for pt in data["player_tokens"]}
+    assert hero_ids == {"hero_arien", "hero_wasp"}
+    assert data["spectator_token"]
+
+
+def test_create_game_without_bots_field_registry_has_no_specs(client):
+    """No ``bots`` in the request means ``ManagedGame.bot_specs`` stays empty
+    — a plain humans-only game must not become bot-driven by omission."""
+    resp = client.post("/games", json=_NO_BOTS_REQUEST)
+    assert resp.status_code == 201
+    game_id = resp.json()["game_id"]
+    game = client.app.state.registry.get(game_id)
+    assert game.bot_specs == {}
+
+
+def test_create_game_with_random_bot_response_shape_unchanged(client):
+    """Adding a Random bot MUST NOT change response shape or hero token
+    semantics: every hero (bot or not) still gets a player token; the
+    spectator token still exists; no extra top-level fields appear."""
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {"hero_wasp": {"kind": "random"}},
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert _create_game_response_shape(data) == {
+        "game_id",
+        "player_tokens",
+        "spectator_token",
+    }
+    # Bot heroes still receive tokens (see plan §Scope And Invariants).
+    hero_ids = {pt["hero_id"] for pt in data["player_tokens"]}
+    assert hero_ids == {"hero_arien", "hero_wasp"}
+
+
+def test_create_game_with_random_bot_persists_spec(client):
+    """A Random ``BotSpec`` from the request must land on
+    ``ManagedGame.bot_specs`` verbatim."""
+    from goa2.server.bot_models import BotSpec
+
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {"hero_wasp": {"kind": "random"}},
+        },
+    )
+    assert resp.status_code == 201
+    game = client.app.state.registry.get(resp.json()["game_id"])
+    assert game.bot_specs == {"hero_wasp": BotSpec(kind="random")}
+
+
+def test_create_game_with_heuristic_bot_persists_spec(client):
+    """Heuristic is a supported production bot kind (plan §Release Gates)."""
+    from goa2.server.bot_models import BotSpec
+
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {"hero_wasp": {"kind": "heuristic"}},
+        },
+    )
+    assert resp.status_code == 201
+    game = client.app.state.registry.get(resp.json()["game_id"])
+    assert game.bot_specs == {"hero_wasp": BotSpec(kind="heuristic")}
+
+
+def test_create_game_with_random_bot_follows_human_commit(client):
+    """End-to-end: a Random bot created via the public API should follow a
+    human commit and make engine progress (matches the pattern already
+    validated in test_server_bots for direct registry injection)."""
+    import time
+
+    from goa2.domain.types import HeroID
+
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {"hero_wasp": {"kind": "random"}},
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    game_id = data["game_id"]
+    arien_token = _token_for(data, "hero_arien")
+    game = client.app.state.registry.get(game_id)
+
+    view = client.get(f"/games/{game_id}", headers=_auth(arien_token)).json()
+    arien_hand = None
+    for team_data in view["view"]["teams"].values():
+        for hero in team_data["heroes"]:
+            if hero["id"] == "hero_arien":
+                arien_hand = hero["hand"]
+    assert arien_hand
+    card_id = arien_hand[0]["id"]
+    resp2 = client.post(
+        f"/games/{game_id}/cards",
+        json={"card_id": card_id},
+        headers=_auth(arien_token),
+    )
+    assert resp2.status_code == 200
+
+    async def _pump_and_check() -> bool:
+        import asyncio
+
+        for _ in range(50):
+            await asyncio.sleep(0)
+        wasp = next(
+            h
+            for team in game.session.state.teams.values()
+            for h in team.heroes
+            if h.id == "hero_wasp"
+        )
+        return (
+            HeroID("hero_wasp") in game.session.state.pending_inputs
+            or wasp.current_turn_card is not None
+            or game.session.state.phase.value != "PLANNING"
+        )
+
+    deadline = time.monotonic() + 5.0
+    bot_done = False
+    while time.monotonic() < deadline:
+        if client.portal.call(_pump_and_check):
+            bot_done = True
+            break
+        time.sleep(0.05)
+    assert bot_done, "random bot from public API must progress after human commit"
+
+
+def test_create_game_accepts_ismcts_bot(client):
+    """:class:`CreateBotSpec` accepts ``kind='ismcts'``.
+    The public schema advertises ``ismcts`` as a supported kind, and
+    the route persists the spec on ``ManagedGame.bot_specs``. Runtime
+    bounds (semaphore, queue timeout, search timeout, heuristic fallback)
+    live in the coordinator — the request boundary only validates the
+    declared settings."""
+    from goa2.server.bot_models import BotSpec, SearchSettings
+
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {"hero_wasp": {"kind": "ismcts"}},
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    game_id = resp.json()["game_id"]
+    game = client.app.state.registry.get(game_id)
+    # No ``search`` supplied → the spec carries ``None`` and the
+    # coordinator applies the SearchSettings defaults at agent-build time.
+    assert game.bot_specs == {"hero_wasp": BotSpec(kind="ismcts")}
+    # Sanity: the persisted defaults are within the production bounds.
+    _sanity = SearchSettings()
+    assert _sanity.iterations > 0
+
+
+def test_create_game_accepts_ismcts_bot_with_search_settings(client):
+    """A well-formed ISMCTS spec with bounded search settings persists
+    verbatim. Kind + search field are the whole public contract."""
+    from goa2.server.bot_models import BotSpec, SearchSettings
+
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {
+                "hero_wasp": {
+                    "kind": "ismcts",
+                    "search": {"iterations": 50, "decision_timeout_seconds": 0.5},
+                }
+            },
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    game_id = resp.json()["game_id"]
+    game = client.app.state.registry.get(game_id)
+    assert game.bot_specs == {
+        "hero_wasp": BotSpec(
+            kind="ismcts",
+            search=SearchSettings(iterations=50, decision_timeout_seconds=0.5),
+        )
+    }
+
+
+def test_create_game_rejects_ismcts_iterations_over_max(client):
+    """``iterations`` is bounded at :data:`PROD_MAX_ITERATIONS`. A
+    request that exceeds the cap must fail with a 422 — this is the
+    upper-bound validation exercised at the request boundary."""
+    from automata.search.config import PROD_MAX_ITERATIONS
+
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {
+                "hero_wasp": {
+                    "kind": "ismcts",
+                    "search": {
+                        "iterations": PROD_MAX_ITERATIONS + 1,
+                        "decision_timeout_seconds": 1.0,
+                    },
+                }
+            },
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_create_game_rejects_ismcts_decision_timeout_over_max(client):
+    """``decision_timeout_seconds`` is bounded at
+    :data:`PROD_MAX_DECISION_TIMEOUT_SECONDS`."""
+    from automata.search.config import PROD_MAX_DECISION_TIMEOUT_SECONDS
+
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {
+                "hero_wasp": {
+                    "kind": "ismcts",
+                    "search": {
+                        "iterations": 10,
+                        "decision_timeout_seconds": PROD_MAX_DECISION_TIMEOUT_SECONDS
+                        + 1.0,
+                    },
+                }
+            },
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_create_game_rejects_ismcts_iterations_below_min(client):
+    """Zero and negative iteration budgets are rejected as the lower-bound
+    check the plan requires."""
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {
+                "hero_wasp": {
+                    "kind": "ismcts",
+                    "search": {"iterations": 0, "decision_timeout_seconds": 1.0},
+                }
+            },
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_create_game_rejects_search_settings_for_non_ismcts(client):
+    """``search`` is only valid on ``kind='ismcts'``. Supplying it
+    on Random or Heuristic bot specs is a 422 (the model_validator on
+    :class:`CreateBotSpec` enforces this before persistence)."""
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {
+                "hero_wasp": {
+                    "kind": "random",
+                    "search": {"iterations": 10, "decision_timeout_seconds": 0.5},
+                }
+            },
+        },
+    )
+    assert resp.status_code == 422
+
+    resp2 = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {
+                "hero_wasp": {
+                    "kind": "heuristic",
+                    "search": {"iterations": 10, "decision_timeout_seconds": 0.5},
+                }
+            },
+        },
+    )
+    assert resp2.status_code == 422
+
+
+def test_create_game_rejects_unknown_bot_kind(client):
+    """Unknown agent kinds are rejected by BotSpec's Literal — 422 from
+    Pydantic before any registry work."""
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {"hero_wasp": {"kind": "definitely_not_a_kind"}},
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_create_game_rejects_extra_fields_on_bot_spec(client):
+    """BotSpec has ``extra='forbid'``; unknown fields → 422."""
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {"hero_wasp": {"kind": "random", "epsilon": 0.1}},
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_create_game_rejects_hero_not_in_roster(client):
+    """A bot spec for a hero not on either team must be rejected — the
+    registry cannot persist a spec that no session hero controls."""
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            # Bain is a real hero, but not on this game's teams.
+            "bots": {"hero_bain": {"kind": "random"}},
+        },
+    )
+    assert 400 <= resp.status_code < 500
+    body = resp.json()
+    detail = body.get("detail")
+    text = detail if isinstance(detail, str) else str(body)
+    assert "hero_bain" in text or "roster" in text.lower()
+
+
+def test_create_game_rejects_completely_unknown_hero_id(client):
+    """A totally fabricated hero id must be rejected — not silently ignored."""
+    resp = client.post(
+        "/games",
+        json={
+            **_NO_BOTS_REQUEST,
+            "bots": {"hero_nonexistent_qqq": {"kind": "random"}},
+        },
+    )
+    assert 400 <= resp.status_code < 500
+
+
+def test_create_game_with_bots_still_yields_player_and_spectator_tokens(client):
+    """Every roster hero (bot or human) still gets a player token and a
+    spectator token is issued. This is the core token-parity contract the
+    bots feature must preserve."""
+    resp = client.post(
+        "/games",
+        json={
+            "map_name": "forgotten_island",
+            "red_heroes": ["Arien", "Min"],
+            "blue_heroes": ["Wasp", "Brogan"],
+            "bots": {
+                "hero_wasp": {"kind": "random"},
+                "hero_brogan": {"kind": "heuristic"},
+            },
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    hero_ids = {pt["hero_id"] for pt in data["player_tokens"]}
+    assert hero_ids == {"hero_arien", "hero_min", "hero_wasp", "hero_brogan"}
+    for pt in data["player_tokens"]:
+        assert pt["token"], f"missing token for {pt['hero_id']}"
+    assert data["spectator_token"]
+
+
+def test_create_game_with_empty_bots_mapping(client):
+    """An empty ``bots`` mapping is equivalent to omitting the field — the
+    game is fully human-controlled and no bot state is set up."""
+    resp = client.post(
+        "/games",
+        json={**_NO_BOTS_REQUEST, "bots": {}},
+    )
+    assert resp.status_code == 201
+    game_id = resp.json()["game_id"]
+    game = client.app.state.registry.get(game_id)
+    assert game.bot_specs == {}
+
+
+def test_create_draft_rejects_top_level_bots_key(client):
+    """Draft-created games do not support bot configuration.
+    ``POST /drafts`` must **reject** a top-level ``bots`` key with a clear
+    4xx — silent ``extra='ignore'`` was a footgun (client thinks bots
+    landed; they did not). The rejection is targeted: unrelated unknown
+    fields (forward-compat additions) must continue to be ignored per the
+    existing draft policy."""
+    resp = client.post(
+        "/drafts",
+        json={
+            "host_name": "Alice",
+            "map_name": "forgotten_island",
+            "bots": {"hero_wasp": {"kind": "random"}},
+        },
+    )
+    # One rejection outcome (422 from the model_validator).
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    detail = body.get("detail")
+    # FastAPI serializes model_validator failures into detail list.
+    text = detail if isinstance(detail, str) else str(body)
+    assert "bots" in text.lower() or "not supported" in text.lower(), body
+
+
+def test_update_draft_settings_rejects_top_level_bots_key(client):
+    """The same targeted rejection applies to draft settings updates —
+    a host cannot add bot configuration to an existing lobby either."""
+    # Create a lobby first.
+    create = client.post(
+        "/drafts",
+        json={"host_name": "Alice", "map_name": "forgotten_island"},
+    )
+    assert create.status_code == 201, create.text
+    data = create.json()
+    draft_id = data["draft_id"]
+    token = data["player_token"]
+    resp = client.patch(
+        f"/drafts/{draft_id}/settings",
+        json={"bots": {"hero_wasp": {"kind": "random"}}},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    text = str(body)
+    assert "bots" in text.lower() or "not supported" in text.lower(), body
+
+
+def test_create_draft_still_ignores_unrelated_unknown_fields(client):
+    """Rejection of ``bots`` must not turn on strict ``extra='forbid'`` for
+    the whole draft body. Existing draft policy is ``extra='ignore'`` —
+    that must be preserved so a schema-additive client change (say a new
+    ``client_hint`` field) does not break older servers."""
+    resp = client.post(
+        "/drafts",
+        json={
+            "host_name": "Alice",
+            "map_name": "forgotten_island",
+            # Deliberately-unknown forward-compat-style field:
+            "client_hint": "future-only",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+
+# ---- OpenAPI schema honesty ----
+
+
+def test_openapi_bot_schema_advertises_public_kinds_and_search(client):
+    """The OpenAPI schema advertises ``ismcts`` as a public
+    ``kind`` alongside ``random`` and ``heuristic``, and exposes the
+    optional ``search`` field on the public ``CreateBotSpec``. Clients
+    that read the schema for autocomplete or type-generation should see
+    exactly what they may send today."""
+    resp = client.get("/openapi.json")
+    assert resp.status_code == 200
+    schema = resp.json()
+    components = schema.get("components", {}).get("schemas", {})
+    assert "CreateBotSpec" in components, sorted(components.keys())
+    bot_schema = components["CreateBotSpec"]
+    props = bot_schema.get("properties", {})
+    # ``search`` is now part of the public schema (nullable / optional).
+    assert "search" in props, props
+    # ``kind`` advertises exactly the three supported kinds.
+    kind_field = props.get("kind", {})
+    enum = kind_field.get("enum")
+    if enum is None:
+        ref = kind_field.get("$ref")
+        assert ref, kind_field
+        ref_name = ref.rsplit("/", 1)[-1]
+        enum = components.get(ref_name, {}).get("enum")
+    assert enum is not None, bot_schema
+    assert set(enum) == {"random", "heuristic", "ismcts"}, enum
+    # SearchSettings is exposed as a referenced schema so clients can
+    # type-generate the bounded fields.
+    assert "SearchSettings" in components, sorted(components.keys())
+    ss_props = components["SearchSettings"].get("properties", {})
+    assert "iterations" in ss_props
+    assert "decision_timeout_seconds" in ss_props
+
+
+def test_create_draft_does_not_accept_bots(client):
+    """Backwards-compatible name for the targeted-rejection test; retained
+    so an audit script grepping for the old spec name still finds the
+    coverage. Delegates to the primary tight test."""
+    test_create_draft_rejects_top_level_bots_key(client)
+
+
 # ---- GET /games/{game_id} ----
 
 

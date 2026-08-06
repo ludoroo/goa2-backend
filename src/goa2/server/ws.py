@@ -15,6 +15,7 @@ from goa2.domain.input import InputResponse
 from goa2.domain.models import GamePhase
 from goa2.domain.types import HeroID
 from goa2.domain.views import build_view
+from goa2.server.bots import schedule_bot_drive
 from goa2.server.errors import (
     CardNotInHandError,
     GameNotFoundError,
@@ -731,6 +732,13 @@ async def game_ws(websocket: WebSocket, game_id: str) -> None:
 
                     await websocket.send_json(sender_reply)
                     await _send_captured_broadcast(game, messages)
+                    # After every mutation (or a lost-deadline path that
+                    # already applied the automatic timeout inline), give
+                    # the bot coordinator a chance to make the next move.
+                    # ``schedule_bot_drive`` is idempotent so ``SET_READY``
+                    # racing an already-running worker is a no-op.
+                    if msg_type in MUTATION_MESSAGE_TYPES:
+                        schedule_bot_drive(game, registry)
 
             except (NotYourTurnError, InvalidPhaseError, CardNotInHandError, ValueError) as exc:
                 if game.game_logger:
@@ -746,6 +754,15 @@ async def game_ws(websocket: WebSocket, game_id: str) -> None:
                     await websocket.send_json({"type": "ERROR", "detail": str(exc)})
                     if error_messages:
                         await _send_captured_broadcast(game, error_messages)
+                # An inline timeout that ran during ``prepare_timed_mutation``
+                # applied a real mutation under game.lock (persisted + logged
+                # + broadcast just above) even though the outer client
+                # request failed validation. A bot that owes the next move
+                # must be scheduled here or the game stalls until another
+                # client action lands. ``schedule_bot_drive`` is
+                # idempotent + tombstone-safe.
+                if timer_events and game.bot_specs:
+                    schedule_bot_drive(game, registry)
 
     except WebSocketDisconnect:
         pass

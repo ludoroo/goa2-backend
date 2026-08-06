@@ -15,6 +15,8 @@ from goa2.domain.views import build_view
 from goa2.engine.session import GameSession, SessionResult
 from goa2.engine.setup import GameSetup
 from goa2.server.auth import PlayerDep, RegistryDep
+from goa2.server.bot_models import BotSpec
+from goa2.server.bots import schedule_bot_drive, start_bot_lifecycle
 from goa2.server.errors import (
     AlreadyCommittedError,
     CardNotInHandError,
@@ -104,6 +106,19 @@ async def create_game(body: CreateGameRequest, registry: RegistryDep) -> CreateG
             status_code=400,
             detail=f"Invalid game_type '{body.game_type}'. Must be QUICK or LONG.",
         )
+    # Translate the public request-only bot schema into the internal, more
+    # expressive :class:`BotSpec` used by the coordinator and persistence.
+    # The public schema accepts ``kind='ismcts'`` plus optional
+    # ``search`` settings. Kind validation (422 for anything unsupported)
+    # and the "search only with ismcts" invariant are enforced at Pydantic
+    # validation time (see :class:`CreateBotSpec`) — we just copy the
+    # fields across into the internal model.
+    internal_bot_specs: dict[str, BotSpec] | None = None
+    if body.bots:
+        internal_bot_specs = {
+            hero_id: BotSpec(kind=spec.kind, search=spec.search)
+            for hero_id, spec in body.bots.items()
+        }
     game_seed_id = uuid.uuid4().hex
     game_id = game_seed_id[:12]
     seed = int(game_seed_id, 16)
@@ -123,7 +138,18 @@ async def create_game(body: CreateGameRequest, registry: RegistryDep) -> CreateG
         for hero in team.heroes:
             hero_ids.append(hero.id)
 
-    game = registry.create_game(session, hero_ids, game_id=game_id)
+    # Registry validates every bot hero belongs to the roster and raises
+    # ValueError for unknown ids. Translate to 400 so the client sees a
+    # meaningful error rather than a 500.
+    try:
+        game = registry.create_game(
+            session,
+            hero_ids,
+            game_id=game_id,
+            bot_specs=internal_bot_specs,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if game.game_logger:
         game.game_logger.log_game_created(body.red_heroes, body.blue_heroes, body.map_name)
@@ -137,6 +163,20 @@ async def create_game(body: CreateGameRequest, registry: RegistryDep) -> CreateG
             seed=seed,
             time_control=body.time_control,
         )
+
+    # If the game was created with any bot_specs, run the single
+    # lifecycle seam that:
+    #   1. auto-readies every bot hero on a timed match under
+    #      outbound_lock → game.lock,
+    #   2. persists + reconciles the clock and schedules the initial
+    #      authoritative deadline task before any bot compute runs, and
+    #   3. schedules the bot coordinator.
+    #
+    # Splitting these into ``auto_ready_bot_heroes`` + ``schedule_bot_drive``
+    # in the handler skips the persistence + broadcast between them, which
+    # is the exact race a review found (bot computing against a not-yet-
+    # anchored clock). ``start_bot_lifecycle`` is the only correct seam.
+    await start_bot_lifecycle(game, registry)
 
     return CreateGameResponse(
         game_id=game.game_id,
@@ -184,6 +224,7 @@ async def set_ready(
         from goa2.server.ws import _send_captured_broadcast
 
         await _send_captured_broadcast(game, messages)
+    schedule_bot_drive(game, registry)
     return response
 
 
@@ -259,7 +300,8 @@ async def commit_card(
         if game.game_logger:
             game.game_logger.log_card_commit(player.hero_id, body.card_id)
         _log_result(game, result)
-        return _result_to_response(result, session.state, player.hero_id)
+        response = _result_to_response(result, session.state, player.hero_id)
+    return response
 
 
 @router.post("/{game_id}/uncommit", response_model=ActionResultResponse)
@@ -308,7 +350,8 @@ async def uncommit_card(
         if game.game_logger and card is not None:
             game.game_logger.log_card_uncommit(hid, card.id)
         _log_result(game, result)
-        return _result_to_response(result, session.state, player.hero_id)
+        response = _result_to_response(result, session.state, player.hero_id)
+    return response
 
 
 @router.post("/{game_id}/pass", response_model=ActionResultResponse)
@@ -343,7 +386,8 @@ async def pass_turn(
         if game.game_logger:
             game.game_logger.log_pass_turn(player.hero_id)
         _log_result(game, result)
-        return _result_to_response(result, session.state, player.hero_id)
+        response = _result_to_response(result, session.state, player.hero_id)
+    return response
 
 
 @router.post("/{game_id}/planning-done", response_model=ActionResultResponse)
@@ -378,7 +422,8 @@ async def planning_done(
         result = merge_timer_events(result, timer_events)
         game.last_result = result
         _log_result(game, result)
-        return _result_to_response(result, session.state, player.hero_id)
+        response = _result_to_response(result, session.state, player.hero_id)
+    return response
 
 
 @router.post("/{game_id}/input", response_model=ActionResultResponse)
@@ -430,7 +475,8 @@ async def submit_input(
         result = merge_timer_events(result, timer_events)
         game.last_result = result
         _log_result(game, result)
-        return _result_to_response(result, game.session.state, player.hero_id)
+        response_out = _result_to_response(result, game.session.state, player.hero_id)
+    return response_out
 
 
 @router.post("/{game_id}/advance", response_model=ActionResultResponse)
@@ -449,7 +495,8 @@ async def advance(
         result = merge_timer_events(result, timer_events)
         game.last_result = result
         _log_result(game, result)
-        return _result_to_response(result, game.session.state, player.hero_id)
+        response = _result_to_response(result, game.session.state, player.hero_id)
+    return response
 
 
 @router.post("/{game_id}/rollback", response_model=ActionResultResponse)
@@ -487,7 +534,8 @@ async def rollback_action(
         result = merge_timer_events(result, timer_events)
         game.last_result = result
         _log_result(game, result)
-        return _result_to_response(result, session.state, player.hero_id)
+        response = _result_to_response(result, session.state, player.hero_id)
+    return response
 
 
 @router.post("/{game_id}/cheats/gold", response_model=ActionResultResponse)
