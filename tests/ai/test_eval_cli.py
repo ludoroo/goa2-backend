@@ -14,6 +14,7 @@ here is behaviorally RED. Matrix backward-compat tests keep passing.
 from __future__ import annotations
 
 import json
+import pickle
 import re
 import subprocess
 from collections.abc import Callable
@@ -24,6 +25,8 @@ from typing import Any
 import pytest
 
 from automata.evaluation import cli as cli_module
+from automata.evaluation.features import FEATURE_NAMES
+from automata.evaluation.learned_value import LearnedValue
 from automata.evaluation.matchup import MatchupResult
 from automata.evaluation.protocol import (
     AgentSpec,
@@ -330,7 +333,9 @@ def _install_case_runner_fakes(
         )
         return result
 
-    def _fake_build_agent(spec: AgentSpec, seed: int) -> Any:
+    def _fake_build_agent(
+        spec: AgentSpec, seed: int, *, case_metadata: dict[str, Any] | None = None
+    ) -> Any:
         agent_calls.append((spec, seed))
         return _StubAgent(spec, seed)
 
@@ -796,8 +801,6 @@ def test_timed_case_runner_is_picklable_when_timeout_configured(
     scope), :func:`pickle.dumps` raises ``PicklingError`` / ``AttributeError``
     and this test fails.
     """
-    import pickle
-
     captured: dict[str, Any] = {}
 
     def _capture(protocol: EvaluationProtocol, *, checkpoint_path: Path, run_case):
@@ -826,6 +829,158 @@ def test_timed_case_runner_is_picklable_when_timeout_configured(
     # contract. Both a top-level class instance and a functools.partial
     # bound to a top-level function satisfy it.
     pickle.dumps(runner)
+
+
+# --------------------------------------------------------------------------- #
+# Learned value artifacts in targeted mode                                    #
+# --------------------------------------------------------------------------- #
+
+
+def _value_artifact(coeff: float = 1.0) -> dict[str, Any]:
+    return {
+        "model_version": "logistic-v1",
+        "schema_version": 1,
+        "red_roster": list(RED_HEROES),
+        "blue_roster": list(BLUE_HEROES),
+        "feature_names": list(FEATURE_NAMES),
+        "feature_means": [0.0] * len(FEATURE_NAMES),
+        "feature_scales": [1.0] * len(FEATURE_NAMES),
+        "coefficients": [coeff] + [0.0] * (len(FEATURE_NAMES) - 1),
+        "intercept": 0.0,
+    }
+
+
+def _write_value_artifact(path: Path, coeff: float = 1.0) -> None:
+    path.write_text(json.dumps(_value_artifact(coeff)))
+
+
+@pytest.mark.parametrize("side", ["a", "b"])
+def test_value_model_is_accepted_only_for_ismcts_side(
+    fake_source_identity: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    side: str,
+) -> None:
+    artifact = tmp_path / "value.json"
+    _write_value_artifact(artifact)
+    kinds = {"a": "ismcts", "b": "heuristic"}
+    kinds[side] = "ismcts"
+    accepted = _install_run_protocol(monkeypatch)
+    cli_module.main(
+        [
+            "--agent-a", kinds["a"], "--agent-b", kinds["b"],
+            f"--{side}-value-model", str(artifact),
+        ]
+    )  # fmt: skip
+    assert accepted.protocol is not None
+
+    called = False
+
+    def _forbidden(*args: Any, **kwargs: Any) -> Any:
+        nonlocal called
+        called = True
+        raise AssertionError("run_protocol must not run after invalid CLI input")
+
+    monkeypatch.setattr(cli_module, "run_protocol", _forbidden)
+    kinds[side] = "random"
+    with pytest.raises(SystemExit):
+        cli_module.main(
+            [
+                "--agent-a", kinds["a"], "--agent-b", kinds["b"],
+                f"--{side}-value-model", str(artifact),
+            ]
+        )  # fmt: skip
+    assert not called
+
+
+def test_artifact_digest_participates_in_targeted_identity(
+    fake_source_identity: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "value.json"
+    _write_value_artifact(artifact)
+    first = _install_run_protocol(monkeypatch)
+    argv = ["--agent-a", "ismcts", "--agent-b", "heuristic", "--a-value-model", str(artifact)]
+    cli_module.main(argv)
+    assert first.protocol is not None
+    expected = LearnedValue(artifact).digest
+    assert re.fullmatch(r"[0-9a-f]{64}", expected)
+    assert expected in json.dumps(first.protocol.agent_a.identity(), sort_keys=True)
+
+    relocated = tmp_path / "relocated.json"
+    _write_value_artifact(relocated)
+    relocated_run = _install_run_protocol(monkeypatch)
+    cli_module.main(
+        ["--agent-a", "ismcts", "--agent-b", "heuristic", "--a-value-model", str(relocated)]
+    )
+    assert relocated_run.protocol is not None
+    assert relocated_run.protocol.identity_digest() == first.protocol.identity_digest()
+
+    _write_value_artifact(artifact, coeff=2.0)
+    second = _install_run_protocol(monkeypatch)
+    cli_module.main(argv)
+    assert second.protocol is not None
+    assert second.protocol.identity_digest() != first.protocol.identity_digest()
+
+
+def test_build_agent_injects_captured_artifact_and_rejects_changed_content(
+    fake_source_identity: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "value.json"
+    _write_value_artifact(artifact)
+    captured = _install_run_protocol(monkeypatch)
+    cli_module.main(
+        ["--agent-a", "ismcts", "--agent-b", "heuristic", "--a-value-model", str(artifact)]
+    )
+    assert captured.protocol is not None
+    spec = captured.protocol.agent_a
+    built: dict[str, Any] = {}
+
+    class _AgentSpy:
+        def __init__(
+            self, config: Any, *, value_fn: Any = None, cutoff_observer: Any = None
+        ) -> None:
+            built.update(config=config, value_fn=value_fn, cutoff_observer=cutoff_observer)
+
+    monkeypatch.setattr(cli_module, "ISMCTSAgent", _AgentSpy)
+    agent = cli_module.build_agent(spec, seed=73)
+    assert agent is not None
+    assert isinstance(built["value_fn"], LearnedValue)
+    assert built["config"].seed == 73
+
+    _write_value_artifact(artifact, coeff=3.0)
+    with pytest.raises(ValueError, match=r"(?i)(changed|digest|sha|artifact)"):
+        cli_module.build_agent(spec, seed=73)
+
+
+def test_learned_runner_is_pickleable_and_output_identifies_value_model(
+    fake_source_identity: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "distinctive-value.json"
+    _write_value_artifact(artifact)
+    learned = _install_run_protocol(monkeypatch)
+    cli_module.main(
+        ["--agent-a", "ismcts", "--agent-b", "heuristic", "--a-value-model", str(artifact)]
+    )
+    learned_output = capsys.readouterr().out
+    assert learned.protocol is not None
+    pickle.dumps(cli_module.build_case_runner(learned.protocol))
+
+    _install_run_protocol(monkeypatch)
+    cli_module.main(["--agent-a", "ismcts", "--agent-b", "heuristic"])
+    heuristic_output = capsys.readouterr().out
+    digest = LearnedValue(artifact).digest
+    markers = (artifact.name, str(artifact), digest, digest[:12], "learned")
+    assert any(
+        m.lower() in learned_output.lower() and m.lower() not in heuristic_output.lower()
+        for m in markers
+    )
 
 
 def _observations_with_timeouts(protocol: EvaluationProtocol) -> list[GameObservation]:
@@ -1003,3 +1158,135 @@ def test_ordinary_legacy_invocation_still_takes_matrix_path(
     assert run_protocol_calls == [], (
         "ordinary legacy invocation must not stray into the targeted " "run_protocol path"
     )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--agent-a", "random", "--agent-b", "ismcts", "--a-cutoff-telemetry", "a.jsonl"],
+        ["--agent-a", "ismcts", "--agent-b", "heuristic", "--b-cutoff-telemetry", "b.jsonl"],
+    ],
+)
+def test_cutoff_telemetry_requires_corresponding_ismcts_agent_before_run(
+    fake_source_identity: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    called = False
+
+    def _forbidden(*args: Any, **kwargs: Any) -> Any:
+        nonlocal called
+        called = True
+        raise AssertionError("invalid telemetry configuration reached run_protocol")
+
+    monkeypatch.setattr(cli_module, "run_protocol", _forbidden)
+    with pytest.raises(SystemExit):
+        cli_module.main(argv)
+    error = capsys.readouterr().err.lower()
+    assert "unrecognized arguments" not in error
+    assert "telemetry" in error and "ismcts" in error
+    assert called is False
+
+
+def test_telemetry_path_is_runtime_only_agent_spec_metadata(
+    fake_source_identity: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    baseline = _install_run_protocol(monkeypatch)
+    cli_module.main(["--agent-a", "ismcts", "--agent-b", "heuristic"])
+    enabled = _install_run_protocol(monkeypatch)
+    path = tmp_path / "cutoffs.jsonl"
+    cli_module.main(
+        [
+            "--agent-a",
+            "ismcts",
+            "--agent-b",
+            "heuristic",
+            "--a-cutoff-telemetry",
+            str(path),
+        ]
+    )
+
+    assert baseline.protocol is not None and enabled.protocol is not None
+    assert enabled.protocol.agent_a.cutoff_telemetry_path == str(path)
+    assert enabled.protocol.identity_digest() == baseline.protocol.identity_digest()
+
+
+@pytest.mark.parametrize("telemetry_path", [None, "cutoffs.jsonl"])
+def test_build_agent_injects_cutoff_telemetry_observer(
+    monkeypatch: pytest.MonkeyPatch,
+    telemetry_path: str | None,
+) -> None:
+    constructed: dict[str, Any] = {}
+    recorder = object()
+
+    def _recorder_spy(path: str, case_metadata: dict[str, Any]) -> object:
+        constructed["recorder_args"] = (path, case_metadata)
+        return recorder
+
+    class _AgentSpy:
+        def __init__(self, config: Any, *, value_fn: Any, cutoff_observer: Any) -> None:
+            constructed.update(config=config, cutoff_observer=cutoff_observer)
+
+    monkeypatch.setattr(cli_module, "CutoffTelemetryRecorder", _recorder_spy, raising=False)
+    monkeypatch.setattr(cli_module, "ISMCTSAgent", _AgentSpy)
+    metadata = {"case_id": "case-7-RED", "world_seed": 7, "a_side": "RED", "agent_label": "A"}
+    spec = AgentSpec(
+        name="A",
+        kind="ismcts",
+        params={"iterations": 1},
+        cutoff_telemetry_path=telemetry_path,
+    )
+
+    cli_module.build_agent(spec, seed=11, case_metadata=metadata)
+
+    assert constructed["cutoff_observer"] is (recorder if telemetry_path else None)
+    if telemetry_path:
+        assert constructed["recorder_args"] == (telemetry_path, metadata)
+    else:
+        assert "recorder_args" not in constructed
+
+
+def test_case_runner_supplies_agent_specific_telemetry_metadata_and_is_pickleable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def _build(spec: AgentSpec, seed: int, *, case_metadata: dict[str, Any]) -> _StubAgent:
+        calls.append((spec.name, case_metadata))
+        return _StubAgent(spec, seed)
+
+    monkeypatch.setattr(cli_module, "build_agent", _build)
+    monkeypatch.setattr(
+        cli_module,
+        "run_game",
+        lambda *args, **kwargs: RunResult(
+            winner="RED", rounds=1, turns=1, steps=1, reason="game_over"
+        ),
+    )
+    protocol = _make_protocol(world_seeds=(7,))
+    runner = cli_module.build_case_runner(protocol)
+    pickle.dumps(runner)
+    case = next(c for c in protocol.cases() if c.a_side == "BLUE")
+    runner(case)
+
+    common = {"case_id": case.case_id, "world_seed": 7, "a_side": "BLUE"}
+    assert calls == [
+        ("a", {**common, "agent_label": "A"}),
+        ("b", {**common, "agent_label": "B"}),
+    ]
+
+
+def test_targeted_header_indicates_cutoff_telemetry_enabled(
+    fake_source_identity: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    _install_run_protocol(monkeypatch)
+    args = f"--agent-a ismcts --agent-b heuristic --a-cutoff-telemetry {tmp_path / 'rows.jsonl'}"
+    cli_module.main(args.split())
+    output = capsys.readouterr().out.lower()
+    assert "telemetry" in output and "enabled" in output

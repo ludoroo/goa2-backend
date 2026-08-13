@@ -31,6 +31,7 @@ from ..agents.heuristic_agent import HeuristicAgent
 from ..evaluation.value import HeuristicValue, ValueFn
 from .config import SearchConfig
 from .ismcts import (
+    CutoffObserver,
     RootTarget,
     _branchable,
     _input_raw_map,
@@ -57,6 +58,7 @@ class ISMCTSAgent:
         *,
         default_policy: Agent | None = None,
         value_fn: ValueFn | None = None,
+        cutoff_observer: CutoffObserver | None = None,
     ) -> None:
         self._cfg = config or SearchConfig()
         # Default policy drives opponents and rollouts. Seeded off the search
@@ -65,6 +67,7 @@ class ISMCTSAgent:
         # Leaf value estimate at the rollout cutoff. Swappable for a learned
         # value model (Rung 2) without touching the search loop.
         self._value: ValueFn = value_fn or HeuristicValue()
+        self._cutoff_observer = cutoff_observer
         # Expansion prior reuses the heuristic scorers so widening surfaces
         # promising moves first. Only used when the policy exposes the scorers.
         self._prior = (
@@ -115,6 +118,7 @@ class ISMCTSAgent:
             self._prior,
             self._value,
             root_target=target,
+            cutoff_observer=self._cutoff_observer,
         )
         if result.best_key is None:
             return None
@@ -236,6 +240,7 @@ class ISMCTSAgent:
             self._prior,
             self._value,
             root_target=target,
+            cutoff_observer=self._cutoff_observer,
         )
         # `search` never returns a zero-visit key for a non-empty legal set;
         # the >1-key path is the only branch that returns None-best, and by

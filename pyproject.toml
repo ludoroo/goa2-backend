@@ -48,7 +48,11 @@ source = ["src/goa2"]
 branch = true
 
 [dependency-groups]
+training = [
+    "scikit-learn>=1.6.0",
+]
 dev = [
+    { include-group = "training" },
     "black>=25.11.0",
     "httpx>=0.28.0",
     "mypy>=1.18.2",

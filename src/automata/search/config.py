@@ -78,9 +78,10 @@ class SearchConfig:
     widening_c: float = 2.0
     widening_alpha: float = 0.5
 
-    # evaluate_state is unbounded; squash through tanh(score / scale) into
-    # (0, 1). Scale is order-of-magnitude of a meaningful positional edge.
-    value_scale: float = 300.0
+    # Note: the leaf-value squash used to live here as ``value_scale``. It now
+    # belongs to the :class:`ValueFn` implementation itself (see
+    # :class:`automata.evaluation.value.HeuristicValue`), so a learned value
+    # model with its own bounded output can drop in without a search knob.
 
     # RNG seed for determinization + tie-breaking (reproducible searches).
     seed: int = 0

@@ -53,6 +53,8 @@ from ..agents.random_agent import RandomAgent
 # packages (see :func:`build_case_runner` and :func:`main`).
 from ..runtime.harness import run_game  # noqa: F401
 from ..search import ISMCTSAgent, SearchConfig
+from .cutoff_telemetry import CutoffTelemetryRecorder
+from .learned_value import LearnedValue
 from .matchup import MatchupResult, evaluate, hero_id
 from .protocol import (
     AgentSpec,
@@ -64,6 +66,7 @@ from .protocol import (
     run_protocol,  # noqa: F401 — accessed via ``cli.run_protocol`` (monkeypatched)
     summarize,  # noqa: F401 — accessed via ``cli.summarize`` (monkeypatched)
 )
+from .value import HeuristicValue, ValueFn
 
 # Quick-game recommended roster (2v2, single lane).
 RED = ["Wasp", "Xargatha"]
@@ -279,7 +282,9 @@ def source_identity(repo_root: Path | None = None) -> tuple[str, str]:
 # --------------------------------------------------------------------------- #
 
 
-def build_agent(spec: AgentSpec, seed: int) -> Agent:
+def build_agent(
+    spec: AgentSpec, seed: int, *, case_metadata: dict[str, Any] | None = None
+) -> Agent:
     """Construct a runtime :class:`Agent` from an :class:`AgentSpec`.
 
     Semi-public seam: the CLI's per-case runner calls this so tests can
@@ -298,8 +303,33 @@ def build_agent(spec: AgentSpec, seed: int) -> Agent:
         return HeuristicAgent(seed)
     if kind == "ismcts":
         cfg_kwargs: dict[str, Any] = dict(spec.params)
+        telemetry_path = cfg_kwargs.pop("cutoff_telemetry_path", None)
+        # AgentSpec crosses the spawn boundary, so reload and revalidate captured model metadata.
+        model_path = cfg_kwargs.pop("value_model_path", None)
+        expected_digest = cfg_kwargs.pop("value_model_digest", None)
+        if (model_path is None) != (expected_digest is None):
+            raise ValueError("learned value model metadata is incomplete")
+
+        value_fn: ValueFn = HeuristicValue()
+        if model_path is not None:
+            learned = LearnedValue(str(model_path))
+            if learned.digest != expected_digest:
+                raise ValueError(
+                    "learned value artifact changed after protocol construction: "
+                    f"expected digest {expected_digest}, got {learned.digest}"
+                )
+            value_fn = learned
         cfg_kwargs["seed"] = seed
-        return ISMCTSAgent(SearchConfig(**cfg_kwargs))
+        cutoff_observer = (
+            CutoffTelemetryRecorder(str(telemetry_path), case_metadata or {})
+            if telemetry_path is not None
+            else None
+        )
+        return ISMCTSAgent(
+            SearchConfig(**cfg_kwargs),
+            value_fn=value_fn,
+            cutoff_observer=cutoff_observer,
+        )
     raise ValueError(f"unknown agent kind: {kind!r}")
 
 
@@ -371,8 +401,21 @@ class _CaseRunner:
         # runner was constructed still take effect.
         import automata.evaluation.cli as _self
 
-        agent_a = _self.build_agent(self.agent_a, a_seed)
-        agent_b = _self.build_agent(self.agent_b, b_seed)
+        common_metadata = {
+            "case_id": case.case_id,
+            "world_seed": case.world_seed,
+            "a_side": case.a_side,
+        }
+        agent_a = _self.build_agent(
+            self.agent_a,
+            a_seed,
+            case_metadata={**common_metadata, "agent_label": "A"},
+        )
+        agent_b = _self.build_agent(
+            self.agent_b,
+            b_seed,
+            case_metadata={**common_metadata, "agent_label": "B"},
+        )
 
         # a_side names the side A controls this game. Whichever side that is
         # gets A on all its heroes; the other side gets B.
@@ -549,6 +592,30 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--b-puct-c", type=_non_negative_float, default=None)
     parser.add_argument("--a-no-prior", action="store_true", default=False)
     parser.add_argument("--b-no-prior", action="store_true", default=False)
+    parser.add_argument(
+        "--a-value-model",
+        type=str,
+        default=None,
+        help="Learned value JSON artifact for agent A (ISMCTS only).",
+    )
+    parser.add_argument(
+        "--b-value-model",
+        type=str,
+        default=None,
+        help="Learned value JSON artifact for agent B (ISMCTS only).",
+    )
+    parser.add_argument(
+        "--a-cutoff-telemetry",
+        type=str,
+        default=None,
+        help="Append agent A's nonterminal ISMCTS cutoffs to this JSONL path.",
+    )
+    parser.add_argument(
+        "--b-cutoff-telemetry",
+        type=str,
+        default=None,
+        help="Append agent B's nonterminal ISMCTS cutoffs to this JSONL path.",
+    )
 
     return parser
 
@@ -567,6 +634,8 @@ def _build_agent_spec(
     uct_c: float | None,
     puct_c: float | None,
     no_prior: bool,
+    value_model: str | None,
+    cutoff_telemetry: str | None = None,
 ) -> AgentSpec:
     """Build an :class:`AgentSpec` whose ``params`` reflect the effective
     SearchConfig (minus dynamic ``seed``) so identity captures every knob.
@@ -594,6 +663,13 @@ def _build_agent_spec(
     # Dynamic per-case seed is set by build_agent; it must not participate
     # in identity or the checkpoint would depend on run-order.
     params.pop("seed", None)
+    if value_model is not None:
+        model_path = str(Path(value_model))
+        model = LearnedValue(model_path)
+        params["value_model_path"] = model_path
+        params["value_model_digest"] = model.digest
+    if cutoff_telemetry is not None:
+        params["cutoff_telemetry_path"] = str(Path(cutoff_telemetry))
     return AgentSpec(name=label, kind=kind, params=params)
 
 
@@ -607,12 +683,31 @@ def _print_targeted_header(
     checkpoint: Path,
     paired_seeds: int,
 ) -> None:
+    def value_description(spec: AgentSpec) -> str:
+        model_path = spec.params.get("value_model_path")
+        model_digest = spec.params.get("value_model_digest")
+        if model_path is None and model_digest is None:
+            return "heuristic value"
+        if model_path is None or model_digest is None:
+            raise ValueError("learned value model metadata is incomplete")
+        digest = str(model_digest)
+        return f"learned value={model_path} ({digest[:12]})"
+
     print(
-        f"Protocol: {protocol.agent_a.name} ({protocol.agent_a.kind}) vs "
-        f"{protocol.agent_b.name} ({protocol.agent_b.kind})"
+        f"Protocol: {protocol.agent_a.name} ({protocol.agent_a.kind}, "
+        f"{value_description(protocol.agent_a)}) vs "
+        f"{protocol.agent_b.name} ({protocol.agent_b.kind}, "
+        f"{value_description(protocol.agent_b)})"
     )
     print(f"  paired-seeds={paired_seeds} → {paired_seeds * 2} cases")
     print(f"  max_steps={protocol.max_steps}  identity={protocol.identity_digest()}")
+    telemetry = [
+        f"{label}={spec.cutoff_telemetry_path}"
+        for label, spec in (("A", protocol.agent_a), ("B", protocol.agent_b))
+        if spec.cutoff_telemetry_path is not None
+    ]
+    if telemetry:
+        print(f"  cutoff telemetry enabled: {'  '.join(telemetry)}")
     if protocol.case_timeout_seconds is not None:
         # Include the effective per-case wall-clock budget so operators can
         # confirm what a run was configured with (the config value alone is
@@ -656,6 +751,8 @@ def _run_targeted(
         uct_c=args.a_uct_c,
         puct_c=args.a_puct_c,
         no_prior=args.a_no_prior,
+        value_model=args.a_value_model,
+        cutoff_telemetry=args.a_cutoff_telemetry,
     )
     agent_b = _build_agent_spec(
         label="B",
@@ -665,6 +762,8 @@ def _run_targeted(
         uct_c=args.b_uct_c,
         puct_c=args.b_puct_c,
         no_prior=args.b_no_prior,
+        value_model=args.b_value_model,
+        cutoff_telemetry=args.b_cutoff_telemetry,
     )
 
     # World seeds: contiguous block starting at ``--seed`` so ``--paired-seeds``
@@ -740,6 +839,15 @@ def main(argv: Sequence[str] | None = None) -> int | None:
     # than surfacing a downstream NoneType error.
     if (args.agent_a is None) != (args.agent_b is None):
         parser.error("targeted mode requires both --agent-a and --agent-b")
+
+    if args.a_value_model is not None and args.agent_a != "ismcts":
+        parser.error("--a-value-model is valid only when --agent-a is ismcts")
+    if args.b_value_model is not None and args.agent_b != "ismcts":
+        parser.error("--b-value-model is valid only when --agent-b is ismcts")
+    if args.a_cutoff_telemetry is not None and args.agent_a != "ismcts":
+        parser.error("--a-cutoff-telemetry is valid only when --agent-a is ismcts")
+    if args.b_cutoff_telemetry is not None and args.agent_b != "ismcts":
+        parser.error("--b-cutoff-telemetry is valid only when --agent-b is ismcts")
 
     if args.agent_a is not None and args.agent_b is not None:
         return _run_targeted(args)

@@ -7,8 +7,11 @@ Design (see the AI layer sketch):
   resolution inputs — is played by a fixed *default policy* (a HeuristicAgent),
   never branched on. So every tree node is one of *our* decisions: a MAX node.
 - **Depth cutoff.** A rollout stops once the round counter advances
-  `cfg.cutoff_rounds` (≈ one wave), then substitutes `evaluate_state` squashed
-  into [0, 1]. Terminal wins/losses map to 1.0 / 0.0 and dominate.
+  `cfg.cutoff_rounds` (≈ one wave), then consults the injected
+  :class:`~automata.evaluation.value.ValueFn` (already normalized to
+  ``[-1, 1]``) and maps it into ``[0, 1]`` reward exactly once via
+  ``(v + 1) / 2``. Terminal wins/losses bypass the ValueFn and use
+  :func:`terminal_reward` (1.0 / 0.0 / 0.5).
 
 The engine is driven through a throwaway `GameSession` over a single clone that
 is *mutated in place* as the iteration descends and rolls out — one clone per
@@ -196,6 +199,15 @@ class PolicyLike(Protocol):
     def __call__(
         self, state: GameState, decision: Decision, legal: list[Key]
     ) -> _PolicyResultLike: ...
+
+
+class CutoffObserver(Protocol):
+    """Diagnostic callback invoked after validating a nonterminal leaf value.
+
+    Exceptions raised by the observer propagate and abort the search.
+    """
+
+    def __call__(self, state: GameState, team: TeamColor, active_value: float) -> object: ...
 
 
 def _enemy(team: TeamColor) -> TeamColor:
@@ -438,15 +450,33 @@ class _Simulator:
 # --------------------------------------------------------------------------- #
 
 
-def _terminal_value(winner: str | None, our_team: TeamColor) -> float:
+def terminal_reward(winner: str | None, our_team: TeamColor) -> float:
+    """Reward for a terminal game outcome, from ``our_team``'s perspective.
+
+    Public helper — the terminal branch of :func:`_rollout` and any offline
+    training / evaluation code MUST go through this so wins/draws/losses stay
+    on the same 1.0 / 0.5 / 0.0 scale as the mapped value estimate.
+    """
     if winner is None:
         return 0.5  # draw / undecided
     return 1.0 if winner.upper() == our_team.value.upper() else 0.0
 
 
-def _squash(score: float, scale: float) -> float:
-    """Map an unbounded evaluate_state score into (0, 1)."""
-    return 0.5 * (1.0 + math.tanh(score / scale))
+def _value_to_reward(value: float) -> float:
+    """Map a normalized ValueFn output in ``[-1, 1]`` to a reward in ``[0, 1]``.
+
+    Applied exactly once, at the rollout cutoff. Rejects non-finite outputs
+    and outputs outside the inclusive ``[-1, 1]`` range with a clear
+    :class:`ValueError` so a broken (un-normalized / numerically failed)
+    ValueFn fails fast instead of poisoning the tree with a NaN or a
+    silently-clamped estimate.
+    """
+    if not math.isfinite(value) or value < -1.0 or value > 1.0:
+        raise ValueError(
+            f"ValueFn output {value!r} is not a finite scalar in [-1, 1]; "
+            "the ValueFn contract requires a normalized output"
+        )
+    return 0.5 * (value + 1.0)
 
 
 def _normalize_weights(
@@ -473,7 +503,14 @@ def _normalize_weights(
     return {k: v / total for k, v in exps.items()}
 
 
-def _rollout(sim: _Simulator, decision: Decision, cfg: SearchConfig, value_fn: ValueFn) -> float:
+def _rollout(
+    sim: _Simulator,
+    decision: Decision,
+    cfg: SearchConfig,
+    value_fn: ValueFn,
+    *,
+    cutoff_observer: CutoffObserver | None = None,
+) -> float:
     """Default-policy playout from `decision` until the round-count cutoff."""
     start_round = sim.state.round
     while not decision.is_terminal and (sim.state.round - start_round) < cfg.cutoff_rounds:
@@ -488,8 +525,12 @@ def _rollout(sim: _Simulator, decision: Decision, cfg: SearchConfig, value_fn: V
             selection = sim.default_policy.choose_input(sim.state, request)
             decision = sim.advance(InputResponse(request_id=request.id, selection=selection))
     if decision.is_terminal:
-        return _terminal_value(decision.winner, sim.our_team)
-    return _squash(value_fn(sim.state, sim.our_team), cfg.value_scale)
+        return terminal_reward(decision.winner, sim.our_team)
+    active_value = value_fn(sim.state, sim.our_team)
+    reward = _value_to_reward(active_value)
+    if cutoff_observer is not None:
+        cutoff_observer(sim.state, sim.our_team, active_value)
+    return reward
 
 
 # --------------------------------------------------------------------------- #
@@ -534,6 +575,8 @@ def _simulate(
     rng: random.Random,
     value_fn: ValueFn,
     prior: PolicyLike | None = None,
+    *,
+    cutoff_observer: CutoffObserver | None = None,
 ) -> None:
     """One ISMCTS iteration on a fresh determinized clone (mutated in place).
 
@@ -568,7 +611,13 @@ def _simulate(
             node = child
             path.append(child)
             decision = sim.apply_ours(decision, key)
-            value = _rollout(sim, decision, cfg, value_fn)  # evaluate freshly expanded leaf
+            value = _rollout(
+                sim,
+                decision,
+                cfg,
+                value_fn,
+                cutoff_observer=cutoff_observer,
+            )  # evaluate freshly expanded leaf
             break
 
         priors = _normalize_weights(pol.weights, legal) if pol is not None else None
@@ -579,7 +628,7 @@ def _simulate(
         decision = sim.apply_ours(decision, key)
 
     if value is None:
-        value = _terminal_value(decision.winner, our_team)
+        value = terminal_reward(decision.winner, our_team)
 
     for n in path:
         n.update(value)
@@ -602,6 +651,7 @@ def search(
     value_fn: ValueFn | None = None,
     *,
     root_target: RootTarget,
+    cutoff_observer: CutoffObserver | None = None,
 ) -> SearchResult:
     """Run ISMCTS anchored to ``root_target`` and return its robust child.
 
@@ -672,6 +722,7 @@ def search(
             rng,
             value,
             prior,
+            cutoff_observer=cutoff_observer,
         )
 
     # Robust child: most-visited legal root action (ties -> highest Q).

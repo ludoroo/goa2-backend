@@ -11,7 +11,7 @@ from .driver import (
     inspect_next_decision,
 )
 from .effects import register_all_effects
-from .harness import DEFAULT_MAP, RunResult, run_game
+from .harness import DEFAULT_MAP, RunResult, continue_game, run_game
 from .trajectory import (
     InMemoryRecorder,
     JsonlRecorder,
@@ -31,6 +31,7 @@ __all__ = [
     "TrajectoryRecorder",
     "apply_decision",
     "clone_state",
+    "continue_game",
     "determinize",
     "inspect_next_decision",
     "register_all_effects",

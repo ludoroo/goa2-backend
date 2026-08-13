@@ -106,7 +106,7 @@ use the same hand-crafted `HeuristicValue` / `HeuristicPrior` established at
 Rung 0. Improving strength further is orthogonal to server plumbing and stays
 on the ladder below.
 
-### Rung 1 — Squeeze the search (no learning). **← next**
+### Rung 1 — Squeeze the search (no learning)
 Cheap, high-confidence wins before any ML:
 1. **PUCT selection.** Use `PolicyResult.weights` as prior `P(a)` in the UCB
    term: `Q(a) + c·P(a)·√N_parent/(1+N(a))`. Today the prior only orders
@@ -136,14 +136,69 @@ Cheap, high-confidence wins before any ML:
 3. **Tune** `iterations`, `cutoff_rounds`, `uct_c`/`puct_c`, widening via the
    matrix. Gate: search strength must not regress. **TODO.**
 
-### Rung 2 — Learned value function
-1. Generate self-play trajectories (`JsonlRecorder`) at scale.
-2. Build a training-data loader that joins decision rows → game outcome, over
-   `feature_vector` (or raw snapshot → features offline).
-3. Fit a model (start **logistic / linear**, then GBM) predicting win prob;
-   wrap as `LearnedValue(ValueFn)`.
-4. Gate: `ISMCTSAgent(value_fn=LearnedValue)` must beat `HeuristicValue` search
-   on the matrix.
+### Rung 2 — Learned value function. **← active**
+1. **DONE — normalized value seam.** `ValueFn` now returns `[-1, 1]` from the
+   acting team's perspective. `HeuristicValue` owns its `tanh(score / scale)`
+   conversion; search maps any valid value exactly once to `[0, 1]`. This is
+   compatible with logistic log-odds today and a direct tanh NN head later.
+2. **DONE — compact data pipeline.** Benchmark-roster Heuristic self-play writes
+   six-feature decision rows and terminal labels without full `GameState`
+   snapshots. Generation is deterministic by world seed and discards incomplete
+   games. The trainer splits by game, weights every game equally, and keeps
+   scikit-learn in a training-only dependency group.
+3. **DONE — portable model seam.** Logistic and gradient-boosted-tree training
+   export versioned JSON; dependency-free `LearnedValue` validates
+   feature/roster compatibility and returns `tanh(raw_score / 2)`. Targeted
+   evaluation hashes the artifact into its checkpoint identity and verifies it
+   again before each spawned game.
+4. **FAILED — first logistic candidate.** Trained on 60 Heuristic-vs-Heuristic
+   games (seeds 1000–1059; 70,500 decision rows; 42/9/9 game split). Held-out
+   metrics looked strong: accuracy **93.2%**, log-loss **0.158**, Brier **0.041**,
+   ECE **0.056**. At equal search budget against `HeuristicValue`, however, the
+   learned model scored **3-9 (25%)** over 6 paired evaluation seeds, Wilson 95%
+   CI **[8.9%, 53.2%]**, with no timeout or max-step games. It fails both gates
+   and is not promoted.
+5. **DONE — cutoff-state diagnosis.** A read-only observer recorded 6,521 exact
+   non-terminal states where learned search queried its value function. The
+   telemetry rerun reproduced the same 3-9 outcome, confirming no observer
+   effect. Learned and heuristic values were negatively correlated
+   (**-0.318**), disagreed in sign **54.0%** of the time, and differed by
+   **0.993** on average despite the normalized `[-1, 1]` range. Learned outputs
+   saturated at `|v| >= 0.95` on **65.8%** of queries versus **0%** for the
+   heuristic. **58.5%** of cutoff rows had at least one feature beyond 3 training
+   standard deviations; `level_diff` was the clearest shift (p95 `|z|` **5.28**,
+   max **8.79**), followed by `push_diff` (p95 **3.32**). The problem was worse
+   when learned A controlled RED: correlation **-0.581**, saturation **71.0%**,
+   OOD **70.1%**, sign disagreement **61.1%**. This confirms severe distribution
+   shift and logistic overconfidence, not merely insufficient row count.
+6. **DONE — terminal-labelled cutoff data.** A deterministic sampler clones
+   sparse cutoff states and continues each clone to terminal under fresh
+   Heuristic policies, with independent RNG, step/round caps, durable sample IDs,
+   and source-game-grouped splits. At 12 source games (84 labels), cutoff
+   logistic still opened 1-3; cutoff GBM completed 2-9 with one timeout. At 36
+   games (264 labels), logistic reached **6-6** over the full gate. At 72 source
+   games (548 labels), offline logistic improved to accuracy **83.2%**, log-loss
+   **0.461**, Brier **0.146**, ECE **0.099**; search reached **6-5** in decisive
+   games but had one timeout, so both gates still failed. This learning curve
+   confirms correct-distribution labels help substantially, but six features
+   plateau near parity.
+7. **FAILED — richer features and GBM.** Added an explicit backward-compatible
+   `rich-v1` schema with 24 absolute composition, card-zone, battle-presence,
+   progress, round, and wave features, plus portable pure-Python GBM inference.
+   A review found and fixed an initial card-count bug that omitted each team's
+   second hero; those first artifacts were invalidated and regenerated. On 36
+   corrected rich-labelled source games (281 labels), held-out metrics were
+   still nearly perfect (logistic accuracy **97.5%**, GBM **100%**). Corrected
+   rich GBM opened 3-1 but collapsed to **3-9** over the full 12-case gate, with
+   no timeout/max-step games. This is source-game overfit / noisy
+   single-continuation targets, not evidence for more model capacity. No rich
+   model was promoted.
+8. **Next experiment.** Replace one-shot binary cutoff labels with multiple
+   independent continuations per sampled state and train against empirical win
+   probability (or a regressor on normalized expected value). Keep splits by
+   source game and measure label variance before considering a neural network.
+   Gate remains: equal-budget `ISMCTSAgent(value_fn=LearnedValue)` must beat
+   `HeuristicValue` search with no timeout/max-step cases.
 
 ### Rung 3 — Learned policy prior
 1. From the same trajectories, learn `P(move | state)` (state → chosen key).
@@ -162,11 +217,15 @@ become the net heads.
   minions + partial hexes). Could later serve as a Round-1 policy prior, but
   positioning extraction stalled (~55% auto-resolved). Parked; revisit only if a
   Round-1-specific prior is wanted.
-- No ML infra until Rung 2 evidence justifies it.
+- No neural-network infrastructure until lower-capacity models have reliable
+  multi-continuation targets and still plateau.
 
 ## Known issues
 
-- None outstanding. The previously-noted pre-existing nits are fixed: the
+- The offline cutoff generator now has step/round caps, resumable source-game
+  checkpoints, and a POSIX wall-clock timer. This was added after seed 2060
+  stalled inside one search decision for more than seven hours.
+- The previously-noted pre-existing nits are fixed: the
   `heuristic_agent.py` `_qrs` mypy `assignment` error (disambiguated the dict vs
   object-attr locals) and the ruff `__all__`/import-sort issues in
   `agents/__init__.py` and older `tests/ai/*` files. `mypy src/automata` and

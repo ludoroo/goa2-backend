@@ -63,7 +63,7 @@ class CheckpointBusyError(ValueError):
     """
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class AgentSpec:
     """Serializable specification of one agent under test.
 
@@ -75,8 +75,32 @@ class AgentSpec:
     kind: str
     params: dict[str, Any] = field(default_factory=dict)
 
+    def __init__(
+        self,
+        name: str,
+        kind: str,
+        params: dict[str, Any] | None = None,
+        cutoff_telemetry_path: str | None = None,
+    ) -> None:
+        runtime_params = dict(params or {})
+        if cutoff_telemetry_path is not None:
+            runtime_params["cutoff_telemetry_path"] = cutoff_telemetry_path
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "params", runtime_params)
+
+    @property
+    def cutoff_telemetry_path(self) -> str | None:
+        """Runtime telemetry destination, excluded from protocol identity."""
+        path = self.params.get("cutoff_telemetry_path")
+        return str(path) if path is not None else None
+
     def identity(self) -> dict[str, Any]:
-        return {"name": self.name, "kind": self.kind, "params": dict(self.params)}
+        # Runtime location is not experiment identity: identical artifact
+        # content must resume across machines and checkout paths.
+        runtime_only = {"value_model_path", "cutoff_telemetry_path"}
+        params = {key: value for key, value in self.params.items() if key not in runtime_only}
+        return {"name": self.name, "kind": self.kind, "params": params}
 
 
 @dataclass(frozen=True)

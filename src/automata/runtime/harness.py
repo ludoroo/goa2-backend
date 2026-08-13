@@ -162,6 +162,17 @@ def _winner_from(result: SessionResult | None, state: GameState) -> str | None:
     return None
 
 
+def _stabilize_runtime_ids(state: GameState, result: SessionResult | None, tick: int) -> None:
+    """Canonicalize process-local IDs created while driving a deterministic run."""
+    for index, step in enumerate(state.execution_stack):
+        step.step_id = f"harness-{tick}-{index}"
+    if result is not None and result.input_request is not None:
+        request_id = f"harness-request-{tick}"
+        result.input_request.id = request_id
+        if state.execution_stack:
+            state.execution_stack[-1].pending_request_id = request_id
+
+
 def run_game(
     red_heroes: list[str],
     blue_heroes: list[str],
@@ -171,6 +182,7 @@ def run_game(
     game_type: str = "QUICK",
     seed: int = 0,
     max_steps: int = 20_000,
+    max_rounds: int | None = None,
     recorder: TrajectoryRecorder | None = None,
 ) -> RunResult:
     """Play one game to completion; return the outcome.
@@ -187,7 +199,6 @@ def run_game(
     when absent.
     """
     register_all_effects()
-    rec: TrajectoryRecorder = recorder if recorder is not None else NullRecorder()
     state = GameSetup.create_game(
         map_path=map_path,
         red_heroes=red_heroes,
@@ -195,26 +206,65 @@ def run_game(
         game_type=game_type,
         seed=seed,
     )
+    return continue_game(
+        state,
+        agents,
+        max_steps=max_steps,
+        max_rounds=max_rounds,
+        recorder=recorder,
+    )
+
+
+def continue_game(
+    state: GameState,
+    agents: Mapping[str, Agent],
+    *,
+    max_steps: int = 20_000,
+    max_rounds: int | None = None,
+    recorder: TrajectoryRecorder | None = None,
+) -> RunResult:
+    """Continue ``state`` in place until completion or a configured cap.
+
+    ``max_rounds`` is relative to the state's round when continuation starts.
+    A paused non-planning state is resumed by asking its new
+    :class:`GameSession` to surface the current pending request.
+    """
+    register_all_effects()
+    rec: TrajectoryRecorder = recorder if recorder is not None else NullRecorder()
     _validate_agent_coverage(state, agents)
+
+    # A step cap may land on the commit that closes planning. Keep that
+    # planning checkpoint observable to callers, then discard it when the
+    # already-transitioned state is continued again.
+    if state.execution_context.pop("harness_planning_checkpoint", None):
+        state.pending_inputs = {}
 
     session = GameSession(state)
 
     steps = 0
     last_result: SessionResult | None = None
+    round_limit = state.round + max_rounds if max_rounds is not None else None
+    planning_checkpoint: dict[Any, Any] | None = None
+
+    def finish(winner: str | None, reason: str) -> RunResult:
+        rec.record_outcome(winner=winner, rounds=state.round, reason=reason)
+        return RunResult(
+            winner=winner,
+            rounds=state.round,
+            turns=state.turn,
+            steps=steps,
+            reason=reason,
+        )
 
     while steps < max_steps:
         steps += 1
+        planning_checkpoint = None
 
         if state.phase == GamePhase.GAME_OVER:
             winner = _winner_from(last_result, state)
-            rec.record_outcome(winner=winner, rounds=state.round, reason="game_over")
-            return RunResult(
-                winner=winner,
-                rounds=state.round,
-                turns=state.turn,
-                steps=steps,
-                reason="game_over",
-            )
+            return finish(winner, "game_over")
+        if round_limit is not None and state.round >= round_limit:
+            return finish(None, "max_rounds")
 
         decision = inspect_next_decision(state, agents, last_result)
 
@@ -228,38 +278,31 @@ def run_game(
             # than livelock.
             if state.phase == GamePhase.PLANNING:
                 raise RuntimeError(
-                    "run_game: no bot decision available during PLANNING but "
+                    "continue_game: no bot decision available during PLANNING but "
                     "the game requires progress; coverage was validated at "
                     "setup, so this indicates a driver contract bug"
                 )
             last_result = session.advance()
+            _stabilize_runtime_ids(state, last_result, steps)
             if last_result.result_type is SessionResultType.GAME_OVER:
                 winner = _winner_from(last_result, state)
-                rec.record_outcome(winner=winner, rounds=state.round, reason="game_over")
-                return RunResult(
-                    winner=winner,
-                    rounds=state.round,
-                    turns=state.turn,
-                    steps=steps,
-                    reason="game_over",
-                )
+                return finish(winner, "game_over")
             continue
 
         _record_decision(rec, state, decision)
+        if state.phase == GamePhase.PLANNING and decision.kind is DecisionKind.PLANNING:
+            planning_checkpoint = dict(state.pending_inputs)
+            plan = decision.planning
+            if plan is not None:
+                planning_checkpoint[decision.hero_id] = plan.card
         last_result = apply_decision(session, decision)
+        _stabilize_runtime_ids(state, last_result, steps)
 
         if last_result.result_type is SessionResultType.GAME_OVER:
             winner = _winner_from(last_result, state)
-            rec.record_outcome(winner=winner, rounds=state.round, reason="game_over")
-            return RunResult(
-                winner=winner,
-                rounds=state.round,
-                turns=state.turn,
-                steps=steps,
-                reason="game_over",
-            )
+            return finish(winner, "game_over")
 
-    rec.record_outcome(winner=None, rounds=state.round, reason="max_steps")
-    return RunResult(
-        winner=None, rounds=state.round, turns=state.turn, steps=steps, reason="max_steps"
-    )
+    if planning_checkpoint is not None and state.phase != GamePhase.PLANNING:
+        state.pending_inputs = planning_checkpoint
+        state.execution_context["harness_planning_checkpoint"] = True
+    return finish(None, "max_steps")
