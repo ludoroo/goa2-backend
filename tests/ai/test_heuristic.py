@@ -140,6 +140,47 @@ def _select_unit(unit_ids: list[str]) -> InputRequest:
     )
 
 
+def _defense_request(options: list[InputOption]) -> InputRequest:
+    return InputRequest(
+        request_type=InputRequestType.SELECT_CARD_OR_PASS,
+        player_id="hero_test",
+        options=options,
+    )
+
+
+def test_heuristic_scores_computed_defense_from_public_option_metadata() -> None:
+    agent = HeuristicAgent(seed=0)
+    option = InputOption(
+        id="shield",
+        text="Shield (Def: 6)",
+        metadata={"defense_value": 6, "base_defense": 3},
+    )
+
+    assert agent.score_option(_stub_state(), _defense_request([option]), option) == 6.0
+
+
+def test_heuristic_chooses_strongest_computed_defense_over_order_and_pass() -> None:
+    request = _defense_request(
+        [
+            InputOption(id="weak", text="Weak (Def: 2)", metadata={"defense_value": 2}),
+            InputOption(id="strong", text="Strong (Def: 7)", metadata={"defense_value": 7}),
+            InputOption(id="PASS", text="PASS"),
+        ]
+    )
+
+    assert HeuristicAgent(seed=0).choose_input(_stub_state(), request) == "strong"
+
+
+@pytest.mark.parametrize("metadata", [{}, {"defense_value": None}, {"defense_value": "invalid"}])
+def test_heuristic_defaults_missing_or_malformed_defense_metadata(
+    metadata: dict[str, object],
+) -> None:
+    agent = HeuristicAgent(seed=0)
+    option = InputOption(id="unknown", text="Unknown defense", metadata=metadata)
+
+    assert agent.score_option(_stub_state(), _defense_request([option]), option) == 0.0
+
+
 def test_heuristic_choose_input_returns_int_for_select_number() -> None:
     agent = HeuristicAgent(seed=0)
     # Heuristic picks the largest number (SELECT_NUMBER scorer). The point of

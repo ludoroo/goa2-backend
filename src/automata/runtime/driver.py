@@ -251,6 +251,7 @@ def _call_choose_input(
     state: GameState,
     request: InputRequest,
     owned_hero_ids: frozenset[str],
+    decision_owner_hero_id: str,
 ) -> Any:
     """Call ``agent.choose_input`` with the required ``owned_hero_ids`` set.
 
@@ -260,7 +261,12 @@ def _call_choose_input(
     raise :class:`TypeError` here — that is the correct signal for a
     protocol violation, not something to paper over.
     """
-    return agent.choose_input(state, request, owned_hero_ids=owned_hero_ids)
+    return agent.choose_input(
+        state,
+        request,
+        owned_hero_ids=owned_hero_ids,
+        decision_owner_hero_id=decision_owner_hero_id,
+    )
 
 
 def _pending_request_from_result(result: SessionResult | None) -> InputRequest | None:
@@ -622,7 +628,13 @@ def _inspect_input_request(
         owner_hero_id = next(hid for hid in eligible if hid in bot_hero_ids)
         scoped_request = _filter_upgrade_request_to_bots(request, bot_hero_ids)
         agent = agents[owner_hero_id]
-        selection = _call_choose_input(agent, state, scoped_request, frozenset(bot_hero_ids))
+        selection = _call_choose_input(
+            agent,
+            state,
+            scoped_request,
+            frozenset(bot_hero_ids),
+            owner_hero_id,
+        )
         if selection is None:
             # Legacy UPGRADE_PHASE convention: agent may abstain this tick
             # by returning None. Validation is skipped because the driver
@@ -651,7 +663,7 @@ def _inspect_input_request(
     # backed agents will not anchor to a still-uncommitted human teammate.
     owned = frozenset(hid for hid in eligible if hid in agents)
     agent = agents[owner_hero_id]
-    selection = _call_choose_input(agent, state, request, owned)
+    selection = _call_choose_input(agent, state, request, owned, owner_hero_id)
     _validate_input_selection(request, selection, owner_hero_id)
     return BotDecision(
         kind=DecisionKind.INPUT,

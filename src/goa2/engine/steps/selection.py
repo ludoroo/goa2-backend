@@ -1176,6 +1176,7 @@ class RevealAndResolveGuessStep(GameStep):
             actual_color=actual_color,
             correct=is_correct,
         )
+        state.record_public_revealed_card(victim.id, str(target_card.id))
 
         return StepResult(
             is_finished=True,

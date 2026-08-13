@@ -25,6 +25,7 @@ from goa2.domain.models.card import Card
 from goa2.domain.models.unit import Hero
 from goa2.domain.state import GameState
 from goa2.domain.types import HeroID
+from goa2.engine.phases import planning_open_for_second_card
 
 from ..agents.base import Agent
 from ..agents.heuristic_agent import HeuristicAgent
@@ -94,7 +95,9 @@ class ISMCTSAgent:
         if not hero.hand:
             return None
         our_team = hero.team or TeamColor.RED
-        legal = [c.id for c in hero.hand]
+        legal: list[str | None] = [c.id for c in hero.hand]
+        if planning_open_for_second_card(state, HeroID(hero.id)):
+            legal.append(None)
 
         if owned_hero_ids is None:
             owned: frozenset[str] = frozenset({hero.id})
@@ -131,6 +134,7 @@ class ISMCTSAgent:
         request: InputRequest,
         *,
         owned_hero_ids: frozenset[str] | None = None,
+        decision_owner_hero_id: str | None = None,
     ) -> Any:
         """Answer an input ``request`` on behalf of the configured bot.
 
@@ -157,6 +161,13 @@ class ISMCTSAgent:
                 "ISMCTSAgent.choose_input requires a non-empty owned_hero_ids "
                 "set — the caller must name the bot's owned heroes explicitly"
             )
+        if decision_owner_hero_id is None:
+            raise ValueError("ISMCTSAgent.choose_input requires decision_owner_hero_id")
+        if decision_owner_hero_id not in owned_hero_ids:
+            raise ValueError("decision owner must be in owned_hero_ids")
+        owner = state.get_hero(HeroID(decision_owner_hero_id))
+        if owner is None or owner.team is None:
+            raise ValueError(f"unknown decision owner {decision_owner_hero_id!r}")
 
         pid = request.player_id
 
@@ -196,6 +207,9 @@ class ISMCTSAgent:
                     f"not control hero {pid!r} addressed by this request"
                 )
 
+        if pid != _SIMULTANEOUS_PLAYER_ID and owner.team != addressed_team:
+            raise ValueError("decision owner is not on the request's addressed team")
+
         # 4. Staleness — check BEFORE the non-branchable fallback so a stale
         # UPGRADE_PHASE-like request can't sneak through as "just a simultaneous
         # global answer".
@@ -229,10 +243,11 @@ class ISMCTSAgent:
             request_id=request.id,
             player_id=pid,
             owned_hero_ids=owned_hero_ids,
+            decision_owner_hero_id=decision_owner_hero_id,
         )
         result = search(
             state,
-            addressed_team,
+            owner.team,
             "INPUT",
             legal,
             self._policy,

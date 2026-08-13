@@ -32,6 +32,7 @@ class RandomAgent:
         request: InputRequest,
         *,
         owned_hero_ids: frozenset[str] | None = None,
+        decision_owner_hero_id: str | None = None,
     ) -> Any:  # pyright: ignore[reportUnusedParameter]
         # ``owned_hero_ids`` is accepted for Agent-protocol compatibility with
         # the runtime driver (see ``automata.agents.base.Agent``); a

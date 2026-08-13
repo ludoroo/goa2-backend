@@ -40,6 +40,7 @@ from goa2.domain.models.card import Card
 from goa2.domain.models.unit import Hero
 from goa2.domain.state import GameState
 from goa2.domain.types import HeroID
+from goa2.engine.phases import planning_open_for_second_card
 from goa2.engine.session import GameSession, SessionResultType
 
 from ..agents.base import Agent
@@ -60,6 +61,7 @@ class Decision:
     hero: Hero | None = None
     request: InputRequest | None = None
     winner: str | None = None
+    can_finish_planning: bool = False
 
     @property
     def is_terminal(self) -> bool:
@@ -114,6 +116,7 @@ class RootTarget:
 
     kind: RootKind
     owned_hero_ids: frozenset[str]
+    decision_owner_hero_id: str
     hero_id: str | None = None
     request_id: str | None = None
     player_id: str | None = None
@@ -121,6 +124,10 @@ class RootTarget:
     def __post_init__(self) -> None:
         if not self.owned_hero_ids:
             raise ValueError("RootTarget requires a non-empty owned_hero_ids set")
+        if not self.decision_owner_hero_id:
+            raise ValueError("RootTarget requires decision_owner_hero_id")
+        if self.decision_owner_hero_id not in self.owned_hero_ids:
+            raise ValueError("RootTarget decision owner must be in owned_hero_ids")
         if self.kind == "CARD":
             if self.hero_id is None:
                 raise ValueError("CARD RootTarget requires hero_id")
@@ -141,7 +148,12 @@ class RootTarget:
 
     @classmethod
     def card(cls, *, hero_id: str, owned_hero_ids: frozenset[str]) -> RootTarget:
-        return cls(kind="CARD", owned_hero_ids=owned_hero_ids, hero_id=hero_id)
+        return cls(
+            kind="CARD",
+            owned_hero_ids=owned_hero_ids,
+            decision_owner_hero_id=hero_id,
+            hero_id=hero_id,
+        )
 
     @classmethod
     def input(
@@ -150,10 +162,14 @@ class RootTarget:
         request_id: str,
         player_id: str,
         owned_hero_ids: frozenset[str],
+        decision_owner_hero_id: str | None = None,
     ) -> RootTarget:
+        if decision_owner_hero_id is None:
+            raise ValueError("INPUT RootTarget requires a decision owner")
         return cls(
             kind="INPUT",
             owned_hero_ids=owned_hero_ids,
+            decision_owner_hero_id=decision_owner_hero_id,
             request_id=request_id,
             player_id=player_id,
         )
@@ -261,7 +277,10 @@ def legal_keys(decision: Decision) -> list[Key]:
     if decision.kind == "CARD":
         hero = decision.hero
         assert hero is not None
-        return [c.id for c in hero.hand]  # empty hand -> forced pass, no branch
+        keys: list[Key] = [c.id for c in hero.hand]
+        if decision.can_finish_planning:
+            keys.append(None)
+        return keys  # empty hand -> forced pass, no branch
     if decision.kind == "INPUT":
         assert decision.request is not None
         return list(_input_raw_map(decision.request).keys())
@@ -306,7 +325,10 @@ class _Simulator:
     def _next_uncommitted(self) -> Hero | None:
         for team in self.state.teams.values():
             for hero in team.heroes:
-                if hero.id not in self.state.pending_inputs:
+                hid = HeroID(hero.id)
+                if planning_open_for_second_card(self.state, hid):
+                    return hero
+                if hid not in self.state.pending_inputs:
                     return hero
         return None
 
@@ -342,12 +364,15 @@ class _Simulator:
             if self.state.phase == GamePhase.PLANNING:
                 hero = self._next_uncommitted()
                 if hero is not None:
+                    second_card_window = planning_open_for_second_card(self.state, HeroID(hero.id))
                     if self._is_owned_hero(hero):
-                        return Decision("CARD", hero=hero)
+                        return Decision("CARD", hero=hero, can_finish_planning=second_card_window)
                     # Non-owned commit (teammate or opponent) = hidden sample
                     # via the default policy so it never becomes a root.
                     card = self.default_policy.choose_card(self.state, hero)
-                    if card is None or not hero.hand:
+                    if second_card_window and card is None:
+                        self.session.finish_planning(HeroID(hero.id))
+                    elif card is None or not hero.hand:
                         self.session.pass_turn(HeroID(hero.id))
                     else:
                         self.session.commit_card(HeroID(hero.id), card)
@@ -402,6 +427,20 @@ class _Simulator:
                     "does not exist in the current state"
                 )
 
+        owner = self.state.get_hero(HeroID(target.decision_owner_hero_id))
+        if owner is None:
+            raise RootMismatchError(
+                f"decision owner {target.decision_owner_hero_id!r} does not exist"
+            )
+        if owner.team != self.our_team:
+            raise RootMismatchError("decision owner team disagrees with value perspective")
+        if target.kind == "CARD" and target.hero_id != target.decision_owner_hero_id:
+            raise RootMismatchError("CARD target owner must be the targeted hero")
+        if target.kind == "INPUT" and target.player_id is not None:
+            addressed = _team_of_player(self.state, target.player_id)
+            if addressed is not None and owner.team != addressed:
+                raise RootMismatchError("decision owner is ineligible for addressed player/team")
+
         decision = self.advance()
         if decision.is_terminal:
             raise RootMismatchError(
@@ -429,7 +468,9 @@ class _Simulator:
             hero = decision.hero
             assert hero is not None
             card = _find_card(hero, key) if key is not None else None
-            if card is None or not hero.hand:
+            if planning_open_for_second_card(self.state, HeroID(hero.id)) and card is None:
+                self.session.finish_planning(HeroID(hero.id))
+            elif card is None or not hero.hand:
                 self.session.pass_turn(HeroID(hero.id))
             else:
                 self.session.commit_card(HeroID(hero.id), card)
@@ -584,7 +625,7 @@ def _simulate(
     exactly, else :class:`RootMismatchError` is raised — the search never
     silently descends from a mismatched root.
     """
-    world = determinize(root_state, our_team, rng)
+    world = determinize(root_state, root_target.decision_owner_hero_id, rng)
     sim = _Simulator(world, our_team, default_policy, owned_hero_ids=root_target.owned_hero_ids)
     # Strict root validation: surface EXACTLY the requested root or raise.
     decision = sim.advance_to_root(root_target)

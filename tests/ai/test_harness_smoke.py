@@ -44,6 +44,9 @@ from automata.runtime.driver import (
 )
 from automata.runtime.effects import register_all_effects
 from automata.runtime.harness import DEFAULT_MAP, run_game
+from automata.search import ISMCTSAgent, SearchConfig
+from automata.search.ismcts import SearchResult
+from automata.search.node import Node
 from goa2.domain.input import (
     InputOption,
     InputRequest,
@@ -173,6 +176,7 @@ class _StubAgent:
         request: InputRequest,
         *,
         owned_hero_ids: frozenset[str] | None = None,
+        decision_owner_hero_id: str | None = None,
     ) -> Any:
         self.calls.append(("choose_input", request.id))
         self.last_owned = owned_hero_ids
@@ -301,6 +305,31 @@ def test_emmitt_second_card_choose_card_maps_to_second_commit() -> None:
     assert decision.planning.card is second
     apply_decision(session, decision)
     assert HeroID(emmitt.id) in state.pending_second_cards
+
+
+def test_real_ismcts_can_finish_emmitt_second_card_window(monkeypatch) -> None:
+    """A searched FINISH key crosses the real agent and driver boundaries."""
+    state = _emmitt_state()
+    session = GameSession(state)
+    emmitt = state.teams[TeamColor.RED].heroes[0]
+    first = emmitt.hand[0]
+    session.commit_card(HeroID(emmitt.id), first)
+    captured: dict[str, Any] = {}
+
+    def choose_finish(*args: Any, **kwargs: Any) -> SearchResult:
+        captured["legal"] = list(args[3])
+        return SearchResult(Node(), None)
+
+    monkeypatch.setattr("automata.search.agent.search", choose_finish)
+    agent = ISMCTSAgent(SearchConfig(iterations=1, cutoff_rounds=1))
+
+    decision = inspect_next_decision(state, agents={emmitt.id: agent}, last_result=None)
+
+    assert captured["legal"] == [*[card.id for card in emmitt.hand], None]
+    assert decision is not None and decision.planning is not None
+    assert decision.planning.kind is PlanningKind.FINISH
+    apply_decision(session, decision)
+    assert HeroID(emmitt.id) in state.planning_done
 
 
 # --------------------------------------------------------------------------- #
@@ -461,6 +490,7 @@ def test_upgrade_phase_scoped_to_bot_owned_pending_heroes() -> None:
         request: InputRequest,
         *,
         owned_hero_ids: frozenset[str] | None = None,
+        decision_owner_hero_id: str | None = None,
     ) -> Any:
         seen_players.update(request.context.get("players") or {})
         return {"hero_id": wasp.id, "card_id": "w1"}
@@ -689,12 +719,8 @@ def test_driver_loop_completes_with_emmitt_level_8() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_driver_calls_real_agent_with_explicit_owned_hero_ids() -> None:
-    """The Agent protocol requires ``owned_hero_ids``. The driver must pass
-    it on every ``choose_input`` call — no signature probing, no legacy
-    shim. We use a real :class:`RandomAgent` (a stock agent following the
-    owned_hero_ids protocol) to prove the wiring is uniform end-to-end.
-    """
+def test_driver_calls_real_agent_with_ownership_and_decision_owner() -> None:
+    """The driver passes both routing ownership and the concrete responder."""
     state = _new_game(["Wasp"], ["Arien"])
     wasp = state.teams[TeamColor.RED].heroes[0]
     agent = RandomAgent(seed=0)
@@ -707,8 +733,10 @@ def test_driver_calls_real_agent_with_explicit_owned_hero_ids() -> None:
         request: InputRequest,
         *,
         owned_hero_ids: frozenset[str] | None = None,
+        decision_owner_hero_id: str | None = None,
     ) -> Any:
         seen["owned_hero_ids"] = owned_hero_ids
+        seen["decision_owner_hero_id"] = decision_owner_hero_id
         return original(state, request, owned_hero_ids=owned_hero_ids)
 
     agent.choose_input = spy  # type: ignore[method-assign]
@@ -719,6 +747,7 @@ def test_driver_calls_real_agent_with_explicit_owned_hero_ids() -> None:
     assert decision is not None
     # Real agent's kwarg was populated by the driver — never omitted.
     assert seen["owned_hero_ids"] == frozenset({wasp.id})
+    assert seen["decision_owner_hero_id"] == wasp.id
 
 
 def test_driver_raises_typeerror_if_agent_drops_owned_hero_ids_kwarg() -> None:
@@ -986,7 +1015,7 @@ def test_driver_rejects_illegal_input_selection_planning_path_regressed() -> Non
             fake.id = "not-in-hand-id"
             return fake
 
-        def choose_input(self, state, request, *, owned_hero_ids=None):
+        def choose_input(self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None):
             return None
 
     with pytest.raises(IllegalBotDecisionError):
@@ -1003,7 +1032,7 @@ def test_driver_rejects_illegal_input_selection() -> None:
         def choose_card(self, state, hero):
             return None
 
-        def choose_input(self, state, request, *, owned_hero_ids=None):
+        def choose_input(self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None):
             return "not-a-real-option-id"
 
     req = InputRequest(
@@ -1028,7 +1057,7 @@ def test_driver_rejects_skip_when_can_skip_false() -> None:
         def choose_card(self, state, hero):
             return None
 
-        def choose_input(self, state, request, *, owned_hero_ids=None):
+        def choose_input(self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None):
             return "SKIP"
 
     req = InputRequest(
@@ -1055,7 +1084,7 @@ def test_driver_accepts_legal_input_selection() -> None:
         def choose_card(self, state, hero):
             return None
 
-        def choose_input(self, state, request, *, owned_hero_ids=None):
+        def choose_input(self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None):
             return "hero_arien"
 
     req = InputRequest(
@@ -1104,7 +1133,7 @@ def test_driver_upgrade_phase_selection_bypasses_option_validation() -> None:
         def choose_card(self, state, hero):
             return None
 
-        def choose_input(self, state, request, *, owned_hero_ids=None):
+        def choose_input(self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None):
             # A well-shaped UPGRADE selection.
             return {"hero_id": "hero_wasp", "card_id": "basic_a"}
 

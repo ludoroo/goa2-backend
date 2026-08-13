@@ -28,6 +28,7 @@ from automata.search.ismcts import (
     RootTarget,
     _input_raw_map,
     _Simulator,
+    legal_keys,
     search,
 )
 from goa2.domain.hex import Hex
@@ -41,6 +42,8 @@ from goa2.domain.models import TeamColor
 from goa2.domain.models.card import Card
 from goa2.domain.models.unit import Hero
 from goa2.domain.state import GameState
+from goa2.domain.types import HeroID
+from goa2.engine.phases import commit_card
 from goa2.engine.setup import GameSetup
 
 RED = ["Wasp", "Xargatha"]
@@ -209,6 +212,7 @@ class _TrackingPolicy:
         request: InputRequest,
         *,
         owned_hero_ids: frozenset[str] | None = None,
+        decision_owner_hero_id: str | None = None,
     ) -> Any:
         self.handled_input_player_ids.append(request.player_id)
         return self._inner.choose_input(state, request)
@@ -377,7 +381,12 @@ def test_choose_input_raises_when_team_addressed_and_bot_ineligible() -> None:
         ],
     )
     with pytest.raises(ValueError):
-        agent.choose_input(state, req, owned_hero_ids=frozenset({"hero_arien"}))
+        agent.choose_input(
+            state,
+            req,
+            owned_hero_ids=frozenset({"hero_arien"}),
+            decision_owner_hero_id="hero_arien",
+        )
 
 
 def test_choose_input_raises_when_hero_scoped_and_bot_not_owner() -> None:
@@ -394,7 +403,12 @@ def test_choose_input_raises_when_hero_scoped_and_bot_not_owner() -> None:
     )
     with pytest.raises(ValueError):
         # Bot owns Brogan, not the addressed hero.
-        agent.choose_input(state, req, owned_hero_ids=frozenset({"hero_brogan"}))
+        agent.choose_input(
+            state,
+            req,
+            owned_hero_ids=frozenset({"hero_brogan"}),
+            decision_owner_hero_id="hero_brogan",
+        )
 
 
 def test_choose_input_raises_on_empty_ownership() -> None:
@@ -405,7 +419,9 @@ def test_choose_input_raises_on_empty_ownership() -> None:
     agent = ISMCTSAgent(_tiny_cfg())
     req = _unit_request(["hero_arien", "hero_brogan"])
     with pytest.raises(ValueError):
-        agent.choose_input(state, req, owned_hero_ids=frozenset())
+        agent.choose_input(
+            state, req, owned_hero_ids=frozenset(), decision_owner_hero_id="hero_wasp"
+        )
 
 
 def test_choose_input_accepts_team_request_when_bot_eligible() -> None:
@@ -441,7 +457,12 @@ def test_choose_input_accepts_team_request_when_bot_eligible() -> None:
     real_search = agent_mod.search
     agent_mod.search = _stub_search  # type: ignore[assignment]
     try:
-        result = agent.choose_input(state, req, owned_hero_ids=frozenset({"hero_wasp"}))
+        result = agent.choose_input(
+            state,
+            req,
+            owned_hero_ids=frozenset({"hero_wasp"}),
+            decision_owner_hero_id="hero_wasp",
+        )
     finally:
         agent_mod.search = real_search  # type: ignore[assignment]
 
@@ -484,6 +505,56 @@ def test_all_ai_self_play_still_completes() -> None:
     assert r.reason in ("game_over", "max_steps")
 
 
+def test_simulator_surfaces_emmitt_second_card_window() -> None:
+    register_all_effects()
+    state = GameSetup.create_game(DEFAULT_MAP, ["Emmitt"], ["Wasp"], game_type="QUICK", seed=2)
+    emmitt = state.teams[TeamColor.RED].heroes[0]
+    emmitt.level = 8
+    first = emmitt.hand[0]
+    commit_card(state, HeroID(emmitt.id), first)
+    sim = _Simulator(
+        state,
+        TeamColor.RED,
+        _default_policy(),
+        owned_hero_ids=frozenset({emmitt.id}),
+    )
+
+    decision = sim.advance()
+
+    assert decision.kind == "CARD"
+    assert decision.hero is not None and decision.hero.id == emmitt.id
+    assert legal_keys(decision) == [*[card.id for card in emmitt.hand], None]
+    assert first.id not in legal_keys(decision)
+
+
+def test_ordinary_card_decision_does_not_offer_finish() -> None:
+    state = _fresh_planning_state()
+    hero = _red_heroes(state)[0]
+
+    assert legal_keys(Decision("CARD", hero=hero)) == [card.id for card in hero.hand]
+
+
+def test_search_accepts_finish_as_emmitt_second_card_action() -> None:
+    register_all_effects()
+    state = GameSetup.create_game(DEFAULT_MAP, ["Emmitt"], ["Wasp"], game_type="QUICK", seed=2)
+    emmitt = state.teams[TeamColor.RED].heroes[0]
+    emmitt.level = 8
+    commit_card(state, HeroID(emmitt.id), emmitt.hand[0])
+    legal = [*[card.id for card in emmitt.hand], None]
+
+    result = search(
+        state,
+        TeamColor.RED,
+        "CARD",
+        legal,
+        _default_policy(),
+        _tiny_cfg(),
+        root_target=RootTarget.card(hero_id=emmitt.id, owned_hero_ids=frozenset({emmitt.id})),
+    )
+
+    assert result.best_key in legal
+
+
 # --------------------------------------------------------------------------- #
 # RootTarget / strict root validation.
 #
@@ -505,6 +576,92 @@ def test_root_target_card_requires_hero_in_owned() -> None:
     construction stops the bug from leaking into the search."""
     with pytest.raises(ValueError):
         RootTarget.card(hero_id="hero_wasp", owned_hero_ids=frozenset({"hero_xargatha"}))
+
+
+def test_root_target_card_owner_is_the_deciding_hero() -> None:
+    target = RootTarget.card(
+        hero_id="hero_wasp",
+        owned_hero_ids=frozenset({"hero_wasp", "hero_xargatha"}),
+    )
+    assert target.decision_owner_hero_id == "hero_wasp"
+
+
+def test_root_target_input_requires_explicit_decision_owner() -> None:
+    with pytest.raises(ValueError, match="decision owner"):
+        RootTarget.input(
+            request_id="r1",
+            player_id="team:RED",
+            owned_hero_ids=frozenset({"hero_wasp"}),
+            decision_owner_hero_id=None,
+        )
+
+
+def test_choose_input_rejects_owner_from_wrong_team() -> None:
+    state = _fresh_planning_state()
+    req = InputRequest(
+        request_type=InputRequestType.SELECT_UNIT,
+        player_id="team:RED",
+        options=[InputOption(id="hero_wasp", text="Wasp")],
+    )
+    state.input_stack.append(req)
+
+    with pytest.raises(ValueError, match="owner"):
+        ISMCTSAgent(_tiny_cfg()).choose_input(
+            state,
+            req,
+            owned_hero_ids=frozenset({"hero_wasp", "hero_arien"}),
+            decision_owner_hero_id="hero_arien",
+        )
+
+
+def test_choose_input_threads_concrete_owner_separately_from_owned_set(monkeypatch) -> None:
+    import automata.search.agent as agent_mod
+    from automata.search.ismcts import SearchResult
+    from automata.search.node import Node
+
+    captured: dict[str, RootTarget] = {}
+
+    def stub(*args: Any, **kwargs: Any) -> SearchResult:
+        captured["target"] = kwargs["root_target"]
+        return SearchResult(Node(), args[3][0])
+
+    monkeypatch.setattr(agent_mod, "search", stub)
+    state = _fresh_planning_state()
+    req = InputRequest(
+        request_type=InputRequestType.SELECT_UNIT,
+        player_id="team:RED",
+        options=[InputOption(id="hero_wasp", text="Wasp")],
+    )
+    state.input_stack.append(req)
+    ISMCTSAgent(_tiny_cfg()).choose_input(
+        state,
+        req,
+        owned_hero_ids=frozenset({"hero_wasp", "hero_xargatha"}),
+        decision_owner_hero_id="hero_xargatha",
+    )
+
+    target = captured["target"]
+    assert target.decision_owner_hero_id == "hero_xargatha"
+    assert target.owned_hero_ids == frozenset({"hero_wasp", "hero_xargatha"})
+
+
+def test_multi_owned_search_values_from_decision_owner_team() -> None:
+    state = _fresh_planning_state()
+    reds = _red_heroes(state)
+    seen: list[TeamColor] = []
+
+    def value_fn(state: GameState, team: TeamColor) -> float:
+        seen.append(team)
+        return 0.0
+
+    ISMCTSAgent(_tiny_cfg(), value_fn=value_fn).choose_card(
+        state,
+        reds[0],
+        owned_hero_ids=frozenset(hero.id for hero in reds),
+    )
+
+    assert seen
+    assert set(seen) == {TeamColor.RED}
 
 
 def test_root_target_rejects_empty_ownership() -> None:
@@ -549,6 +706,7 @@ def test_simulator_advance_to_root_raises_on_kind_mismatch() -> None:
         request_id=fake_req.id,
         player_id=bot_hero.id,
         owned_hero_ids=frozenset({bot_hero.id}),
+        decision_owner_hero_id=bot_hero.id,
     )
     sim = _Simulator(
         state,
@@ -571,6 +729,7 @@ def test_simulator_advance_to_root_raises_on_stale_request_id() -> None:
         request_id="stale-not-real",
         player_id=bot_hero.id,
         owned_hero_ids=frozenset({bot_hero.id}),
+        decision_owner_hero_id=bot_hero.id,
     )
     sim = _Simulator(
         state,
@@ -712,7 +871,12 @@ def test_choose_input_exact_request_id_is_threaded_into_root_target() -> None:
     real_search = agent_mod.search
     agent_mod.search = _capturing_search  # type: ignore[assignment]
     try:
-        result = agent.choose_input(state, req, owned_hero_ids=frozenset({"hero_wasp"}))
+        result = agent.choose_input(
+            state,
+            req,
+            owned_hero_ids=frozenset({"hero_wasp"}),
+            decision_owner_hero_id="hero_wasp",
+        )
     finally:
         agent_mod.search = real_search  # type: ignore[assignment]
 
@@ -771,6 +935,7 @@ def test_root_target_matches_rejects_wrong_player_id() -> None:
         request_id=req.id,
         player_id="hero_wasp",  # target expects hero-scoped
         owned_hero_ids=frozenset({"hero_wasp"}),
+        decision_owner_hero_id="hero_wasp",
     )
     decision = Decision("INPUT", request=req)  # request is team-scoped
     assert not target.matches(decision)
@@ -780,6 +945,7 @@ def test_root_target_matches_rejects_wrong_player_id() -> None:
         request_id=req.id,
         player_id="team:RED",
         owned_hero_ids=frozenset({"hero_wasp"}),
+        decision_owner_hero_id="hero_wasp",
     )
     assert matched_target.matches(decision)
 
@@ -817,6 +983,7 @@ def test_search_validates_root_target_before_singleton_early_return_input() -> N
         request_id="stale-not-in-state",
         player_id=bot_hero.id,
         owned_hero_ids=frozenset({bot_hero.id}),
+        decision_owner_hero_id=bot_hero.id,
     )
     with pytest.raises(RootMismatchError):
         search(
@@ -1015,6 +1182,7 @@ def test_search_singleton_input_root_legal_disagrees_raises() -> None:
         request_id=req.id,
         player_id=bot_hero.id,
         owned_hero_ids=frozenset({bot_hero.id}),
+        decision_owner_hero_id=bot_hero.id,
     )
     with pytest.raises((RootMismatchError, ValueError)):
         search(
@@ -1051,7 +1219,12 @@ def test_choose_input_checks_freshness_before_non_branchable_fallback() -> None:
     assert stale.id != active.id
     agent = ISMCTSAgent(_tiny_cfg())
     with pytest.raises(ValueError):
-        agent.choose_input(state, stale, owned_hero_ids=frozenset({"hero_wasp"}))
+        agent.choose_input(
+            state,
+            stale,
+            owned_hero_ids=frozenset({"hero_wasp"}),
+            decision_owner_hero_id="hero_wasp",
+        )
 
 
 def test_choose_input_non_branchable_fallback_only_for_simultaneous() -> None:
@@ -1072,7 +1245,12 @@ def test_choose_input_non_branchable_fallback_only_for_simultaneous() -> None:
     )
     agent = ISMCTSAgent(_tiny_cfg())
     with pytest.raises(ValueError):
-        agent.choose_input(state, weird, owned_hero_ids=frozenset({bot_hero.id}))
+        agent.choose_input(
+            state,
+            weird,
+            owned_hero_ids=frozenset({bot_hero.id}),
+            decision_owner_hero_id=bot_hero.id,
+        )
 
 
 def test_choose_input_non_branchable_simultaneous_still_fallback() -> None:
@@ -1097,11 +1275,17 @@ def test_choose_input_non_branchable_simultaneous_still_fallback() -> None:
             request: InputRequest,
             *,
             owned_hero_ids: frozenset[str] | None = None,
+            decision_owner_hero_id: str | None = None,
         ) -> Any:
             return sentinel
 
     agent = ISMCTSAgent(_tiny_cfg(), default_policy=_StubPolicy())
-    result = agent.choose_input(state, request, owned_hero_ids=frozenset({"hero_wasp"}))
+    result = agent.choose_input(
+        state,
+        request,
+        owned_hero_ids=frozenset({"hero_wasp"}),
+        decision_owner_hero_id="hero_wasp",
+    )
     assert result is sentinel
 
 
@@ -1150,7 +1334,12 @@ def test_ismcts_choose_input_returns_int_for_select_number(
     # ``action_key`` on an int is the int itself — so the raw_map key is 2.
     _stub_ismcts_search_return_key(monkeypatch, 2)
     agent = ISMCTSAgent(_tiny_cfg())
-    result = agent.choose_input(state, req, owned_hero_ids=frozenset({"hero_wasp"}))
+    result = agent.choose_input(
+        state,
+        req,
+        owned_hero_ids=frozenset({"hero_wasp"}),
+        decision_owner_hero_id="hero_wasp",
+    )
     assert isinstance(result, int)
     assert result == 2
 
@@ -1175,7 +1364,12 @@ def test_ismcts_choose_input_returns_hex_dict_for_select_hex(
     picked_key = action_key(picked_hex)
     _stub_ismcts_search_return_key(monkeypatch, picked_key)
     agent = ISMCTSAgent(_tiny_cfg())
-    result = agent.choose_input(state, req, owned_hero_ids=frozenset({"hero_wasp"}))
+    result = agent.choose_input(
+        state,
+        req,
+        owned_hero_ids=frozenset({"hero_wasp"}),
+        decision_owner_hero_id="hero_wasp",
+    )
     assert isinstance(result, dict)
     assert result == picked_hex
 
@@ -1195,7 +1389,12 @@ def test_ismcts_choose_input_returns_string_id_for_select_unit(
     _prepare_input_state(state, req)
     _stub_ismcts_search_return_key(monkeypatch, "hero_brogan")
     agent = ISMCTSAgent(_tiny_cfg())
-    result = agent.choose_input(state, req, owned_hero_ids=frozenset({"hero_wasp"}))
+    result = agent.choose_input(
+        state,
+        req,
+        owned_hero_ids=frozenset({"hero_wasp"}),
+        decision_owner_hero_id="hero_wasp",
+    )
     assert isinstance(result, str)
     assert result == "hero_brogan"
 
@@ -1217,7 +1416,12 @@ def test_ismcts_choose_input_returns_skip_when_search_picks_skip(
     _prepare_input_state(state, req)
     _stub_ismcts_search_return_key(monkeypatch, "SKIP")
     agent = ISMCTSAgent(_tiny_cfg())
-    result = agent.choose_input(state, req, owned_hero_ids=frozenset({"hero_wasp"}))
+    result = agent.choose_input(
+        state,
+        req,
+        owned_hero_ids=frozenset({"hero_wasp"}),
+        decision_owner_hero_id="hero_wasp",
+    )
     assert result == "SKIP"
 
 

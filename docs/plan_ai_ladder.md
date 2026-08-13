@@ -39,7 +39,27 @@ policy (Rung 3), so no signature will change when those land.
 - **Heuristic fixed** (commits `7c16966`, `e88d683`): `_hex_score` gained an
   intra-zone enemy-approach gradient. 39.5% → **93.5%** vs random; games no
   longer stall (heur-vs-heur terminates ~22 rounds). This strengthens the
-  ISMCTS default policy *and* prior.
+  ISMCTS default policy *and* prior. That historical win rate is stale under the
+  current engine: both `a450d1e` and the new policy score 28-12 against Random on
+  the original 40-game roster/seed set.
+- **Hero-scoped information and heuristic tactics: DONE (current branch).**
+  Search now carries one explicit decision owner separately from team utility
+  and future MAX-node ownership. Determinization preserves only that hero's own
+  facedown commitments, fully resamples allied/enemy one- and two-card commits,
+  samples public-compatible hidden upgrade loadouts, and supports Emmitt's
+  one-card FINISH choice. A persisted public-knowledge tracker records revealed
+  and discarded cards, infers ordinary upgrades from public items/reveals, and
+  fails closed for nonstandard item heroes. The heuristic now uses computed card
+  stats, topology-aware range, unresolved-action timing, canonical minion
+  defense, strongest public defense values, and computed/reversed initiative.
+  An attempted traversable-exit movement bonus regressed 2v2 strength to 43.8%
+  with eight capped games and was removed. Across every disjoint matchup among
+  the seven one-star heroes (`Arien`, `Brogan`, `Dodger`, `Sabina`, `Tigerclaw`,
+  `Wasp`, `Xargatha`), the retained policy scores **111-99 (52.9%)** against the
+  prior policy in 2v2 (Wilson 95% CI **[46.1%, 59.5%]**) and **82-58 (58.6%)**
+  in 3v3 (CI **[50.3%, 66.4%]**), with no capped games. Team-composition policy
+  assignment was swapped per matchup; RED/BLUE color swapping was not used
+  because the game is symmetric.
 - **Server integration (Tasks 1-9 of `plan_ai_backend_integration.md`): DONE.**
   Random, Heuristic, and (bounded) ISMCTS bots can now be created through the
   public `POST /games` API. See below.

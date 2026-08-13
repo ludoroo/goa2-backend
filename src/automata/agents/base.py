@@ -60,6 +60,7 @@ class Agent(Protocol):
         request: InputRequest,
         *,
         owned_hero_ids: frozenset[str] | None = None,
+        decision_owner_hero_id: str | None = None,
     ) -> Any:
         """Return the raw `selection` value answering ``request``.
 
@@ -78,6 +79,9 @@ class Agent(Protocol):
 
         The default ``None`` keeps ordinary existing callers (headless
         harness, tests that don't route through the driver) unchanged.
+
+        ``decision_owner_hero_id`` identifies the concrete hero answering a
+        shared/team request. Search agents require it; simple policies ignore it.
         """
         ...
 

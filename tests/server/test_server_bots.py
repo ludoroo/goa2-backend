@@ -184,7 +184,7 @@ class _BarrierAgent:
             return hero.hand[0] if hero.hand else None
         return self.card_pick
 
-    def choose_input(self, state, request, *, owned_hero_ids=None):
+    def choose_input(self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None):
         self._signal_ready()
         if self.snapshot_ref is not None:
             self.snapshot_ref["state_id"] = id(state)
@@ -740,7 +740,9 @@ def test_schedule_bot_drive_yields_between_decisions() -> None:
                 events.append(f"agent:{hero.id}")
                 return self.inner.choose_card(state, hero)
 
-            def choose_input(self, state, request, *, owned_hero_ids=None):
+            def choose_input(
+                self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None
+            ):
                 events.append(f"input:{request.player_id}")
                 return self.inner.choose_input(state, request, owned_hero_ids=owned_hero_ids)
 
@@ -1811,7 +1813,9 @@ def test_agent_exception_is_caught_and_game_remains_recoverable() -> None:
             def choose_card(self, state, hero):
                 raise RuntimeError("boom-planning")
 
-            def choose_input(self, state, request, *, owned_hero_ids=None):
+            def choose_input(
+                self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None
+            ):
                 raise RuntimeError("boom-input")
 
         _install_agent(bots_mod, {"hero_wasp": _Boom()})
@@ -1837,7 +1841,9 @@ def test_illegal_bot_choice_is_caught_and_game_remains_recoverable() -> None:
             def choose_card(self, state, hero):
                 return foreign_card  # Not in Wasp's hand.
 
-            def choose_input(self, state, request, *, owned_hero_ids=None):
+            def choose_input(
+                self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None
+            ):
                 return "SKIP"
 
         _install_agent(bots_mod, {"hero_wasp": _Cheater()})
@@ -4463,7 +4469,7 @@ class _StubISMCTSAgent:
             return hero.hand[0] if hero.hand else None
         return self.card_pick
 
-    def choose_input(self, state, request, *, owned_hero_ids=None):
+    def choose_input(self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None):
         import time as _t
 
         self.calls += 1
@@ -5800,7 +5806,7 @@ def test_illegal_ismcts_input_falls_back_to_heuristic() -> None:
         def choose_card(self, state, hero):
             return None
 
-        def choose_input(self, state, request, *, owned_hero_ids=None):
+        def choose_input(self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None):
             return "not-a-legal-option"
 
     # Build a synthetic hero-scoped request with two legal options.
@@ -5829,7 +5835,7 @@ def test_driver_accepts_skip_when_can_skip_true() -> None:
         def choose_card(self, state, hero):
             return None
 
-        def choose_input(self, state, request, *, owned_hero_ids=None):
+        def choose_input(self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None):
             return "SKIP"
 
     state = GameSetup.create_game(MAP_PATH, ["Wasp"], ["Arien"], seed=19)
@@ -5870,7 +5876,7 @@ def test_driver_accepts_hex_dict_selection() -> None:
         def choose_card(self, state, hero):
             return None
 
-        def choose_input(self, state, request, *, owned_hero_ids=None):
+        def choose_input(self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None):
             return hex_dict
 
     request = InputRequest(
@@ -5930,7 +5936,9 @@ def test_bounded_wrapper_falls_back_on_illegal_ismcts_input() -> None:
         # raises IllegalBotDecisionError, and the bounded wrapper's
         # fallback path substitutes a Heuristic on the cloned state.
         class _BadInputAgent(_StubISMCTSAgent):
-            def choose_input(self, state, request, *, owned_hero_ids=None):
+            def choose_input(
+                self, state, request, *, owned_hero_ids=None, decision_owner_hero_id=None
+            ):
                 self.calls += 1
                 return "definitely-not-an-option-id"
 
