@@ -117,3 +117,31 @@ def test_battle_fury_not_offered_for_skill_card_inside_spell_break() -> None:
     # ...but no Battle Fury offer, and Terrify's primary never runs.
     assert result.input_request is None
     assert state.entity_locations["hero_arien"] == Hex(q=1, r=0, s=-1)
+
+
+@pytest.mark.effect_flow
+def test_form_up_repeat_prompts_for_a_new_unit() -> None:
+    """Form Up's repeat must ask which unit to pull, not reuse the first pick.
+
+    The card builds one list and passes it both inline and as the repeat's
+    steps_template, so the repeat used to inherit the already-answered
+    SelectSteps and silently re-pull the same ally.
+    """
+    from ..runner import run_card
+
+    state = (
+        EffectScenarioBuilder()
+        .small_arena()
+        .red_hero("hero_garrus", at=(0, 0, 0), current_card=hero_card("Garrus", "form_up"))
+        .red_minion("ally_a", at=(2, 0, -2))
+        .red_minion("ally_b", at=(0, 2, -2))
+        .with_actor("hero_garrus")
+        .build()
+    )
+
+    run = run_card(state, "hero_garrus")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("ally_a").expect_input(InputRequestType.SELECT_HEX)
+    run.choose({"q": 1, "r": 0, "s": -1}).expect_input(InputRequestType.SELECT_OPTION)
+    run.choose("YES").expect_input(InputRequestType.SELECT_UNIT)

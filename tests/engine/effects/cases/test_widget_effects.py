@@ -38,9 +38,10 @@ def _add_pyro_pool(state) -> None:
     state.token_pool[TokenType.PYRO].append(token)
 
 
-def _place_passable_mine(state, at: Hex, owner_id: str) -> None:
+def _place_passable_mine(state, at: Hex, *, owner_id: str, mine_id: str = "mine_1") -> None:
+    """Put a passable mine on the board, owned by `owner_id` (a hero in state)."""
     mine = Token(
-        id="mine_1",
+        id=mine_id,
         name="Mine",
         token_type=TokenType.MINE_DUD,
         owner_id=owner_id,
@@ -48,7 +49,7 @@ def _place_passable_mine(state, at: Hex, owner_id: str) -> None:
     )
     state.register_entity(mine, "token")
     state.token_pool.setdefault(TokenType.MINE_DUD, []).append(mine)
-    state.place_entity("mine_1", at)
+    state.place_entity(mine_id, at)
 
 
 def _activate_dragon_knight(state, hero_id: str = "hero_widget") -> None:
@@ -482,36 +483,131 @@ def test_drag_off_drags_pyro_and_enemy_in_same_direction() -> None:
     assert any(e.event_type == GameEventType.UNIT_MOVED for e in run.events)
 
 
-@pytest.mark.effect_flow
-def test_drag_off_crosses_passable_mine() -> None:
-    pyro_start = Hex(q=0, r=0, s=0)
-    pyro_dest = Hex(q=3, r=0, s=-3)
-    enemy_dest = Hex(q=4, r=0, s=-4)
-    mine_hex = Hex(q=2, r=0, s=-2)
+def _hex_disk(radius: int) -> list[tuple[int, int, int]]:
+    return [
+        (q, r, -q - r)
+        for q in range(-radius, radius + 1)
+        for r in range(-radius, radius + 1)
+        if abs(q + r) <= radius
+    ]
+
+
+# Drag Off geometry, direction +q, distance 3. The enemy starts adjacent to
+# Pyro but OFF the drag axis, so the two movers travel parallel lines and each
+# one's crossed hexes are disjoint — a mine can sit in front of either alone.
+_DRAG_PYRO_START = Hex(q=0, r=0, s=0)
+_DRAG_ENEMY_START = Hex(q=0, r=1, s=-1)
+_DRAG_PYRO_DEST = Hex(q=3, r=0, s=-3)
+_DRAG_ENEMY_DEST = Hex(q=3, r=1, s=-4)
+_DRAG_PYRO_PATH = Hex(q=2, r=0, s=-2)  # crossed by Pyro only
+_DRAG_ENEMY_PATH = Hex(q=2, r=1, s=-3)  # crossed by the enemy only
+_DRAG_WIDGET_PERCH = (0, -1, 1)  # off both lines
+
+
+def _drag_off_mine_state(mine_owner: str, mine_hexes=(_DRAG_PYRO_PATH,)):
+    """Pyro at (0,0,0) → (3,0,-3); adjacent enemy at (0,1,-1) → (3,1,-4).
+
+    A passable mine is placed on each hex in `mine_hexes`, owned by
+    `mine_owner`. Neither mover is a hero (a token and a minion), so mines
+    never detonate here whoever owns them — ownership only exercises the
+    traversal rule.
+    """
     state = (
         EffectScenarioBuilder()
-        .with_hexes([*_DRAG_LINE, _WIDGET_PERCH])
-        .red_hero("hero_widget", at=_WIDGET_PERCH, current_card=hero_card("Widget", "drag_off"))
-        .blue_minion("blue_minion", at=(1, 0, -1))
+        .with_hexes(_hex_disk(5))
+        .red_hero(
+            "hero_widget", at=_DRAG_WIDGET_PERCH, current_card=hero_card("Widget", "drag_off")
+        )
+        .blue_minion("blue_minion", at=_DRAG_ENEMY_START)
+        .blue_hero("blue_mine_owner", at=Hex(q=-3, r=0, s=3))
+        .red_hero("red_mine_owner", at=Hex(q=-4, r=0, s=4))
         .with_actor("hero_widget")
         .build()
     )
     _add_pyro_pool(state)
-    state.place_entity("pyro_1", pyro_start)
-    _place_passable_mine(state, mine_hex, "hero_widget")
+    state.place_entity("pyro_1", _DRAG_PYRO_START)
+    for idx, mine_hex in enumerate(mine_hexes, start=1):
+        _place_passable_mine(state, mine_hex, owner_id=mine_owner, mine_id=f"mine_{idx}")
+    return state
+
+
+@pytest.mark.effect_flow
+def test_drag_off_off_axis_pair_moves_with_no_mine() -> None:
+    """Control for the mine cases: the same off-axis drag works on a clear board.
+
+    Pins the geometry itself, so a failure in the mine tests below can only be
+    about the mine.
+    """
+    state = _drag_off_mine_state("blue_mine_owner", mine_hexes=())
 
     run = run_card(state, "hero_widget")
     run.expect_input(InputRequestType.CHOOSE_ACTION)
     run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
     run.choose("blue_minion").expect_input(InputRequestType.SELECT_HEX)
 
-    assert pyro_dest in _option_set(run)
-    run.choose(pyro_dest).finish()
+    assert _DRAG_PYRO_DEST in _option_set(run)
+    run.choose(_DRAG_PYRO_DEST).finish()
 
-    assert state.entity_locations["pyro_1"] == pyro_dest
-    assert state.entity_locations["blue_minion"] == enemy_dest
-    assert state.entity_locations["mine_1"] == mine_hex
-    assert not [event for event in run.events if event.event_type == GameEventType.MINE_TRIGGERED]
+    assert state.entity_locations["pyro_1"] == _DRAG_PYRO_DEST
+    assert state.entity_locations["blue_minion"] == _DRAG_ENEMY_DEST
+
+
+@pytest.mark.effect_flow
+@pytest.mark.parametrize(
+    "mine_hexes",
+    [(_DRAG_PYRO_PATH,), (_DRAG_ENEMY_PATH,), (_DRAG_PYRO_PATH, _DRAG_ENEMY_PATH)],
+    ids=["pyro-path", "enemy-path", "both-paths"],
+)
+@pytest.mark.parametrize(
+    "mine_owner", ["blue_mine_owner", "red_mine_owner"], ids=["enemy", "friendly"]
+)
+def test_drag_off_crosses_passable_mines(mine_hexes, mine_owner: str) -> None:
+    """The drag may cross passable mines in front of either mover, either owner."""
+    state = _drag_off_mine_state(mine_owner, mine_hexes)
+    mine_ids = [f"mine_{i}" for i in range(1, len(mine_hexes) + 1)]
+
+    run = run_card(state, "hero_widget")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("blue_minion").expect_input(InputRequestType.SELECT_HEX)
+
+    assert _DRAG_PYRO_DEST in _option_set(run)
+    run.choose(_DRAG_PYRO_DEST).finish()
+
+    assert state.entity_locations["pyro_1"] == _DRAG_PYRO_DEST
+    assert state.entity_locations["blue_minion"] == _DRAG_ENEMY_DEST
+    # A token and a minion crossed them — neither is a hero, so all survive.
+    for mine_id, mine_hex in zip(mine_ids, mine_hexes, strict=True):
+        assert state.entity_locations[mine_id] == mine_hex
+    assert not [e for e in run.events if e.event_type == GameEventType.MINE_TRIGGERED]
+
+
+@pytest.mark.effect_flow
+@pytest.mark.parametrize("mine_owner", ["blue_mine_owner", "red_mine_owner"])
+def test_drag_off_cannot_land_pyro_on_passable_mine(mine_owner: str) -> None:
+    """The mine hex is traversable but never offered as a landing hex."""
+    state = _drag_off_mine_state(mine_owner, mine_hexes=(_DRAG_PYRO_DEST,))
+
+    run = run_card(state, "hero_widget")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("blue_minion").expect_input(InputRequestType.SELECT_HEX)
+
+    assert _DRAG_PYRO_DEST not in _option_set(run)
+
+
+@pytest.mark.effect_flow
+@pytest.mark.parametrize("mine_owner", ["blue_mine_owner", "red_mine_owner"])
+def test_drag_off_rejects_direction_when_enemy_would_land_on_mine(mine_owner: str) -> None:
+    """A mine on the ENEMY's landing hex kills the direction, though Pyro's is clear."""
+    state = _drag_off_mine_state(mine_owner, mine_hexes=(_DRAG_ENEMY_DEST,))
+
+    run = run_card(state, "hero_widget")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("blue_minion").expect_input(InputRequestType.SELECT_HEX)
+
+    assert _DRAG_PYRO_DEST not in _option_set(run)
 
 
 @pytest.mark.effect_flow

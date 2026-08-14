@@ -1052,7 +1052,9 @@ class CloakAndDaggersEffect(CardEffect):
                     steps = effect.get_steps(state, hero, basic_card)
                     # Inject "cannot target same unit" filter
                     for step in steps:
-                        if isinstance(step, AttackSequenceStep) and not step.target_id_key:
+                        if isinstance(step, AttackSequenceStep) and (
+                            not step.target_id_key or step.target_output_key
+                        ):
                             step.target_filters.append(
                                 ExcludeIdentityFilter(exclude_keys=["last_combat_target"])
                             )

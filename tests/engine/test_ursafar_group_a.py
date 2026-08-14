@@ -24,8 +24,16 @@ from goa2.domain.models import (
     Team,
     TeamColor,
 )
+from goa2.domain.models.effect import (
+    AffectsFilter,
+    DurationType,
+    EffectScope,
+    EffectType,
+    Shape,
+)
 from goa2.domain.state import GameState
 from goa2.domain.types import HeroID
+from goa2.engine.effect_manager import EffectManager
 from goa2.engine.handler import process_stack, push_steps
 from goa2.engine.steps import ResolveCardStep
 
@@ -192,12 +200,29 @@ def base_state(board):
 
 
 def _make_enraged(state):
-    """Simulate enraged by placing a played card with is_active=True."""
+    """Simulate enraged: Ursafar performed a rage card earlier this round.
+
+    Rage is owned by the performer via the ENRAGED effect's ``source_id``, not
+    inferred from an active card in a played slot — a card can be performed by
+    someone else (NebKher's Mind Grip), and then the rage is theirs.
+    """
     hero = state.get_hero(HeroID("hero_ursafar"))
     active_card = _make_filler_card("prev_active_card", color=CardColor.SILVER)
-    active_card.is_active = True
     active_card.state = CardState.RESOLVED
     hero.played_cards = [active_card]
+    EffectManager.create_effect(
+        state=state,
+        source_id="hero_ursafar",
+        source_card_id=active_card.id,
+        effect_type=EffectType.ENRAGED,
+        scope=EffectScope(
+            shape=Shape.POINT,
+            affects=AffectsFilter.SELF,
+            origin_id="hero_ursafar",
+        ),
+        duration=DurationType.THIS_ROUND,
+        is_active=True,
+    )
 
 
 def _drive_choose_action(state, action: str):
@@ -490,11 +515,12 @@ class TestSniffOut:
 
     def test_no_enraged_effect_created(self, base_state):
         """Green cards never create ENRAGED effect."""
-        from goa2.domain.models.effect import EffectType
-
         _make_enraged(base_state)
         hero = base_state.get_hero(HeroID("hero_ursafar"))
         hero.current_turn_card = _make_sniff_out()
+        rage_before = len(
+            [e for e in base_state.active_effects if e.effect_type == EffectType.ENRAGED]
+        )
 
         push_steps(base_state, [ResolveCardStep(hero_id="hero_ursafar")])
         _drive_choose_action(base_state, "SKILL")
@@ -508,7 +534,7 @@ class TestSniffOut:
         enraged_effects = [
             e for e in base_state.active_effects if e.effect_type == EffectType.ENRAGED
         ]
-        assert len(enraged_effects) == 0
+        assert len(enraged_effects) == rage_before
 
     def test_enemy_out_of_range_no_target(self, base_state):
         """Enraged but enemy out of range (>2): optional target safely does nothing."""
@@ -672,18 +698,24 @@ class TestEnragedActiveOverride:
 
 
 class TestIsEnraged:
-    def test_not_enraged_no_active_cards(self, base_state):
+    """Rage is owned by the performer, via the ENRAGED effect's source_id.
+
+    Cross-hero ownership (NebKher's Mind Grip performing an Ursafar card) is
+    covered in tests/engine/test_ursafar_enraged_scope.py.
+    """
+
+    def test_not_enraged_without_rage_effect(self, base_state):
         from goa2.scripts.ursafar_effects import is_enraged
 
         hero = base_state.get_hero(HeroID("hero_ursafar"))
-        assert is_enraged(hero) is False
+        assert is_enraged(base_state, hero) is False
 
-    def test_enraged_via_active_played_card(self, base_state):
+    def test_enraged_via_own_rage_effect(self, base_state):
         from goa2.scripts.ursafar_effects import is_enraged
 
         _make_enraged(base_state)
         hero = base_state.get_hero(HeroID("hero_ursafar"))
-        assert is_enraged(hero) is True
+        assert is_enraged(base_state, hero) is True
 
     def test_enraged_via_ultimate(self, base_state):
         from goa2.scripts.ursafar_effects import is_enraged
@@ -704,10 +736,15 @@ class TestIsEnraged:
         hero.ultimate_card = ultimate
         hero.level = 8
 
-        assert is_enraged(hero) is True
+        assert is_enraged(base_state, hero) is True
 
-    def test_current_card_active_counts(self, base_state):
-        """A card's own is_active counts for is_enraged check."""
+    def test_active_played_card_alone_does_not_enrage(self, base_state):
+        """An active card in a played slot is not itself rage.
+
+        EffectManager marks the performed card active whoever performed it, so
+        the mark says nothing about whose rage it is — only the ENRAGED
+        effect's source_id does.
+        """
         from goa2.scripts.ursafar_effects import is_enraged
 
         hero = base_state.get_hero(HeroID("hero_ursafar"))
@@ -716,5 +753,4 @@ class TestIsEnraged:
         card.state = CardState.RESOLVED
         hero.played_cards = [card]
 
-        # The current card being active counts as enraged
-        assert is_enraged(hero) is True
+        assert is_enraged(base_state, hero) is False

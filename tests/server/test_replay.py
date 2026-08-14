@@ -76,6 +76,31 @@ def test_record_writes_setup_header_first(tmp_path):
     assert header["v"] == 1
 
 
+def test_record_decisions_carry_wall_clock_timestamps(tmp_path):
+    import time as _time
+
+    rec = ReplayRecorder("g1", str(tmp_path))
+    _record_setup(rec)
+    before = _time.time()
+    rec.record_commit("hero_arien", "arien_basic_1", 1, 1)
+    rec.record_input("hero_arien", "minion_1", 1, 2)
+    rec.record_rollback("hero_arien", 1, 2)
+    rec.record_cheat_gold("hero_arien", 5, 1, 1)
+    rec.record_pass("hero_arien", 1, 2)
+    rec.record_uncommit("hero_arien", 1, 1)
+    rec.record_timer_timeout(action="commit", hero_id="hero_arien", round_num=1, turn=1)
+    after = _time.time()
+
+    records = [json.loads(line) for line in (tmp_path / "g1.jsonl").read_text().splitlines()]
+    assert records[0]["type"] == "setup"
+    assert isinstance(records[0]["ts"], float)
+    for record in records[1:]:
+        assert isinstance(record["ts"], float)
+        assert before <= record["ts"] <= after
+    # Decision timestamps are non-decreasing (appended in write order).
+    assert [r["ts"] for r in records] == sorted(r["ts"] for r in records)
+
+
 def test_record_and_replay_roundtrip(tmp_path):
     seed = 42
     live = _live_game(seed)

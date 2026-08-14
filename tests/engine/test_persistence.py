@@ -21,11 +21,13 @@ from goa2.engine.session import GameSession
 from goa2.engine.setup import GameSetup
 from goa2.engine.steps import (
     AskConfirmationStep,
+    ForceDiscardStep,
     ForEachStep,
     LogMessageStep,
     MayRepeatNTimesStep,
     MoveUnitStep,
     SelectStep,
+    TriggerMineStep,
 )
 
 MAP_PATH = "src/goa2/data/maps/forgotten_island.json"
@@ -173,6 +175,111 @@ def test_round_trip_with_steps_on_stack():
     assert len(select.filters) == 2
     assert type(select.filters[0]).__name__ == "RangeFilter"
     assert type(select.filters[1]).__name__ == "TeamFilter"
+
+
+def _bare_state_with_hero(hero_id: str = "hero_a") -> GameState:
+    hero = Hero(id=hero_id, name="Hero", team=TeamColor.RED, deck=[])
+    return GameState(
+        board=Board(),
+        teams={
+            TeamColor.RED: Team(color=TeamColor.RED, heroes=[hero], minions=[]),
+            TeamColor.BLUE: Team(color=TeamColor.BLUE, heroes=[], minions=[]),
+        },
+    )
+
+
+def _round_trip_step(step, *, drop_fields: tuple[str, ...] = ()) -> object:
+    """Serialize a state carrying ``step``, optionally strip fields from the
+    step payload to model a pre-migration serialized shape, and re-validate.
+    """
+    state = _bare_state_with_hero()
+    state.execution_stack = [step]
+    data = state.model_dump(mode="json")
+    if drop_fields:
+        payload = data["execution_stack"][0]
+        for field in drop_fields:
+            payload.pop(field, None)
+    return GameState.model_validate(data).execution_stack[0]
+
+
+@pytest.mark.parametrize(
+    "step_factory, drop_fields, expected",
+    [
+        # Older TriggerMineStep payloads had no literal fields at all.
+        (
+            lambda: TriggerMineStep(),
+            ("mine_ids", "victim_id"),
+            {
+                "mine_ids": None,
+                "victim_id": None,
+                "mine_ids_key": "triggered_mine_ids",
+                "victim_key": "mine_victim_id",
+            },
+        ),
+        # Older ForceDiscardStep serialized only ``victim_key``.
+        (
+            lambda: ForceDiscardStep(victim_key="v"),
+            ("victim_id",),
+            {"victim_id": None, "victim_key": "v"},
+        ),
+        # Older SelectStep serialized only the ``*_key`` fields.
+        (
+            lambda: SelectStep(
+                target_type=TargetType.CARD,
+                prompt="pick",
+                context_hero_id_key="v",
+                override_player_id_key="v",
+            ),
+            ("context_hero_id", "override_player_id"),
+            {
+                "context_hero_id": None,
+                "override_player_id": None,
+                "context_hero_id_key": "v",
+                "override_player_id_key": "v",
+            },
+        ),
+    ],
+    ids=["trigger_mine", "force_discard", "select"],
+)
+def test_legacy_step_payload_without_new_fields_round_trips(step_factory, drop_fields, expected):
+    """Genuinely-old payloads (new fields absent) validate with default None literals."""
+    step = _round_trip_step(step_factory(), drop_fields=drop_fields)
+    for name, value in expected.items():
+        assert getattr(step, name) == value
+
+
+@pytest.mark.parametrize(
+    "step_factory, expected",
+    [
+        (
+            lambda: TriggerMineStep(mine_ids=["m1", "m2"], victim_id="hero_a"),
+            {"mine_ids": ["m1", "m2"], "victim_id": "hero_a"},
+        ),
+        (
+            lambda: ForceDiscardStep(victim_id="hero_a"),
+            {"victim_id": "hero_a", "victim_key": None},
+        ),
+        (
+            lambda: SelectStep(
+                target_type=TargetType.CARD,
+                prompt="pick",
+                context_hero_id="hero_a",
+                override_player_id="hero_a",
+            ),
+            {
+                "context_hero_id": "hero_a",
+                "override_player_id": "hero_a",
+                "context_hero_id_key": None,
+                "override_player_id_key": None,
+            },
+        ),
+    ],
+    ids=["trigger_mine", "force_discard", "select"],
+)
+def test_new_literal_step_payload_round_trips(step_factory, expected):
+    step = _round_trip_step(step_factory())
+    for name, value in expected.items():
+        assert getattr(step, name) == value
 
 
 def test_pending_input_request_id_survives_round_trip():

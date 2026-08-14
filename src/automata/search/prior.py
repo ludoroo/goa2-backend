@@ -20,10 +20,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from goa2.domain.input import selection_value
 from goa2.domain.models.card import Card
 from goa2.domain.state import GameState
 
-from ..agents.base import option_selection_value
 from ..agents.heuristic_agent import HeuristicAgent
 from .ismcts import Decision
 from .node import Key, action_key
@@ -47,9 +47,7 @@ class PolicyResult:
 class Policy(Protocol):
     """Rank a decision's legal keys (best-first), optionally with weights."""
 
-    def __call__(
-        self, state: GameState, decision: Decision, legal: list[Key]
-    ) -> PolicyResult: ...
+    def __call__(self, state: GameState, decision: Decision, legal: list[Key]) -> PolicyResult: ...
 
 
 class HeuristicPrior:
@@ -59,9 +57,7 @@ class HeuristicPrior:
         # Seed is irrelevant: the scoring methods used here are RNG-free.
         self._h = heuristic or HeuristicAgent(0)
 
-    def __call__(
-        self, state: GameState, decision: Decision, legal: list[Key]
-    ) -> PolicyResult:
+    def __call__(self, state: GameState, decision: Decision, legal: list[Key]) -> PolicyResult:
         scored = self._scores(state, decision, legal)
         if scored is None:
             return PolicyResult(order=list(legal), weights=None)
@@ -85,7 +81,7 @@ class HeuristicPrior:
             request = decision.request
             scores = {}
             for opt in request.options:
-                key = action_key(option_selection_value(opt))
+                key = action_key(selection_value(opt))
                 if key in scores:
                     continue
                 scores[key] = self._h.score_option(state, request, opt)

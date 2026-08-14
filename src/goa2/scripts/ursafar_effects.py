@@ -63,25 +63,43 @@ if TYPE_CHECKING:
 
 
 def _has_ultimate(hero: Hero) -> bool:
-    """Check if the ultimate card is in passive play."""
-    return hero.ultimate_card is not None and hero.level >= 8
+    """Check if Unbound Fury is in passive play.
+
+    Scoped to the card, not just "has an ultimate at level 8": every hero has
+    an ultimate, and NebKher's Mind Grip runs an Ursafar card with the
+    PERFORMER as ``hero``, so an unscoped check enrages whoever copies the card.
+    """
+    ult = hero.ultimate_card
+    return ult is not None and ult.id == "unbound_fury" and hero.level >= 8
 
 
-def is_enraged(hero: Hero) -> bool:
+def is_enraged(state: GameState, hero: Hero) -> bool:
     """Check if this hero is currently enraged.
 
     A hero is enraged if:
-    - Any of their played cards this round has is_active=True
-    - OR the ultimate card is in passive play
+    - They own a live ENRAGED effect, i.e. they PERFORMED a card that said
+      "This round: You are enraged"
+    - OR Unbound Fury (their ultimate) is in passive play
+
+    Ownership is ``ActiveEffect.source_id`` — the performer, which is not
+    always the card's owner. NebKher's Mind Grip performs a card sitting in
+    Ursafar's turn slot: the rage is NebKher's, while the effect stays bound
+    to the Ursafar card (``source_card_id``). Reading ``card.is_active`` off
+    ``played_cards`` instead would hand the rage to the wrong hero, since
+    EffectManager marks the performed card active whoever performed it.
+
+    Dormant effects don't count: an effect bound to a card that has not
+    resolved yet ("played, but not yet resolved") has not turned its
+    "this round" clause on.
     """
     if _has_ultimate(hero):
         return True
-    for card in hero.played_cards:
-        if card is None:
-            continue
-        if card.is_active:
-            return True
-    return False
+    return any(
+        effect.effect_type == EffectType.ENRAGED
+        and effect.source_id == str(hero.id)
+        and effect.is_active
+        for effect in state.active_effects
+    )
 
 
 def _enraged_effect_step() -> CreateEffectStep:
@@ -111,7 +129,7 @@ class ColdIreEffect(CardEffect):
     def build_steps(
         self, state: GameState, hero: Hero, card: Card, stats: CardStats
     ) -> list[GameStep]:
-        bonus = 1 if is_enraged(hero) else 0
+        bonus = 1 if is_enraged(state, hero) else 0
         return [
             MoveSequenceStep(unit_id=hero.id, range_val=stats.primary_value + bonus),
             _enraged_effect_step(),
@@ -127,7 +145,7 @@ class EyesOfFlameEffect(CardEffect):
     def build_steps(
         self, state: GameState, hero: Hero, card: Card, stats: CardStats
     ) -> list[GameStep]:
-        bonus = 2 if is_enraged(hero) else 0
+        bonus = 2 if is_enraged(state, hero) else 0
         return [
             MoveSequenceStep(unit_id=hero.id, range_val=stats.primary_value + bonus),
             _enraged_effect_step(),
@@ -148,7 +166,7 @@ class RipEffect(CardEffect):
         steps: list[GameStep] = [
             AttackSequenceStep(damage=stats.primary_value, range_val=1),
         ]
-        if is_enraged(hero):
+        if is_enraged(state, hero):
             steps.extend(
                 [
                     SetContextFlagStep(key="self_hero", value=hero.id),
@@ -168,7 +186,7 @@ class SniffOutEffect(CardEffect):
     def build_steps(
         self, state: GameState, hero: Hero, card: Card, stats: CardStats
     ) -> list[GameStep]:
-        if not is_enraged(hero):
+        if not is_enraged(state, hero):
             return []
         return [
             SelectStep(
@@ -205,7 +223,7 @@ class ApexPredatorEffect(CardEffect):
     def build_steps(
         self, state: GameState, hero: Hero, card: Card, stats: CardStats
     ) -> list[GameStep]:
-        if not is_enraged(hero):
+        if not is_enraged(state, hero):
             return []
         return [
             SelectStep(
@@ -243,7 +261,7 @@ class PreyDriveEffect(CardEffect):
         steps: list[GameStep] = [
             AttackSequenceStep(damage=stats.primary_value, range_val=1),
         ]
-        if is_enraged(hero):
+        if is_enraged(state, hero):
             steps.extend(
                 [
                     CheckUnitOnBoardStep(
@@ -297,7 +315,7 @@ class FeedingFrenzyEffect(CardEffect):
         steps: list[GameStep] = [
             AttackSequenceStep(damage=stats.primary_value, range_val=1),
         ]
-        if is_enraged(hero):
+        if is_enraged(state, hero):
             steps.extend(
                 [
                     CheckUnitOnBoardStep(
@@ -349,7 +367,7 @@ class ProwlingBruteEffect(CardEffect):
         steps: list[GameStep] = [
             MoveSequenceStep(unit_id=hero.id, range_val=stats.primary_value),
         ]
-        if is_enraged(hero):
+        if is_enraged(state, hero):
             steps.extend(
                 [
                     SelectStep(
@@ -382,7 +400,7 @@ class RampagingBeastEffect(CardEffect):
         steps: list[GameStep] = [
             MoveSequenceStep(unit_id=hero.id, range_val=stats.primary_value),
         ]
-        if is_enraged(hero):
+        if is_enraged(state, hero):
             steps.extend(
                 [
                     SelectStep(
@@ -421,7 +439,7 @@ class UnstoppableForceEffect(CardEffect):
         steps: list[GameStep] = [
             MoveSequenceStep(unit_id=hero.id, range_val=stats.primary_value),
         ]
-        if is_enraged(hero):
+        if is_enraged(state, hero):
             steps.extend(
                 [
                     SelectStep(
@@ -463,7 +481,7 @@ class ClawsThatCatchEffect(CardEffect):
         self, state: GameState, hero: Hero, card: Card, stats: CardStats
     ) -> list[GameStep]:
         steps: list[GameStep] = []
-        if is_enraged(hero):
+        if is_enraged(state, hero):
             steps.extend(
                 [
                     SelectStep(
@@ -513,7 +531,7 @@ class TearEffect(CardEffect):
         steps: list[GameStep] = [
             AttackSequenceStep(damage=stats.primary_value, range_val=1),
         ]
-        if is_enraged(hero):
+        if is_enraged(state, hero):
             steps.extend(
                 [
                     SetContextFlagStep(key="self_hero", value=hero.id),
@@ -582,7 +600,7 @@ class AngryRoarEffect(CardEffect):
         self, state: GameState, hero: Hero, card: Card, stats: CardStats
     ) -> list[GameStep]:
         steps: list[GameStep] = []
-        if is_enraged(hero):
+        if is_enraged(state, hero):
             valid_card_ids = self._get_active_effect_card_ids(state, hero, card)
             if valid_card_ids:
                 steps.extend(
@@ -617,7 +635,7 @@ class InstinctiveReactionEffect(CardEffect):
     def build_steps(
         self, state: GameState, hero: Hero, card: Card, stats: CardStats
     ) -> list[GameStep]:
-        if not is_enraged(hero):
+        if not is_enraged(state, hero):
             return []
         return [
             SelectStep(
@@ -684,7 +702,7 @@ class EvolutionaryResponseEffect(CardEffect):
     def build_steps(
         self, state: GameState, hero: Hero, card: Card, stats: CardStats
     ) -> list[GameStep]:
-        if not is_enraged(hero):
+        if not is_enraged(state, hero):
             return []
 
         # "Choose one, or both" leaves the order to the player: performing a
@@ -816,20 +834,25 @@ class UnboundFuryEffect(CardEffect):
 #   - Cards that SET enraged (red, blue, gold, silver) create an ActiveEffect
 #     via CreateEffectStep(effect_type=EffectType.ENRAGED, duration=THIS_ROUND, ...)
 #   - Cards that only CHECK enraged (all greens) do NOT create this effect
-#   - This sets card.is_active = True (via EffectManager linkage)
-#   - Helper function is_enraged() checks hero.played_cards for any is_active card
-#     (excluding the current card being resolved), or if the ultimate is in play
+#   - This also sets card.is_active = True (via EffectManager linkage), which
+#     is what Angry Roar's "active cards" chooser reads — but it is NOT what
+#     rage is: the mark lands on the performed card whoever performed it.
+#   - Helper function is_enraged() checks whether the hero OWNS a live ENRAGED
+#     effect (ActiveEffect.source_id == hero), or has Unbound Fury in play
 #   - is_enraged() is called at build_steps time to conditionally include bonus steps
 #
-# def is_enraged(hero: Hero, current_card: Card) -> bool:
-#     for card in hero.played_cards:
-#         if card.id == current_card.id:
-#             continue
-#         if card.is_active:
-#             return True
-#     if hero.ultimate_card and hero.ultimate_card.state == CardState.PASSIVE:
-#         return True
-#     return False
+# WHO OWNS THE RAGE (locked 2026-08-08)
+# -------------------------------------
+# The performer, not the card's owner. NebKher's Mind Grip performs a card
+# sitting in Ursafar's turn slot: the ENRAGED effect's source_id is NebKher
+# (so HE becomes enraged for the round) while source_card_id stays the Ursafar
+# card it came from. Ursafar gains nothing from being copied. Deriving rage
+# from card.is_active on played_cards would invert that, and scoping the
+# ultimate check to "has an ultimate at level 8" would enrage every copier —
+# both were live bugs, see tests/engine/test_ursafar_enraged_scope.py.
+#
+# Dormant effects don't count: an effect bound to a card that has not resolved
+# yet is "played, but not yet resolved" and its "this round" clause is not on.
 #
 # ULTIMATE MECHANIC: enraged_active_override on Card
 # ----------------------------------------------------

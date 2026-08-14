@@ -99,7 +99,8 @@ class AttackSequenceStep(GameStep):
     - attacker_id: The ID of the attacking unit
     - attack_is_basic: True if the attack's source card is GOLD/SILVER
 
-    If target_id_key is provided, assumes target is already selected in context and skips selection.
+    target_id_key reads a target selected by an earlier step.
+    target_output_key stores a target selected by this attack.
     If target_filters is provided, adds those filters to the target selection.
     """
 
@@ -108,6 +109,7 @@ class AttackSequenceStep(GameStep):
     range_val: int = 1
     is_ranged: bool = False
     target_id_key: str | None = None  # Optional: Use existing context key instead of selecting
+    target_output_key: str | None = None
     target_filters: list[FilterCondition] = Field(
         default_factory=list
     )  # Additional filters for target selection
@@ -135,6 +137,18 @@ class AttackSequenceStep(GameStep):
 
         if self.should_skip(context):
             return StepResult(is_finished=True)
+
+        if self.target_id_key and self.target_id_key in context:
+            key = self.target_id_key
+            select_target = False
+        elif self.target_output_key:
+            key = self.target_output_key
+            select_target = True
+        elif self.target_id_key:
+            return StepResult(is_finished=True, abort_action=self.is_mandatory)
+        else:
+            key = "victim_id"
+            select_target = True
 
         base_actor_id = str(state.current_actor_id) if state.current_actor_id else None
         board_actor_id = state.resolve_board_actor(base_actor_id) if base_actor_id else None
@@ -164,8 +178,6 @@ class AttackSequenceStep(GameStep):
 
         from goa2.engine.filters_units import TeamFilter
 
-        key = self.target_id_key if self.target_id_key else "victim_id"
-
         # Store attack context for defense effect resolution
         context["attack_is_ranged"] = self.is_ranged
         context["attacker_id"] = str(state.current_actor_id) if state.current_actor_id else None
@@ -186,8 +198,7 @@ class AttackSequenceStep(GameStep):
 
         new_steps: list[GameStep] = []
 
-        # Only spawn selection if we don't have a pre-selected key or if the key is not already set in context
-        if not self.target_id_key or key not in context:
+        if select_target:
             # Base filters + any custom target_filters
             all_filters: list[FilterCondition] = [
                 RangeFilter(max_range=effective_range),

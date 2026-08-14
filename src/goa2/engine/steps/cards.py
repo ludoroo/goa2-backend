@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, cast
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from goa2.domain.events import GameEvent, GameEventType
 from goa2.domain.input import InputRequestType, create_input_request
@@ -332,6 +332,9 @@ class DiscardCardStep(GameStep):
             discard_source = "current_turn"
 
         hero.discard_card(target_card, from_hand=(actual_source == CardContainerType.HAND))
+        # The discard pile is public regardless of the card's previous face.
+        # Record only after the lifecycle transition succeeds.
+        state.record_public_revealed_card(owner_id, str(target_card.id))
 
         # Record in the turn-scoped discard log (cleared at end_turn); read by
         # "retrieve all cards discarded this turn" effects (Emmitt).
@@ -469,21 +472,37 @@ class ForceDiscardStep(GameStep):
     Checks if a victim has cards.
     If YES: Spawns a SelectStep (for victim to choose) + DiscardCardStep.
     If NO: Completes successfully (no penalty).
+
+    Victim resolves from a non-empty ``victim_id`` literal, else from
+    ``victim_key`` in context. At least one must be non-empty. The resolved
+    victim is snapshotted into the emitted child steps as literals so a later
+    shared-context write cannot re-route the discard prompt.
     """
 
     type: StepType = StepType.FORCE_DISCARD
-    victim_key: str
+    victim_id: str | None = None
+    victim_key: str | None = None
     card_is_basic: bool | None = None
     immunity_source_id: str | None = None
+
+    @model_validator(mode="after")
+    def _require_victim_source(self) -> ForceDiscardStep:
+        if not self.victim_id and not self.victim_key:
+            raise ValueError("ForceDiscardStep requires a non-empty victim_id or victim_key")
+        return self
 
     def resolve(self, state: GameState, context: dict[str, Any]) -> StepResult:
         from goa2.engine.steps.selection import SelectStep
 
-        victim_id = context.get(self.victim_key)
-        if not victim_id:
+        # Non-empty literal wins; empty literal falls back to key lookup.
+        resolved_victim: str | None = self.victim_id or None
+        if not resolved_victim and self.victim_key:
+            ctx_val = context.get(self.victim_key)
+            resolved_victim = str(ctx_val) if ctx_val else None
+        if not resolved_victim:
             return StepResult(is_finished=True)
 
-        victim = state.get_hero(HeroID(str(victim_id)))
+        victim = state.get_hero(HeroID(str(resolved_victim)))
         if not victim:
             return StepResult(is_finished=True)
         if self.immunity_source_id and rules.is_immune_to_actor(
@@ -491,7 +510,7 @@ class ForceDiscardStep(GameStep):
         ):
             logger.debug(
                 "   [EFFECT] %s is immune to forced discard from %s.",
-                victim_id,
+                resolved_victim,
                 self.immunity_source_id,
             )
             return StepResult(is_finished=True)
@@ -502,7 +521,7 @@ class ForceDiscardStep(GameStep):
             if self.card_is_basic is None or card.is_basic == self.card_is_basic
         ]
         if not eligible_hand:
-            logger.debug(f"   [EFFECT] {victim_id} has no matching cards to discard (Safe).")
+            logger.debug(f"   [EFFECT] {resolved_victim} has no matching cards to discard (Safe).")
             return StepResult(is_finished=True)
 
         # Mrak's discard-shield: a forced HAND discard may be redirected onto a
@@ -517,24 +536,24 @@ class ForceDiscardStep(GameStep):
                 allowed_ids.extend(card.id for card in shield_cards)
             select = SelectStep(
                 target_type=TargetType.CARD,
-                prompt=f"{victim_id}, select a card to discard.",
+                prompt=f"{resolved_victim}, select a card to discard.",
                 output_key="card_to_discard",
                 card_containers=[CardContainerType.HAND, CardContainerType.PLAYED],
                 restrict_played_to_shields=True,
                 allowed_card_ids=allowed_ids,
-                context_hero_id_key=self.victim_key,
-                override_player_id_key=self.victim_key,
+                context_hero_id=resolved_victim,
+                override_player_id=resolved_victim,
                 is_mandatory=True,
             )
         else:
             select = SelectStep(
                 target_type=TargetType.CARD,
-                prompt=f"{victim_id}, select a card to discard.",
+                prompt=f"{resolved_victim}, select a card to discard.",
                 output_key="card_to_discard",
                 card_container=CardContainerType.HAND,
                 card_is_basic=self.card_is_basic,
-                context_hero_id_key=self.victim_key,  # Look at victim's hand
-                override_player_id_key=self.victim_key,  # Victim chooses
+                context_hero_id=resolved_victim,  # Look at victim's hand
+                override_player_id=resolved_victim,  # Victim chooses
                 is_mandatory=True,
             )
 
@@ -543,7 +562,7 @@ class ForceDiscardStep(GameStep):
             is_finished=True,
             new_steps=[
                 select,
-                DiscardCardStep(card_key="card_to_discard", hero_key=self.victim_key),
+                DiscardCardStep(card_key="card_to_discard", hero_id=resolved_victim),
             ],
         )
 
@@ -1809,7 +1828,7 @@ class RevealHandCardStep(GameStep):
         }
         tier_value = tier_values[target_card.tier]
         context[self.tier_value_key] = tier_value
-        context["rollback_frozen"] = True
+        context["rollback_reanchor_pending"] = True
 
         revealer_id = str(state.current_actor_id) if state.current_actor_id else None
         state.card_reveal = {
@@ -1819,6 +1838,7 @@ class RevealHandCardStep(GameStep):
             "card_id": target_card.id,
             "tier_value": tier_value,
         }
+        state.record_public_revealed_card(owner.id, str(target_card.id))
 
         return StepResult(
             is_finished=True,

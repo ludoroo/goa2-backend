@@ -4,7 +4,7 @@ import pytest
 
 import goa2.scripts.ursafar_effects  # noqa: F401
 from goa2.domain.input import InputRequestType
-from goa2.domain.models import ActionType, Card, CardColor, CardState, CardTier
+from goa2.domain.models import ActionType, Card, CardColor, CardTier
 from goa2.domain.models.effect import (
     AffectsFilter,
     DurationType,
@@ -52,12 +52,24 @@ def _filler_card(card_id: str = "filler", color: CardColor = CardColor.SILVER) -
 
 
 def _make_ursafar_enraged(state) -> None:
-    hero = state.get_hero("hero_ursafar")
-    assert hero is not None
-    active_card = _filler_card("prev_active_card")
-    active_card.state = CardState.RESOLVED
-    active_card.is_active = True
-    hero.played_cards = [active_card]
+    """Ursafar performed a rage card earlier this round.
+
+    Rage is owned by the performer via the ENRAGED effect's ``source_id``, not
+    inferred from an active card in a played slot — a card can be performed by
+    someone else (NebKher's Mind Grip), and then the rage is theirs.
+    """
+    EffectManager.create_effect(
+        state=state,
+        source_id="hero_ursafar",
+        effect_type=EffectType.ENRAGED,
+        scope=EffectScope(
+            shape=Shape.POINT,
+            affects=AffectsFilter.SELF,
+            origin_id="hero_ursafar",
+        ),
+        duration=DurationType.THIS_ROUND,
+        is_active=True,
+    )
 
 
 def _add_brogan_minion_protection(state) -> None:

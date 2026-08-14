@@ -294,9 +294,10 @@ Every server game writes a compact, append-only replay log
 (`data/replays/<game_id>.jsonl`) capturing only the setup parameters (including
 the RNG seed) and the ordered player decisions (card commits, passes, inputs).
 Because gameplay is deterministic, this is enough to reconstruct a game exactly.
-Replays are retained for 30 days — independent of the 24h save-game cleanup —
-so a bug reported after a game ends can still be reproduced. Reconstruct one
-with the CLI:
+Each decision record also carries a wall-clock `ts` timestamp (epoch seconds)
+for analytics. Replays are retained for 30 days — independent of the 24h
+save-game cleanup — so a bug reported after a game ends can still be
+reproduced. Reconstruct one with the CLI:
 
 ```bash
 # Replay the whole game

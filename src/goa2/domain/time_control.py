@@ -18,6 +18,9 @@ MAX_TIME_CONTROL_SECONDS = 24 * 60 * 60
 class TimeControlConfig(BaseModel):
     planning_allowance_seconds: int = Field(ge=0, le=MAX_TIME_CONTROL_SECONDS)
     resolution_allowance_seconds: int = Field(ge=0, le=MAX_TIME_CONTROL_SECONDS)
+    # One-shot allowance for the first primary Resolution actor of each
+    # shared turn. A default keeps older saved configurations valid.
+    initiative_bonus_seconds: int = Field(default=0, ge=0, le=MAX_TIME_CONTROL_SECONDS)
     response_grant_seconds: int = Field(ge=0, le=MAX_TIME_CONTROL_SECONDS)
     initial_time_bank_seconds: int = Field(ge=0, le=MAX_TIME_CONTROL_SECONDS)
     time_bank_increment_seconds: int = Field(ge=0, le=MAX_TIME_CONTROL_SECONDS)
@@ -47,6 +50,10 @@ class TimeControlConfig(BaseModel):
     @property
     def resolution_allowance_ms(self) -> int:
         return self.milliseconds(self.resolution_allowance_seconds)
+
+    @property
+    def initiative_bonus_ms(self) -> int:
+        return self.milliseconds(self.initiative_bonus_seconds)
 
     @property
     def response_grant_ms(self) -> int:
@@ -86,6 +93,7 @@ class ClockKind(StrEnum):
 class PlayerClockState(BaseModel):
     planning_allowance_ms: int = Field(default=0, ge=0)
     resolution_allowance_ms: int = Field(default=0, ge=0)
+    initiative_bonus_ms: int = Field(default=0, ge=0)
     response_time_ms: int = Field(default=0, ge=0)
     upgrade_allowance_ms: int = Field(default=0, ge=0)
     time_bank_ms: int = Field(default=0, ge=0)
@@ -98,6 +106,7 @@ class GameClockState(BaseModel):
     ready_hero_ids: list[str] = Field(default_factory=list)
     turn_round: int
     turn_number: int
+    initiative_bonus_hero_id: str | None = None
     level_up_round: int | None = None
     players: dict[str, PlayerClockState] = Field(default_factory=dict)
     active_kind: ClockKind | None = None
@@ -166,11 +175,13 @@ def begin_shared_turn(
     clock.turn_round = round_number
     clock.turn_number = turn_number
     clock.level_up_round = None
+    clock.initiative_bonus_hero_id = None
     clock.credited_response_request_ids = []
     clock.human_action_seen_this_turn = False
     for player in clock.players.values():
         player.planning_allowance_ms = config.planning_allowance_ms
         player.resolution_allowance_ms = config.resolution_allowance_ms
+        player.initiative_bonus_ms = 0
         player.response_time_ms = 0
         player.upgrade_allowance_ms = 0
         player.planning_complete = False
@@ -184,6 +195,23 @@ def begin_shared_turn(
     clock.active_decision_hero_ids = []
     clock.active_request_id = None
     clock.last_settled_at_ms = now_ms
+    clock.revision += 1
+    return True
+
+
+def grant_initiative_bonus(
+    clock: GameClockState,
+    config: TimeControlConfig,
+    hero_id: str,
+) -> bool:
+    """Grant the one-shot bonus to the first primary Resolution actor."""
+    if clock.initiative_bonus_hero_id is not None:
+        return False
+    player = clock.players.get(str(hero_id))
+    if player is None:
+        return False
+    clock.initiative_bonus_hero_id = str(hero_id)
+    player.initiative_bonus_ms = config.initiative_bonus_ms
     clock.revision += 1
     return True
 
@@ -271,7 +299,7 @@ def _spending_fields(kind: ClockKind) -> tuple[str, ...]:
     if kind == ClockKind.PLANNING:
         return ("planning_allowance_ms", "time_bank_ms")
     if kind == ClockKind.RESOLUTION:
-        return ("resolution_allowance_ms", "time_bank_ms")
+        return ("initiative_bonus_ms", "resolution_allowance_ms", "time_bank_ms")
     if kind == ClockKind.RESPONSE:
         return ("response_time_ms", "resolution_allowance_ms", "time_bank_ms")
     return ("upgrade_allowance_ms", "time_bank_ms")

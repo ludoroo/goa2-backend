@@ -566,12 +566,6 @@ def _build_tokens_view(
     state: GameState, for_hero_id: HeroID | None = None, reveal_all: bool = False
 ) -> list[dict[str, Any]]:
     """Build a view of placed tokens with facedown identities hidden."""
-    viewer_team = None
-    if for_hero_id:
-        hero = state.get_hero(for_hero_id)
-        if hero:
-            viewer_team = hero.team
-
     placed_tokens = sorted(
         (
             token
@@ -587,14 +581,9 @@ def _build_tokens_view(
         loc = state.entity_locations[BoardEntityID(str(token.id))]
 
         visible_type = token.token_type.value
-        if token.is_facedown and not reveal_all:
-            owner_team = None
-            if token.owner_id:
-                owner = state.get_hero(token.owner_id)
-                if owner:
-                    owner_team = owner.team
-            if viewer_team is None or viewer_team != owner_team:
-                visible_type = "mine"
+        owner_is_viewer = for_hero_id is not None and token.owner_id == for_hero_id
+        if token.is_facedown and not reveal_all and not owner_is_viewer:
+            visible_type = "mine"
 
         is_hidden = token.is_facedown and visible_type == "mine"
         tokens_view.append(

@@ -27,6 +27,15 @@ from goa2.domain.types import BoardEntityID, HeroID, UnitID
 logger = logging.getLogger(__name__)
 
 
+class PublicRevealedCard(BaseModel):
+    """A permanently public card identity learned during revelation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    hero_id: str
+    card_id: str
+
+
 class GameState(BaseModel):
     """
     The Mutable State of the World.
@@ -95,6 +104,10 @@ class GameState(BaseModel):
         default_factory=dict
     )  # Planning Phase Buffer for heroes that may play two cards (Emmitt's ultimate)
 
+    # Append-only public knowledge. The default keeps saves made before this
+    # tracker was introduced valid.
+    public_revealed_cards: tuple[PublicRevealedCard, ...] = ()
+
     planning_done: list[HeroID] = Field(
         default_factory=list
     )  # Two-card-capable heroes that explicitly closed planning with one card
@@ -161,6 +174,12 @@ class GameState(BaseModel):
 
     # Private field for cached validator (not serialized)
     _validator: Any | None = None
+
+    def record_public_revealed_card(self, hero_id: HeroID | str, card_id: str) -> None:
+        """Authoritatively and idempotently record a faceup committed card."""
+        record = PublicRevealedCard(hero_id=str(hero_id), card_id=str(card_id))
+        if record not in self.public_revealed_cards:
+            self.public_revealed_cards = (*self.public_revealed_cards, record)
 
     @property
     def coin_face(self) -> str:

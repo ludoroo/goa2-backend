@@ -517,9 +517,9 @@ def test_dread_razor_does_not_emit_select_number_mode_prompt() -> None:
         result = process_stack(state)
         run.latest_request = result.input_request
         run.events.extend(result.events)
-        assert run.latest_request is not None, (
-            f"Expected input after CHOOSE_ACTION (spawn_adjacent={adjacent})"
-        )
+        assert (
+            run.latest_request is not None
+        ), f"Expected input after CHOOSE_ACTION (spawn_adjacent={adjacent})"
         assert run.latest_request.request_type != InputRequestType.SELECT_NUMBER, (
             "Dread Razor must not emit a SELECT_NUMBER mode prompt "
             f"(spawn_adjacent={adjacent}); got {run.latest_request.request_type!r}"

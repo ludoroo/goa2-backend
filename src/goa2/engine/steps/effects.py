@@ -24,7 +24,7 @@ from goa2.domain.models.enums import DisplacementType, StatType
 from goa2.domain.state import GameState
 from goa2.domain.types import BoardEntityID, HeroID
 from goa2.engine.effect_manager import EffectManager
-from goa2.engine.steps.base import GameStep, StepResult
+from goa2.engine.steps.base import GameStep, StepResult, isolate_steps
 from goa2.engine.topology import get_topology_service
 
 logger = logging.getLogger(__name__)
@@ -166,7 +166,12 @@ class CreateEffectStep(GameStep):
                 resolved.append(step)
             return resolved
 
-        resolved_finishing = resolve_steps(self.finishing_steps)
+        # `resolve_steps` rebuilds steps with `model_copy`, which skips validators —
+        # so the steps it returns are still the ones stored on this step, and the
+        # Effect would share run state (pending_input, counters) with its template.
+        # `Effect.finishing_steps` is a plain `list[Any]` and isolates nothing, so
+        # the copy has to happen here, at the step -> Effect boundary.
+        resolved_finishing = isolate_steps(resolve_steps(self.finishing_steps))
 
         named_color: CardColor | None = None
         if self.named_color_key:

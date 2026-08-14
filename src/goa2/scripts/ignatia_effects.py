@@ -36,6 +36,7 @@ from goa2.domain.models.effect import (
 from goa2.engine.effects import CardEffect, register_effect
 from goa2.engine.filters_composite import CountMatchFilter, OrFilter
 from goa2.engine.filters_geometry import (
+    HasStraightLineDestinationFilter,
     InStraightLineFilter,
     NotInStraightLineFilter,
     StraightLinePathFilter,
@@ -50,6 +51,7 @@ from goa2.engine.filters_units import (
 from goa2.engine.steps import (
     AttackSequenceStep,
     CheckContextConditionStep,
+    CountStep,
     CreateEffectStep,
     DefeatUnitStep,
     FlipTieBreakerCoinStep,
@@ -96,6 +98,31 @@ def _excl(exclude: list[str]) -> list[ExcludeIdentityFilter]:
     if not exclude:
         return []
     return [ExcludeIdentityFilter(exclude_self=False, exclude_keys=list(exclude))]
+
+
+def _repeat_gate(prefix: str, target_filters: list) -> list[GameStep]:
+    """Steps that set ``{prefix}_can_repeat`` iff a legal repeat target exists.
+
+    ``MayRepeatOnceStep`` prompts before knowing whether its mandatory select
+    can be satisfied, so an unsatisfiable YES aborts the whole action. Carrying
+    no ``active_if_key``, these two get the branch flag under Equilibrium, so
+    the branch she did not pick leaves ``_can_repeat`` unset.
+    """
+    count_key = f"{prefix}_targets"
+    return [
+        CountStep(
+            target_type=TargetType.UNIT,
+            output_key=count_key,
+            filters=target_filters,
+            skip_immunity_filter=False,  # match SelectStep, which applies it
+        ),
+        CheckContextConditionStep(
+            input_key=count_key,
+            operator=">=",
+            threshold=1,
+            output_key=f"{prefix}_can_repeat",
+        ),
+    ]
 
 
 class _IgnatiaBranchEffect(CardEffect):
@@ -228,7 +255,7 @@ class _FireAttackEffect(_IgnatiaBranchEffect):
             damage=stats.primary_value,
             range_val=stats.range,
             is_ranged=True,
-            target_id_key=f"ign_{slot}_v1",
+            target_output_key=f"ign_{slot}_v1",
             target_filters=[line_filter, *_excl(exclude)],
         )
 
@@ -259,31 +286,40 @@ class LooselyAimedFireboltsEffect(_FireAttackEffect):
 
     def _orange_steps(self, state, hero, card, stats, slot, exclude):
         first = self._attack(stats, slot, InStraightLineFilter(), exclude)
-        repeat = MayRepeatOnceStep(
-            prompt="Repeat once on a different enemy hero in a straight line?",
-            steps_template=[
-                SelectStep(
-                    target_type=TargetType.UNIT,
-                    prompt="Target a different enemy hero in range and in a straight line",
-                    output_key=f"ign_{slot}_v2",
-                    is_mandatory=True,
-                    filters=[
-                        UnitTypeFilter(unit_type="HERO"),
-                        TeamFilter(relation="ENEMY"),
-                        RangeFilter(max_range=stats.range),
-                        InStraightLineFilter(),
-                        ExcludeIdentityFilter(exclude_keys=[f"ign_{slot}_v1", *exclude]),
-                    ],
-                ),
-                AttackSequenceStep(
-                    damage=stats.primary_value,
-                    range_val=stats.range,
-                    is_ranged=True,
-                    target_id_key=f"ign_{slot}_v2",
-                ),
-            ],
-        )
-        return [first, repeat]
+
+        def target_filters() -> list:
+            # Fresh instances: the gate and the select agree without aliasing.
+            return [
+                UnitTypeFilter(unit_type="HERO"),
+                TeamFilter(relation="ENEMY"),
+                RangeFilter(max_range=stats.range),
+                InStraightLineFilter(),
+                ExcludeIdentityFilter(exclude_keys=[f"ign_{slot}_v1", *exclude]),
+            ]
+
+        return [
+            first,
+            *_repeat_gate(f"ign_{slot}_lf", target_filters()),
+            MayRepeatOnceStep(
+                active_if_key=f"ign_{slot}_lf_can_repeat",
+                prompt="Repeat once on a different enemy hero in a straight line?",
+                steps_template=[
+                    SelectStep(
+                        target_type=TargetType.UNIT,
+                        prompt="Target a different enemy hero in range and in a straight line",
+                        output_key=f"ign_{slot}_v2",
+                        is_mandatory=True,
+                        filters=target_filters(),
+                    ),
+                    AttackSequenceStep(
+                        damage=stats.primary_value,
+                        range_val=stats.range,
+                        is_ranged=True,
+                        target_id_key=f"ign_{slot}_v2",
+                    ),
+                ],
+            ),
+        ]
 
     def _first_target_keys(self, slot):
         return [f"ign_{slot}_v1", f"ign_{slot}_v2"]
@@ -303,7 +339,7 @@ class _RangeExtremeAttackEffect(_IgnatiaBranchEffect):
                 damage=stats.primary_value,
                 range_val=1,
                 is_ranged=True,
-                target_id_key=f"ign_{slot}_v1",
+                target_output_key=f"ign_{slot}_v1",
                 target_filters=_excl(exclude),
             )
         ]
@@ -314,7 +350,7 @@ class _RangeExtremeAttackEffect(_IgnatiaBranchEffect):
                 damage=stats.primary_value,
                 range_val=stats.range,
                 is_ranged=True,
-                target_id_key=f"ign_{slot}_v1",
+                target_output_key=f"ign_{slot}_v1",
                 target_filters=[
                     RangeFilter(min_range=stats.range, max_range=stats.range),
                     *_excl(exclude),
@@ -333,40 +369,52 @@ class CrackOfDoomEffect(_RangeExtremeAttackEffect):
 
 @register_effect("imminent_eruption")
 class ImminentEruptionEffect(_RangeExtremeAttackEffect):
-    """Blue additionally "may repeat once on a minion" (adjacent, different)."""
+    """Blue additionally "may repeat once on a minion" (adjacent).
+
+    "A minion", not "a different minion": a first target that survives stays
+    eligible. (The ultimate's "different targets" exclusion still applies.)
+    """
 
     def _blue_steps(self, state, hero, card, stats, slot, exclude):
         first = AttackSequenceStep(
             damage=stats.primary_value,
             range_val=1,
             is_ranged=True,
-            target_id_key=f"ign_{slot}_v1",
+            target_output_key=f"ign_{slot}_v1",
             target_filters=_excl(exclude),
         )
-        repeat = MayRepeatOnceStep(
-            prompt="Repeat once on a different adjacent minion?",
-            steps_template=[
-                SelectStep(
-                    target_type=TargetType.UNIT,
-                    prompt="Target a different adjacent minion",
-                    output_key=f"ign_{slot}_v2",
-                    is_mandatory=True,
-                    filters=[
-                        UnitTypeFilter(unit_type="MINION"),
-                        TeamFilter(relation="ENEMY"),
-                        RangeFilter(max_range=1),
-                        ExcludeIdentityFilter(exclude_keys=[f"ign_{slot}_v1", *exclude]),
-                    ],
-                ),
-                AttackSequenceStep(
-                    damage=stats.primary_value,
-                    range_val=1,
-                    is_ranged=True,
-                    target_id_key=f"ign_{slot}_v2",
-                ),
-            ],
-        )
-        return [first, repeat]
+
+        def target_filters() -> list:
+            return [
+                UnitTypeFilter(unit_type="MINION"),
+                TeamFilter(relation="ENEMY"),
+                RangeFilter(max_range=1),
+                *_excl(exclude),
+            ]
+
+        return [
+            first,
+            *_repeat_gate(f"ign_{slot}_ie", target_filters()),
+            MayRepeatOnceStep(
+                active_if_key=f"ign_{slot}_ie_can_repeat",
+                prompt="Repeat once on an adjacent minion?",
+                steps_template=[
+                    SelectStep(
+                        target_type=TargetType.UNIT,
+                        prompt="Target an adjacent minion",
+                        output_key=f"ign_{slot}_v2",
+                        is_mandatory=True,
+                        filters=target_filters(),
+                    ),
+                    AttackSequenceStep(
+                        damage=stats.primary_value,
+                        range_val=1,
+                        is_ranged=True,
+                        target_id_key=f"ign_{slot}_v2",
+                    ),
+                ],
+            ),
+        ]
 
     def _first_target_keys(self, slot):
         return [f"ign_{slot}_v1", f"ign_{slot}_v2"]
@@ -387,7 +435,7 @@ class ChaosBoltEffect(_IgnatiaBranchEffect):
                 damage=stats.primary_value,
                 range_val=1,
                 is_ranged=True,
-                target_id_key=f"ign_{slot}_v1",
+                target_output_key=f"ign_{slot}_v1",
                 target_filters=[UnitTypeFilter(unit_type="MINION"), *_excl(exclude)],
             )
         ]
@@ -398,7 +446,7 @@ class ChaosBoltEffect(_IgnatiaBranchEffect):
                 damage=stats.primary_value,
                 range_val=stats.range,
                 is_ranged=True,
-                target_id_key=f"ign_{slot}_v1",
+                target_output_key=f"ign_{slot}_v1",
                 target_filters=[UnitTypeFilter(unit_type="HERO"), *_excl(exclude)],
             )
         ]
@@ -544,6 +592,9 @@ class _MoveHeroLineEffect(_IgnatiaBranchEffect):
                     UnitTypeFilter(unit_type="HERO"),
                     TeamFilter(relation=hero_relation),
                     RangeFilter(max_range=stats.radius),
+                    HasStraightLineDestinationFilter(
+                        distance=self.min_dist, max_distance=self.max_dist
+                    ),
                     *_excl(exclude),
                 ],
             ),

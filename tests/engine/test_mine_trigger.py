@@ -241,32 +241,26 @@ def test_second_move_in_same_turn_triggers_mine():
     assert BoardEntityID("mine_1") not in state.entity_locations
 
 
-def test_two_moves_each_trigger_own_blast_mine():
-    """Two separate moves in one turn each trigger their own blast mine.
+def _blast_card(cid: str) -> Card:
+    return Card(
+        id=cid,
+        name="Test Card",
+        tier=CardTier.I,
+        color=CardColor.RED,
+        primary_action=ActionType.ATTACK,
+        primary_action_value=2,
+        secondary_actions={},
+        effect_id="e",
+        effect_text="t",
+        initiative=5,
+        state=CardState.HAND,
+        is_facedown=False,
+    )
 
-    Guards against regressions where per-move mine state leaks across moves:
-    each mine must be removed and each move's blast must force *its own*
-    victim (not the previous mover) to discard.
-    """
 
-    def _card(cid: str) -> Card:
-        return Card(
-            id=cid,
-            name="Test Card",
-            tier=CardTier.I,
-            color=CardColor.RED,
-            primary_action=ActionType.ATTACK,
-            primary_action_value=2,
-            secondary_actions={},
-            effect_id="e",
-            effect_text="t",
-            initiative=5,
-            state=CardState.HAND,
-            is_facedown=False,
-        )
-
+def _make_two_corridor_state_with_blast_mines() -> tuple[GameState, Hero, Hero]:
+    """Two disjoint corridors, one enemy MINE_BLAST on each; each hero has one card."""
     board = Board()
-    # Corridor A: hero_a crosses mine_1. Corridor B: hero_b crosses mine_2.
     for h in [
         Hex(q=0, r=0, s=0),
         Hex(q=1, r=-1, s=0),
@@ -279,8 +273,8 @@ def test_two_moves_each_trigger_own_blast_mine():
 
     a = Hero(id=HeroID("hero_a"), name="A", team=TeamColor.BLUE, deck=[])
     b = Hero(id=HeroID("hero_b"), name="B", team=TeamColor.BLUE, deck=[])
-    a.hand.append(_card("a_card"))
-    b.hand.append(_card("b_card"))
+    a.hand.append(_blast_card("a_card"))
+    b.hand.append(_blast_card("b_card"))
     mine_owner = Hero(id=HeroID("hero_min"), name="Min", team=TeamColor.RED, deck=[])
     state = GameState(
         board=board,
@@ -315,6 +309,18 @@ def test_two_moves_each_trigger_own_blast_mine():
     state.place_entity(BoardEntityID("mine_1"), Hex(q=1, r=-1, s=0))
     state.place_entity(BoardEntityID("mine_2"), Hex(q=1, r=1, s=-2))
 
+    return state, a, b
+
+
+def test_two_moves_each_trigger_own_blast_mine():
+    """Two separate moves in one turn each trigger their own blast mine.
+
+    Guards against regressions where per-move mine state leaks across moves:
+    each mine must be removed and each move's blast must force *its own*
+    victim (not the previous mover) to discard.
+    """
+    state, a, b = _make_two_corridor_state_with_blast_mines()
+
     # Move 1: hero_a across mine_1 -> blast forces hero_a to discard.
     state.execution_context["target_a"] = {"q": 2, "r": -2, "s": 0}
     push_steps(
@@ -345,6 +351,51 @@ def test_two_moves_each_trigger_own_blast_mine():
 
     assert BoardEntityID("mine_2") not in state.entity_locations
     assert b.hand == []
+
+
+def test_batched_moves_route_each_blast_to_its_own_victim():
+    """Batched MoveUnitStep resolves must not clobber each other's mine victim.
+
+    Both moves commit before either TriggerMineStep runs, so a shared-context
+    routing scheme would misroute the first blast to hero B.
+    """
+    state, a, b = _make_two_corridor_state_with_blast_mines()
+
+    move_a = MoveUnitStep(unit_id="hero_a", destination_key="target_a", range_val=2)
+    move_b = MoveUnitStep(unit_id="hero_b", destination_key="target_b", range_val=2)
+
+    state.execution_context["target_a"] = {"q": 2, "r": -2, "s": 0}
+    state.execution_context["target_b"] = {"q": 2, "r": 0, "s": -2}
+
+    # Resolve both moves on the shared context before any trigger fires.
+    result_a = move_a.resolve(state, state.execution_context)
+    result_b = move_b.resolve(state, state.execution_context)
+
+    assert state.entity_locations[BoardEntityID("hero_a")] == Hex(q=2, r=-2, s=0)
+    assert state.entity_locations[BoardEntityID("hero_b")] == Hex(q=2, r=0, s=-2)
+    assert any(isinstance(s, TriggerMineStep) for s in result_a.new_steps)
+    assert any(isinstance(s, TriggerMineStep) for s in result_b.new_steps)
+
+    # LIFO push: A_chain runs first, then B_chain.
+    push_steps(state, [*result_a.new_steps, *result_b.new_steps])
+
+    req = process_stack(state).input_request
+    assert req is not None and req["type"] == "SELECT_CARD"
+    assert req["player_id"] == "hero_a"
+    assert req["valid_options"] == ["a_card"]
+    state.execution_stack[-1].pending_input = {"selection": "a_card"}
+
+    req = process_stack(state).input_request
+    assert req is not None and req["type"] == "SELECT_CARD"
+    assert req["player_id"] == "hero_b"
+    assert req["valid_options"] == ["b_card"]
+    state.execution_stack[-1].pending_input = {"selection": "b_card"}
+    process_stack(state)
+
+    assert BoardEntityID("mine_1") not in state.entity_locations
+    assert BoardEntityID("mine_2") not in state.entity_locations
+    assert a.hand == [] and any(c.id == "a_card" for c in a.discard_pile)
+    assert b.hand == [] and any(c.id == "b_card" for c in b.discard_pile)
 
 
 def test_dud_mine_no_discard():

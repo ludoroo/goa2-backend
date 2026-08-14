@@ -21,6 +21,7 @@ from goa2.domain.time_control import (
     begin_shared_turn,
     exhausted_active_hero_ids,
     finish_game_clock,
+    grant_initiative_bonus,
     grant_response_time,
     milliseconds_until_next_exhaustion,
     settle_clock,
@@ -122,6 +123,13 @@ def reconcile_game_clock(game: ManagedGame, at_ms: int) -> None:
         finish_game_clock(clock, at_ms)
         return
 
+    if game.pending_override is not None:
+        # A 120s override negotiation is not the active player's doing:
+        # pause every personal clock while the proposal is open. Deliberate
+        # departure from the rollback() precedent of never refunding time.
+        activate_clocks(clock, None, request_id=None, now_ms=at_ms)
+        return
+
     if (clock.turn_round, clock.turn_number) != (state.round, state.turn):
         completed_automatically = not clock.human_action_seen_this_turn
         clock.consecutive_automatic_turns = (
@@ -203,10 +211,16 @@ def reconcile_game_clock(game: ManagedGame, at_ms: int) -> None:
     if target not in clock.players:
         activate_clocks(clock, None, request_id=request.id, now_ms=at_ms)
         return
-    is_response = state.resolution_owner_id is not None and str(state.resolution_owner_id) != target
+    owner = str(state.resolution_owner_id) if state.resolution_owner_id is not None else None
+    is_response = owner is not None and owner != target
     kind = ClockKind.RESPONSE if is_response else ClockKind.RESOLUTION
     if is_response:
         grant_response_time(clock, config, request.id, [target])
+    elif owner == target:
+        # Only a hero prompted during their own turn may claim the one-shot
+        # bonus. Turn-boundary prompts (expiring-effect finishing steps) run
+        # with no resolution owner and must not consume it.
+        grant_initiative_bonus(clock, config, target)
     activate_clocks(clock, kind, [target], request_id=request.id, now_ms=at_ms)
 
 
@@ -625,12 +639,33 @@ async def timed_rest_mutation(
     automatic decision itself and must broadcast the resulting state. The
     ``finally`` also guarantees that a clock paused for backend processing is
     reconciled and rescheduled when the requested game action is rejected.
+
+    Bot scheduling: this seam is the single blessed place where every REST
+    mutation ends its transactional section. On the success path we always
+    schedule the bot coordinator after ``finalize_timed_mutation``. On the
+    exception path we only schedule when the failed request also fired one
+    or more **inline timer events** — those events applied a real
+    ``TIMER_EXPIRED`` mutation under ``game.lock`` (persisted + broadcast
+    in the ``finally``) that a paired bot may now owe a response to. A
+    pure client-validation rejection (bad card id, wrong phase, empty
+    hand, etc.) with no timer events did not mutate state; there is no
+    new work for a bot to react to and no schedule call is warranted.
+    Individual route handlers must not call :func:`schedule_bot_drive`
+    themselves for mutations that flow through this seam.
     """
     messages = []
+    # ``timer_events`` is captured inside the inner locked section so the
+    # exception path can inspect whether an inline timeout actually
+    # landed. The outer ``except`` runs after the inner ``async with
+    # game.lock`` has released, so we cannot re-read the timer state
+    # from the closure without help.
+    inline_timeout_fired = False
     async with game.outbound_lock:
         try:
             async with game.lock:
                 timer_events = prepare_timed_mutation(game)
+                if timer_events:
+                    inline_timeout_fired = True
                 try:
                     yield timer_events
                 finally:
@@ -647,12 +682,36 @@ async def timed_rest_mutation(
                 from goa2.server.ws import _send_captured_broadcast
 
                 await _send_captured_broadcast(game, messages)
+            # Only schedule on the exception path when an inline timeout
+            # produced observable state changes. A pure client-validation
+            # rejection has no bot follow-up work; skipping the schedule
+            # avoids a needless task spawn on the hot error path and,
+            # more importantly, avoids scheduling for a game whose
+            # runnable-state invariant :func:`schedule_bot_drive` would
+            # have to re-check anyway. When the runnable-state gate
+            # short-circuits (timed match not yet RUNNING) the schedule
+            # is still safe — the seam is idempotent — but skipping
+            # here keeps the error path minimal.
+            if inline_timeout_fired and not game.removed and game.bot_specs:
+                from goa2.server.bots import schedule_bot_drive
+
+                schedule_bot_drive(game, registry)
             raise
 
         if messages:
             from goa2.server.ws import _send_captured_broadcast
 
             await _send_captured_broadcast(game, messages)
+
+        # Central bot-drive seam: every successful REST mutation exits
+        # here, so route handlers get one authoritative scheduling point
+        # they cannot forget. :func:`schedule_bot_drive` re-checks the
+        # runnable-state invariant so a mutation on a match still in
+        # WAITING_FOR_PLAYERS never spawns a bot task.
+        if not game.removed and game.bot_specs:
+            from goa2.server.bots import schedule_bot_drive
+
+            schedule_bot_drive(game, registry)
 
 
 def schedule_deadline(game: ManagedGame, registry: GameRegistry) -> None:
@@ -684,8 +743,15 @@ async def _deadline_worker(
 ) -> None:
     try:
         await asyncio.sleep(delay_ms / 1000)
+        # Tombstone: skip all side effects if the game was removed while we
+        # slept. Cancellation is the primary teardown mechanism but a race
+        # between remove() and this worker waking is possible.
+        if game.removed:
+            return
         async with game.outbound_lock:
             async with game.lock:
+                if game.removed:
+                    return
                 clock = game.session.state.clock
                 if clock is None or clock.revision != revision:
                     return
@@ -711,6 +777,16 @@ async def _deadline_worker(
             from goa2.server.ws import _send_captured_broadcast
 
             await _send_captured_broadcast(game, messages)
+
+        # After a timeout has been applied, the next decision may belong to
+        # a server-managed bot. Lazily import to avoid a circular dependency
+        # at module load (bots.py imports from time_control). ``removed``
+        # blocks scheduling inside :func:`schedule_bot_drive` too, so a
+        # race between shutdown and this branch is safe.
+        if emitted and game.bot_specs and not game.removed:
+            from goa2.server.bots import schedule_bot_drive
+
+            schedule_bot_drive(game, registry)
     except asyncio.CancelledError:
         raise
     except Exception:

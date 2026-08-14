@@ -854,7 +854,7 @@ class BloodFuryEffect(CardEffect):
             AttackSequenceStep(
                 damage=stats.primary_value,
                 range_val=1,
-                target_id_key="bf_victim_1",
+                target_output_key="bf_victim_1",
             ),
             # Condition check
             CountStep(
@@ -880,7 +880,7 @@ class BloodFuryEffect(CardEffect):
                     AttackSequenceStep(
                         damage=stats.primary_value,
                         range_val=1,
-                        target_id_key="bf_victim_2",
+                        target_output_key="bf_victim_2",
                         target_filters=[
                             ExcludeIdentityFilter(exclude_keys=["bf_victim_1"]),
                         ],
@@ -915,7 +915,7 @@ class BloodFrenzyEffect(CardEffect):
             AttackSequenceStep(
                 damage=stats.primary_value,
                 range_val=1,
-                target_id_key="bfr_victim_1",
+                target_output_key="bfr_victim_1",
             ),
             # Condition check (once, after initial attack)
             CountStep(
@@ -943,7 +943,7 @@ class BloodFrenzyEffect(CardEffect):
                 AttackSequenceStep(
                     damage=stats.primary_value,
                     range_val=1,
-                    target_id_key=f"bfr_victim_{i}",
+                    target_output_key=f"bfr_victim_{i}",
                     target_filters=[
                         ExcludeIdentityFilter(exclude_keys=exclude_keys),
                     ],
@@ -1329,7 +1329,7 @@ class SwiftJusticeEffect(CardEffect):
                 damage=stats.primary_value,
                 is_ranged=True,
                 range_val=stats.range,
-                target_id_key="sj_victim_a",
+                target_output_key="sj_victim_a",
                 target_filters=[
                     UnitTypeFilter(unit_type="HERO"),
                     CardsInContainerFilter(container=CardContainerType.DISCARD, max_cards=0),
@@ -1350,7 +1350,7 @@ class SwiftJusticeEffect(CardEffect):
             AttackSequenceStep(
                 damage=stats.primary_value,
                 range_val=1,
-                target_id_key="sj_victim_b",
+                target_output_key="sj_victim_b",
                 active_if_key="sj_chose_adjacent",
                 is_ranged=True,
             ),
@@ -1363,7 +1363,7 @@ class SwiftJusticeEffect(CardEffect):
                 AttackSequenceStep(
                     damage=stats.primary_value,
                     range_val=1,
-                    target_id_key="sj_ult_victim_b",
+                    target_output_key="sj_ult_victim_b",
                     active_if_key="sj_chose_ranged",
                     is_ranged=True,
                     is_mandatory=False,
@@ -1376,7 +1376,7 @@ class SwiftJusticeEffect(CardEffect):
                         damage=stats.primary_value,
                         range_val=stats.range,
                         is_ranged=True,
-                        target_id_key="sj_ult_victim_a",
+                        target_output_key="sj_ult_victim_a",
                         target_filters=[
                             UnitTypeFilter(unit_type="HERO"),
                             CardsInContainerFilter(

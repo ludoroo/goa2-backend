@@ -341,9 +341,7 @@ def test_hand_crossbow_present_when_only_bounty_hero_in_range(arena):
         ("littlefinger_of_death", Hex(q=2, r=0, s=-2)),
     ],
 )
-def test_finger_family_present_when_only_discard_hero_in_range(
-    arena, card_id, victim_hex
-):
+def test_finger_family_present_when_only_discard_hero_in_range(arena, card_id, victim_hex):
     """Finger / Littlefinger of Death: an enemy hero with a discarded card
     sitting at range (not adjacent) satisfies ONLY the ranged branch."""
     hero = Hero(id="hero_dodger", name="Dodger", team=TeamColor.RED, deck=[])

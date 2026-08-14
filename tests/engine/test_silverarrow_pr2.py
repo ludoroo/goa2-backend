@@ -126,7 +126,8 @@ class TestRainOfArrows:
         ]
 
         first_attack: AttackSequenceStep = steps[0]
-        assert first_attack.target_id_key == "rain_victim_1"
+        assert first_attack.target_id_key is None
+        assert first_attack.target_output_key == "rain_victim_1"
         assert first_attack.is_ranged is True
 
         check_type: CheckUnitTypeStep = steps[1]

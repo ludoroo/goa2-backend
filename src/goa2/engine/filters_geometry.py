@@ -251,14 +251,19 @@ class HasStraightLineDestinationFilter(FilterCondition):
     some straight line — i.e. at least one of the six rays ends on a free,
     reachable hex.
 
-    Without this, a hero with every line blocked would still be offered as a
-    target and then dead-end at the destination select. It deliberately reuses
-    the same filters the destination select applies, so "offered" and
-    "selectable" can never disagree.
+    With ``max_distance`` set ("move 2 or 3 spaces"), any landing in
+    [distance, max_distance] qualifies — the bounds differ where a passable
+    token (a Mine) is traversable but not landable.
+
+    A hero with every line blocked is not a legal target for a mandatory move:
+    offering one would dead-end at the destination select. This runs the same
+    filters that select applies, so "offered" and "selectable" can never
+    disagree.
     """
 
     type: FilterType = FilterType.HAS_STRAIGHT_LINE_DESTINATION
     distance: int = 2
+    max_distance: int | None = None  # None -> exactly `distance`
     pass_through_obstacles: bool = False
 
     def apply(self, candidate: Any, state: GameState, context: dict) -> bool:
@@ -271,9 +276,8 @@ class HasStraightLineDestinationFilter(FilterCondition):
 
         from goa2.engine.filters_hex import ObstacleFilter, RangeFilter
 
-        in_range = RangeFilter(
-            min_range=self.distance, max_range=self.distance, origin_id=candidate
-        )
+        max_distance = self.max_distance if self.max_distance is not None else self.distance
+        in_range = RangeFilter(min_range=self.distance, max_range=max_distance, origin_id=candidate)
         path_clear = StraightLinePathFilter(
             origin_id=candidate, pass_through_obstacles=self.pass_through_obstacles
         )
@@ -281,15 +285,16 @@ class HasStraightLineDestinationFilter(FilterCondition):
 
         for direction in range(6):
             step = origin.neighbor(direction) - origin
-            destination = origin + step.scale(self.distance)
-            if destination not in state.board.tiles:
-                continue
-            if not in_range.apply(destination, state, context):
-                continue
-            if not path_clear.apply(destination, state, context):
-                continue
-            if landing_free.apply(destination, state, context):
-                return True
+            for dist in range(self.distance, max_distance + 1):
+                destination = origin + step.scale(dist)
+                if destination not in state.board.tiles:
+                    break  # nothing further out along this ray exists either
+                if not in_range.apply(destination, state, context):
+                    continue
+                if not path_clear.apply(destination, state, context):
+                    break  # the ray is blocked from here on
+                if landing_free.apply(destination, state, context):
+                    return True
 
         return False
 

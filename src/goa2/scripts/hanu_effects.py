@@ -506,7 +506,7 @@ class FightAndFlightEffect(CardEffect):
                 damage=stats.primary_value,
                 range_val=1,
                 is_ranged=card.is_ranged,
-                target_id_key="ff_victim",
+                target_output_key="ff_victim",
             ),
             # "not defeated" == the attack was blocked (target survived).
             CheckContextConditionStep(

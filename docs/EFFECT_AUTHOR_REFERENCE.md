@@ -70,8 +70,9 @@ All steps inherit from `GameStep` which provides these base fields:
 | `damage` | `int` | *required* | Base attack damage |
 | `range_val` | `int` | `1` | Attack range (1 = adjacent) |
 | `is_ranged` | `bool` | `False` | **Explicit ranged flag.** True = ranged attack, False = melee attack. Effects must set this explicitly for attacks that should be treated as ranged for defense card purposes. |
-| `target_id_key` | `str \| None` | `None` | If set, skips target selection and uses this context key |
-| `target_filters` | `List[FilterCondition]` | `[]` | Additional filters for target selection (added to default `RangeFilter` + `TeamFilter(ENEMY)`) |
+| `target_id_key` | `str \| None` | `None` | **Input.** Read a target chosen by an earlier step. Skips selection. If the key is missing, there is no attack — see "Choosing the target channel" below. |
+| `target_output_key` | `str \| None` | `None` | **Output.** This step picks its own target (restrictions go in `target_filters`) and stores it under this key so later steps can read who was hit. |
+| `target_filters` | `List[FilterCondition]` | `[]` | Additional filters for target selection (added to default `RangeFilter` + `TeamFilter(ENEMY)`). **Only read when this step does the picking** — ignored when a target arrives via `target_id_key`. |
 | `damage_bonus_key` | `str \| None` | `None` | Context key containing `int` to add to damage |
 | `range_bonus_key` | `str \| None` | `None` | Context key containing `int` to add to range |
 
@@ -79,9 +80,12 @@ All steps inherit from `GameStep` which provides these base fields:
 - `attack_is_ranged` → `bool` (True if `is_ranged=True`, False otherwise)
 - `attacker_id` → `str` (current actor ID)
 - `attack_damage` → `int` (effective damage value)
-- `victim_id` → `str` (selected target, via inner `SelectStep` with `output_key="victim_id"`)
+- `attack_is_basic` → `bool` (source card is GOLD/SILVER)
+- `victim_id` → `str` (selected target, via inner `SelectStep`; under `target_output_key` instead when set)
 - `defense_value`, `defense_card_id`, `defender_id`, `is_primary_defense` → set by `ReactionWindowStep`
 - `block_succeeded` → `bool` (set by `ResolveCombatStep`)
+
+None of these are written when the attack fizzles (see below) — a swing that never happened leaves no trace for later steps in the same turn to misread.
 
 **Context Read:**
 - Value of `damage_bonus_key` if set
@@ -89,6 +93,34 @@ All steps inherit from `GameStep` which provides these base fields:
 - Value of `target_id_key` if set
 
 **Mandatory/Optional:** Uses `is_mandatory` from base. The inner `SelectStep` inherits mandatory behavior — if no valid targets exist and step is mandatory, action aborts.
+
+**Choosing the target channel:**
+
+The two keys are separate channels, and which you set declares what a missing target means:
+
+| You set | Target resolution | If nothing is there |
+|---|---|---|
+| neither | picks its own, stores under `victim_id` | mandatory select aborts as usual |
+| `target_id_key` only | consumes the preselection | **no attack**; aborts the action if `is_mandatory`, fizzles quietly otherwise |
+| `target_output_key` only | picks its own, stores under that key | mandatory select aborts as usual |
+| both | prefers the preselection, else picks into the output key | — |
+
+**Rule of thumb:** if the restriction lives on a preceding `SelectStep`, use `target_id_key`. If it lives in `target_filters`, use `target_output_key`.
+
+```python
+# INPUT — a preceding select carries the restriction.
+SelectStep(target_type=TargetType.UNIT, output_key="thunder_target", is_mandatory=True,
+           filters=[RangeFilter(max_range=r), TeamFilter(relation="ENEMY"),
+                    NotInStraightLineFilter()]),
+AttackSequenceStep(damage=..., target_id_key="thunder_target"),
+
+# OUTPUT — no producer; this step is the picker, and later steps read the victim.
+AttackSequenceStep(damage=..., target_output_key="ff_victim",
+                   target_filters=[InStraightLineFilter()]),
+CheckContextConditionStep(input_key="block_succeeded", ...),   # reads the aftermath
+```
+
+Do not reach for `target_id_key` as an output channel. The step used to infer the difference, and a missing key silently fell back to a picker carrying only range + enemy team — dropping whatever restriction the producing select held, so the player could hit any enemy in range (issue #25). Splitting the channels makes the worst misclassification a card that no-ops, which is visible and testable.
 
 ---
 

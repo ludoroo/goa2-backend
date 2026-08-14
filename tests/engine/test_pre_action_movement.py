@@ -308,7 +308,7 @@ class TestPreActionMovementViaDefense:
                 AttackSequenceStep(
                     damage=3,
                     range_val=3,
-                    target_id_key="victim",
+                    target_output_key="victim",
                 )
             ],
         )
@@ -361,7 +361,16 @@ class TestPreActionMovementViaDefense:
         basic_state.current_actor_id = "hero_misa"
         basic_state.place_entity("enemy", Hex(q=1, r=0, s=-1))
 
-        push_steps(basic_state, [AttackSequenceStep(damage=3, range_val=3, target_id_key="victim")])
+        push_steps(
+            basic_state,
+            [
+                AttackSequenceStep(
+                    damage=3,
+                    range_val=3,
+                    target_output_key="victim",
+                )
+            ],
+        )
 
         assert process_stack(basic_state).input_request["type"] == "SELECT_UNIT"
         basic_state.execution_stack[-1].pending_input = {"selection": "enemy"}
@@ -380,7 +389,16 @@ class TestPreActionMovementViaDefense:
         basic_state.current_actor_id = "hero_misa"
         basic_state.place_entity("enemy", Hex(q=1, r=0, s=-1))
 
-        push_steps(basic_state, [AttackSequenceStep(damage=3, range_val=3, target_id_key="victim")])
+        push_steps(
+            basic_state,
+            [
+                AttackSequenceStep(
+                    damage=3,
+                    range_val=3,
+                    target_output_key="victim",
+                )
+            ],
+        )
 
         assert process_stack(basic_state).input_request["type"] == "SELECT_UNIT"
         basic_state.execution_stack[-1].pending_input = {"selection": "enemy"}

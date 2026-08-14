@@ -82,20 +82,20 @@ class TestBindEffectCards:
         assert step.source_card_id == "card_1"
 
     def test_binds_effect_steps_nested_in_a_repeat_template(self):
-        inner = _effect_step()
-        step = MayRepeatOnceStep(steps_template=[inner])
+        step = MayRepeatOnceStep(steps_template=[_effect_step()])
 
         bind_effect_cards([step], "card_1")
 
-        assert inner.source_card_id == "card_1"
+        # Nested steps are isolated copies (see GameStep._isolate_nested_steps),
+        # so assert through the container rather than the source object.
+        assert step.steps_template[0].source_card_id == "card_1"
 
     def test_binds_effect_steps_nested_in_finishing_steps(self):
-        inner = _effect_step()
-        step = _effect_step(finishing_steps=[inner])
+        step = _effect_step(finishing_steps=[_effect_step()])
 
         bind_effect_cards([step], "card_1")
 
-        assert inner.source_card_id == "card_1"
+        assert step.finishing_steps[0].source_card_id == "card_1"
 
     def test_leaves_an_explicit_card_alone(self):
         step = _effect_step(source_card_id="other_card")

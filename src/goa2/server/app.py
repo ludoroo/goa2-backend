@@ -15,6 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from goa2.draft.errors import DraftError
+from goa2.server.bots import (
+    cancel_all_bot_tasks,
+    start_bot_lifecycle,
+)
 from goa2.server.draft_registry import DraftRegistry
 from goa2.server.draft_ws import router as draft_ws_router
 from goa2.server.errors import (
@@ -29,6 +33,7 @@ from goa2.server.routes_bug_reports import public_router as bug_reports_router
 from goa2.server.routes_draft import router as draft_router
 from goa2.server.routes_games import router as games_router
 from goa2.server.routes_heroes import router as heroes_router
+from goa2.server.routes_overrides import router as overrides_router
 from goa2.server.time_control import resume_timers, stop_timers
 from goa2.server.ws import router as ws_router
 
@@ -78,11 +83,30 @@ async def lifespan(app: FastAPI):
     app.state.draft_registry = DraftRegistry()
     await resume_timers(registry)
 
+    # After timers are resumed and the event loop is fully live, run the
+    # single lifecycle seam for every restored game that carries bot
+    # metadata. ``start_bot_lifecycle`` acquires ``outbound_lock`` →
+    # ``game.lock``, auto-readies bot heroes, and — critically — persists
+    # + reconciles the clock and schedules the initial deadline task
+    # *before* handing control to the bot coordinator. This closes the
+    # race where a restored bot would previously compute against a clock
+    # that was still ``WAITING_FOR_PLAYERS`` on disk. It must run after
+    # ``resume_timers`` (which reconciles surviving deadlines) and after
+    # ``restore_all`` populates the registry.
+    for game in registry.all_games():
+        if not game.bot_specs:
+            continue
+        await start_bot_lifecycle(game, registry)
+
     cleanup_task = asyncio.create_task(_cleanup_loop(registry))
     try:
         yield
     finally:
         await stop_timers(registry)
+        # Cancel any live bot workers before we return. This runs before the
+        # cleanup task is cancelled so a shutting-down coordinator does not
+        # race the cleanup loop for a game removal.
+        await cancel_all_bot_tasks(registry)
         cleanup_task.cancel()
         with suppress(asyncio.CancelledError):
             await cleanup_task
@@ -94,6 +118,7 @@ def create_app() -> FastAPI:
     # Routers
     app.include_router(heroes_router)
     app.include_router(games_router)
+    app.include_router(overrides_router)
     app.include_router(bug_reports_router)
     app.include_router(draft_router)
     app.include_router(ws_router)
@@ -106,10 +131,19 @@ def create_app() -> FastAPI:
     from goa2.server.admin import admin_api_enabled
     from goa2.server.routes_bug_reports import admin_router as bug_reports_admin_router
     from goa2.server.routes_replays import router as replays_router
+    from goa2.server.routes_shares import admin_router as shares_admin_router
+    from goa2.server.routes_shares import router as shared_router
 
     if admin_api_enabled():
         app.include_router(replays_router)
         app.include_router(bug_reports_admin_router)
+        app.include_router(shares_admin_router)
+
+    # Shared replays are mounted unconditionally: the share token is itself the
+    # credential and recipients are not admins. Only minting (on the admin
+    # replays router) can create one, so a server with no admin token configured
+    # can serve existing shares but never make new ones.
+    app.include_router(shared_router)
 
     # CORS
     allowed_origins = os.environ.get("GOA2_CORS_ORIGINS", "").split(",")

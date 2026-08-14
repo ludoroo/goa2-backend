@@ -5,7 +5,11 @@ from goa2.domain.input import InputRequestType, create_input_request
 from goa2.domain.models import TeamColor, TokenType
 from goa2.domain.state import GameState
 from goa2.engine.setup import GameSetup
-from goa2.server.visibility import events_for_viewer, input_request_for_viewer
+from goa2.server.visibility import (
+    awaiting_input_hero_ids,
+    events_for_viewer,
+    input_request_for_viewer,
+)
 
 MAP_PATH = "src/goa2/data/maps/forgotten_island.json"
 
@@ -62,6 +66,47 @@ def test_team_and_simultaneous_requests_are_narrowed_to_authorized_players():
     assert input_request_for_viewer(simultaneous, state, None) is None
 
 
+def test_awaiting_input_names_the_responder_of_a_private_request():
+    state = _state()
+    request = create_input_request(
+        InputRequestType.SELECT_CARD_OR_PASS,
+        player_id="hero_wasp",
+        prompt="Choose a defense",
+        options=[{"id": "magnetic_dagger", "text": "Magnetic Dagger"}],
+    )
+
+    assert awaiting_input_hero_ids(request, state) == ["hero_wasp"]
+
+
+def test_awaiting_input_lists_every_member_of_a_team_request():
+    state = _state()
+    request = create_input_request(
+        InputRequestType.CHOOSE_ACTOR,
+        player_id=f"team:{TeamColor.RED.value}",
+        options=["hero_arien"],
+    )
+
+    assert awaiting_input_hero_ids(request, state) == ["hero_arien"]
+
+
+def test_awaiting_input_lists_every_player_with_a_pending_upgrade():
+    state = _state()
+    request = create_input_request(
+        InputRequestType.UPGRADE_PHASE,
+        player_id="simultaneous",
+        players={
+            "hero_arien": {"remaining": 1, "options": ["arien_upgrade"]},
+            "hero_wasp": {"remaining": 2, "options": ["wasp_upgrade"]},
+        },
+    )
+
+    assert awaiting_input_hero_ids(request, state) == ["hero_arien", "hero_wasp"]
+
+
+def test_awaiting_input_is_empty_without_a_pending_request():
+    assert awaiting_input_hero_ids(None, _state()) == []
+
+
 def test_facedown_mine_placement_event_masks_subtype_per_recipient():
     state = _state()
     mine = state.token_pool[TokenType.MINE_BLAST][0]
@@ -89,6 +134,23 @@ def test_facedown_mine_placement_event_masks_subtype_per_recipient():
     }
     revealed = events_for_viewer([triggered], state, "hero_wasp")[0]
     assert revealed["metadata"]["token_type"] == "mine_blast"
+
+
+def test_facedown_mine_placement_event_masks_subtype_from_allies():
+    state = GameSetup.create_game(MAP_PATH, ["Arien", "Brogan"], ["Wasp", "Tali"], seed=1)
+    mine = state.token_pool[TokenType.MINE_BLAST][0]
+    mine.owner_id = "hero_arien"
+    destination = next(hex_ for hex_, tile in state.board.tiles.items() if not tile.is_occupied)
+    state.place_entity(mine.id, destination)
+    placed = GameEvent(
+        event_type=GameEventType.TOKEN_PLACED,
+        actor_id="hero_arien",
+        target_id=mine.id,
+        metadata={"token_type": TokenType.MINE_BLAST.value},
+    ).model_dump()
+
+    ally_event = events_for_viewer([placed], state, "hero_brogan")[0]
+    assert ally_event["metadata"]["token_type"] == "mine"
 
 
 def test_event_metadata_hides_private_card_ids_and_names():

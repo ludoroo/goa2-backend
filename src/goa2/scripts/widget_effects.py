@@ -511,7 +511,7 @@ class FightAsOneEffect(CardEffect):
             AttackSequenceStep(
                 damage=stats.primary_value,
                 range_val=1,
-                target_id_key="fight_as_one_initial_target",
+                target_output_key="fight_as_one_initial_target",
             ),
             SelectStep(
                 target_type=TargetType.CARD,

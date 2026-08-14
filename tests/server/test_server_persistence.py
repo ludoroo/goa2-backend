@@ -325,3 +325,237 @@ def test_no_persistence_when_save_dir_unset(tmp_path):
 
     # No files should be created anywhere for this test
     # (registry has save_dir="" which is falsy, so save_game is a no-op)
+
+
+# ---------------------------------------------------------------------------
+# Persisted bot metadata
+# ---------------------------------------------------------------------------
+
+
+def _new_registry_with_bot_game(save_dir: str, bot_specs):
+    """Create a registry-backed game with the given bot_specs.
+
+    Bypasses the REST API — this test only concerns the registry/persistence
+    layer, not the create endpoint.
+    """
+    from goa2.engine.session import GameSession
+    from goa2.engine.setup import GameSetup
+    from goa2.server.registry import GameRegistry
+
+    state = GameSetup.create_game(
+        "src/goa2/data/maps/forgotten_island.json",
+        ["Arien"],
+        ["Wasp"],
+    )
+    session = GameSession(state)
+    registry = GameRegistry(save_dir=save_dir)
+    game = registry.create_game(session, ["hero_arien", "hero_wasp"], bot_specs=bot_specs)
+    return registry, game
+
+
+def test_bot_specs_round_trip_through_save_and_load(tmp_path):
+    """Bot specs saved with a game are restored identically on reload."""
+    from goa2.server.bot_models import BotSpec, SearchSettings
+    from goa2.server.registry import GameRegistry
+
+    save_dir = str(tmp_path)
+    original_specs = {
+        "hero_arien": BotSpec(kind="heuristic"),
+        "hero_wasp": BotSpec(
+            kind="ismcts",
+            search=SearchSettings(iterations=128, decision_timeout_seconds=1.5),
+        ),
+    }
+    registry1, game = _new_registry_with_bot_game(save_dir, original_specs)
+    # save_game is called by create_game when save_dir is set, but re-run it
+    # explicitly for clarity.
+    registry1.save_game(game.game_id)
+
+    registry2 = GameRegistry(save_dir=save_dir)
+    restored = registry2.restore_all()
+    assert restored == 1
+    restored_game = registry2.get(game.game_id)
+    assert restored_game.bot_specs == original_specs
+    # BotSpec equality is field-based; explicitly verify the nested settings
+    # survived the JSON round-trip as typed floats/ints.
+    assert restored_game.bot_specs["hero_wasp"].search is not None
+    assert restored_game.bot_specs["hero_wasp"].search.iterations == 128
+    assert restored_game.bot_specs["hero_wasp"].search.decision_timeout_seconds == 1.5
+
+
+def test_bot_task_not_serialized(tmp_path):
+    """Assigning a live bot_task must not leak into the on-disk payload."""
+    import asyncio
+    import json
+
+    from goa2.server.bot_models import BotSpec
+
+    save_dir = str(tmp_path)
+    specs = {"hero_arien": BotSpec(kind="random")}
+    registry, game = _new_registry_with_bot_game(save_dir, specs)
+
+    # Attach a live task (simulating the coordinator).
+    loop = asyncio.new_event_loop()
+    try:
+
+        async def _noop() -> None:
+            return None
+
+        game.bot_task = loop.create_task(_noop())
+        registry.save_game(game.game_id)
+        loop.run_until_complete(game.bot_task)
+    finally:
+        loop.close()
+
+    # Inspect the raw save file — no task/agent references should appear.
+    save_file = tmp_path / f"{game.game_id}.json"
+    raw = save_file.read_text()
+    assert "bot_task" not in raw
+    payload = json.loads(raw)
+    # bot_specs is persisted; bot_task is absent.
+    assert "bot_specs" in payload
+    assert "bot_task" not in payload
+
+
+def test_legacy_save_without_bot_metadata_loads(tmp_path):
+    """Save files predating this change must load with empty bot_specs."""
+    import json
+
+    from goa2.server.registry import GameRegistry
+
+    save_dir = str(tmp_path)
+    # Round-trip a game through save, then strip the bot_specs key to emulate
+    # a legacy payload.
+    registry1, game = _new_registry_with_bot_game(save_dir, bot_specs={})
+    registry1.save_game(game.game_id)
+
+    save_file = tmp_path / f"{game.game_id}.json"
+    payload = json.loads(save_file.read_text())
+    payload.pop("bot_specs", None)
+    save_file.write_text(json.dumps(payload))
+
+    registry2 = GameRegistry(save_dir=save_dir)
+    assert registry2.restore_all() == 1
+    restored = registry2.get(game.game_id)
+    assert restored.bot_specs == {}
+
+
+def test_corrupt_bot_spec_entry_is_skipped_on_restore(tmp_path, caplog):
+    """A malformed bot_specs entry on disk must not abort the whole restore."""
+    import json
+    import logging
+
+    from goa2.server.bot_models import BotSpec
+    from goa2.server.registry import GameRegistry
+
+    save_dir = str(tmp_path)
+    registry1, game = _new_registry_with_bot_game(
+        save_dir, bot_specs={"hero_arien": BotSpec(kind="random")}
+    )
+    registry1.save_game(game.game_id)
+
+    save_file = tmp_path / f"{game.game_id}.json"
+    payload = json.loads(save_file.read_text())
+    # Corrupt the on-disk spec (unsupported kind).
+    payload["bot_specs"]["hero_arien"] = {"kind": "not_a_real_kind"}
+    save_file.write_text(json.dumps(payload))
+
+    registry2 = GameRegistry(save_dir=save_dir)
+    with caplog.at_level(logging.ERROR, logger="goa2.server.registry"):
+        assert registry2.restore_all() == 1
+    restored = registry2.get(game.game_id)
+    # Corrupt entry silently dropped; game is otherwise intact.
+    assert restored.bot_specs == {}
+
+
+def test_bot_specs_survive_full_server_restart(tmp_path, monkeypatch):
+    """Bot metadata persists through the same restart path as game state."""
+    from fastapi.testclient import TestClient
+
+    from goa2.server.app import create_app
+    from goa2.server.bot_models import BotSpec
+
+    save_dir = str(tmp_path)
+    # monkeypatch scopes the env change to this test only — other tests in the
+    # suite (some of which explicitly clear GOA2_SAVE_DIR) must not see a
+    # dangling value if this test errors out.
+    monkeypatch.setenv("GOA2_SAVE_DIR", save_dir)
+
+    # Session 1: create a plain game via API, then inject bot metadata and
+    # persist. The create endpoint does not accept bot metadata directly in
+    # this test path, so we drive the registry directly for the persistence
+    # test.
+    app1 = create_app()
+    with TestClient(app1) as client1:
+        data = _create_game(client1)
+        game_id = data["game_id"]
+        registry1 = client1.app.state.registry
+        game = registry1.get(game_id)
+        game.bot_specs = {"hero_arien": BotSpec(kind="heuristic")}
+        registry1.save_game(game_id)
+
+    # Session 2: fresh app + registry restores the game and the specs.
+    app2 = create_app()
+    with TestClient(app2):
+        registry2 = app2.state.registry
+        restored = registry2.get(game_id)
+        assert restored.bot_specs == {"hero_arien": BotSpec(kind="heuristic")}
+
+
+def test_non_mapping_bot_specs_on_disk_is_discarded(tmp_path, caplog):
+    """A non-dict ``bot_specs`` value must not crash restore or contaminate state."""
+    import json
+    import logging
+
+    from goa2.server.registry import GameRegistry
+
+    save_dir = str(tmp_path)
+    registry1, game = _new_registry_with_bot_game(save_dir, bot_specs={})
+    registry1.save_game(game.game_id)
+
+    save_file = tmp_path / f"{game.game_id}.json"
+    payload = json.loads(save_file.read_text())
+    # Emulate a corrupt / hand-edited save where bot_specs is not a mapping
+    # (e.g. a list, or a stray string from a schema-mismatch bug).
+    payload["bot_specs"] = ["hero_arien", "hero_wasp"]
+    save_file.write_text(json.dumps(payload))
+
+    registry2 = GameRegistry(save_dir=save_dir)
+    with caplog.at_level(logging.ERROR, logger="goa2.server.registry"):
+        assert registry2.restore_all() == 1
+    restored = registry2.get(game.game_id)
+    assert restored.bot_specs == {}
+    # Verify the discard was logged (not silently swallowed).
+    assert any("bot_specs" in rec.getMessage() for rec in caplog.records)
+
+
+def test_bot_spec_for_unknown_hero_on_disk_is_discarded(tmp_path, caplog):
+    """A restored spec whose hero is not in the restored roster is dropped."""
+    import json
+    import logging
+
+    from goa2.server.bot_models import BotSpec
+    from goa2.server.registry import GameRegistry
+
+    save_dir = str(tmp_path)
+    registry1, game = _new_registry_with_bot_game(
+        save_dir, bot_specs={"hero_arien": BotSpec(kind="random")}
+    )
+    registry1.save_game(game.game_id)
+
+    save_file = tmp_path / f"{game.game_id}.json"
+    payload = json.loads(save_file.read_text())
+    # Inject an extra spec for a hero not present in the persisted roster
+    # (hero_to_token). Simulates roster drift between save and reload.
+    payload["bot_specs"]["hero_nomad"] = {"kind": "heuristic"}
+    save_file.write_text(json.dumps(payload))
+
+    registry2 = GameRegistry(save_dir=save_dir)
+    with caplog.at_level(logging.ERROR, logger="goa2.server.registry"):
+        assert registry2.restore_all() == 1
+    restored = registry2.get(game.game_id)
+    # Valid roster hero survives; unknown hero is dropped.
+    assert restored.bot_specs == {"hero_arien": BotSpec(kind="random")}
+    assert any(
+        "hero_nomad" in rec.getMessage() and "roster" in rec.getMessage() for rec in caplog.records
+    )
