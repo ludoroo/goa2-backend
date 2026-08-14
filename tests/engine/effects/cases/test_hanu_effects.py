@@ -55,17 +55,35 @@ def _pos(state, uid) -> tuple:
     return (h.q, h.r, h.s) if h is not None else None
 
 
-def _place_passable_mine(state, at: tuple[int, int, int], owner_id: str) -> None:
+def _place_passable_mine(
+    state,
+    at: tuple[int, int, int],
+    *,
+    owner_id: str,
+    mine_id: str = "mine_1",
+    token_type: TokenType = TokenType.MINE_DUD,
+) -> None:
+    """Put a passable mine on the board, owned by `owner_id` (a hero in state).
+
+    Ownership decides only whether crossing it *detonates* the mine (enemy
+    heroes trigger, friendly units don't) — traversal itself is
+    ownership-independent. MINE_BLAST additionally forces the victim to
+    discard; MINE_DUD just pops.
+    """
     mine = Token(
-        id="mine_1",
+        id=mine_id,
         name="Mine",
-        token_type=TokenType.MINE_DUD,
+        token_type=token_type,
         owner_id=owner_id,
         is_passable=True,
     )
     state.register_entity(mine, "token")
-    state.token_pool.setdefault(TokenType.MINE_DUD, []).append(mine)
-    state.place_entity("mine_1", Hex(q=at[0], r=at[1], s=at[2]))
+    state.token_pool.setdefault(token_type, []).append(mine)
+    state.place_entity(mine_id, Hex(q=at[0], r=at[1], s=at[2]))
+
+
+def _mine_triggered_ids(run) -> list[str]:
+    return [e.target_id for e in run.events if e.event_type == GameEventType.MINE_TRIGGERED]
 
 
 # =============================================================================
@@ -508,63 +526,203 @@ def test_this_way_moves_both_in_same_direction() -> None:
     assert _pos(state, "red_ally") == (2, 1, -3)  # same +q offset
 
 
-@pytest.mark.effect_flow
-@pytest.mark.parametrize(
-    "mine_hex",
-    [(1, 0, -1), (1, 1, -2)],
-    ids=["hanu-path", "ally-path"],
-)
-@pytest.mark.parametrize(
-    "mine_owner,should_trigger",
-    [("blue_mine_owner", True), ("red_mine_owner", False)],
-    ids=["enemy-mine", "same-team-mine"],
-)
-def test_this_way_crosses_passable_mine_regardless_of_owner(
-    mine_hex: tuple[int, int, int], mine_owner: str, should_trigger: bool
-) -> None:
-    state = (
+# This Way! geometry, direction +q, distance 2. Hanu and the partner travel
+# parallel lines one row apart, so each mover's crossed hexes are disjoint and
+# a mine can be placed in front of either one independently.
+_TW_ANCHOR_PATH = (1, 0, -1)  # crossed by Hanu only
+_TW_PARTNER_PATH = (1, 1, -2)  # crossed by the friendly hero only
+
+
+def _this_way_mine_state(mine_owner: str, mine_hexes=(_TW_ANCHOR_PATH,)):
+    """Hanu at (0,0,0) → (2,0,-2); partner at (0,1,-1) → (2,1,-3).
+
+    A passable mine is placed on each hex in `mine_hexes`, all owned by
+    `mine_owner`. Mines are named mine_1, mine_2, … in the order given.
+    """
+    builder = (
         EffectScenarioBuilder()
-        .with_hexes(_hex_disk(5))
+        .with_hexes(_hex_disk(4))
         .red_hero("hero_hanu", at=(0, 0, 0), current_card=hero_card("Hanu", "this_way"))
         .red_hero("red_ally", at=(0, 1, -1))
-        .red_hero("red_mine_owner", at=(-4, 0, 4))
-        .blue_hero("blue_mine_owner", at=(-5, 0, 5))
-        .with_actor("hero_hanu")
-        .build()
+        # Both owners sit outside Hanu's radius so neither is a partner option.
+        .blue_hero("blue_mine_owner", at=(0, 3, -3))
+        .red_hero("red_mine_owner", at=(0, 4, -4))
     )
-    _place_passable_mine(state, mine_hex, mine_owner)
+    state = builder.with_actor("hero_hanu").build()
+    for idx, mine_hex in enumerate(mine_hexes, start=1):
+        _place_passable_mine(state, mine_hex, owner_id=mine_owner, mine_id=f"mine_{idx}")
+    return state
 
-    destination = Hex(q=2, r=0, s=-2)
+
+@pytest.mark.effect_flow
+def test_this_way_pair_moves_with_no_mine() -> None:
+    """Control for the mine cases: same scenario, clear board."""
+    state = _this_way_mine_state("blue_mine_owner", mine_hexes=())
+
     run = run_card(state, "hero_hanu")
     run.expect_input(InputRequestType.CHOOSE_ACTION)
     run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
     run.choose("red_ally").expect_input(InputRequestType.SELECT_NUMBER)
     run.choose(2).expect_input(InputRequestType.SELECT_HEX)
 
-    assert destination in _option_set(run)
-    run.choose(destination).finish()
+    assert Hex(q=2, r=0, s=-2) in _option_set(run)
+    run.choose(Hex(q=2, r=0, s=-2)).finish()
 
     assert _pos(state, "hero_hanu") == (2, 0, -2)
     assert _pos(state, "red_ally") == (2, 1, -3)
-    triggered = [
-        event.target_id for event in run.events if event.event_type == GameEventType.MINE_TRIGGERED
-    ]
-    assert triggered == (["mine_1"] if should_trigger else [])
-    assert (_pos(state, "mine_1") is None) is should_trigger
 
 
 @pytest.mark.effect_flow
-def test_this_way_rejects_direction_when_ally_would_land_on_mine() -> None:
-    state = (
-        EffectScenarioBuilder()
-        .with_hexes(_hex_disk(5))
-        .red_hero("hero_hanu", at=(0, 0, 0), current_card=hero_card("Hanu", "this_way"))
-        .red_hero("red_ally", at=(0, 1, -1))
-        .red_hero("red_mine_owner", at=(-4, 0, 4))
-        .with_actor("hero_hanu")
-        .build()
+@pytest.mark.parametrize(
+    "mine_hexes",
+    [(_TW_ANCHOR_PATH,), (_TW_PARTNER_PATH,), (_TW_ANCHOR_PATH, _TW_PARTNER_PATH)],
+    ids=["hanu-path", "partner-path", "both-paths"],
+)
+@pytest.mark.parametrize(
+    "mine_owner,detonates",
+    [("blue_mine_owner", True), ("red_mine_owner", False)],
+    ids=["enemy-mine", "friendly-mine"],
+)
+def test_this_way_crosses_passable_mines(mine_hexes, mine_owner: str, detonates: bool) -> None:
+    """Both movers may cross passable mines; each mover detonates enemy mines it crosses.
+
+    Hanu and the partner are both heroes, so a mine on *either* path is a live
+    trigger — the crossing mover is what matters, not just the card's actor.
+    """
+    hanu_destination = Hex(q=2, r=0, s=-2)
+    state = _this_way_mine_state(mine_owner, mine_hexes)
+    mine_ids = [f"mine_{i}" for i in range(1, len(mine_hexes) + 1)]
+
+    run = run_card(state, "hero_hanu")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("red_ally").expect_input(InputRequestType.SELECT_NUMBER)
+    run.choose(2).expect_input(InputRequestType.SELECT_HEX)
+
+    assert hanu_destination in _option_set(run)
+    run.choose(hanu_destination).finish()
+
+    # Both complete the full move regardless of who owns the mines.
+    assert _pos(state, "hero_hanu") == (2, 0, -2)
+    assert _pos(state, "red_ally") == (2, 1, -3)
+
+    if detonates:
+        assert sorted(_mine_triggered_ids(run)) == sorted(mine_ids)
+        assert all(_pos(state, mid) is None for mid in mine_ids)
+    else:
+        assert _mine_triggered_ids(run) == []
+        for mid, mine_hex in zip(mine_ids, mine_hexes, strict=True):
+            assert _pos(state, mid) == mine_hex
+
+
+@pytest.mark.effect_flow
+@pytest.mark.parametrize(
+    "mine_owner,detonates",
+    [("blue_mine_owner", True), ("red_mine_owner", False)],
+    ids=["enemy-mine", "friendly-mine"],
+)
+def test_this_way_blast_mines_make_each_crosser_discard(mine_owner: str, detonates: bool) -> None:
+    """One blast mine per mover: each victim discards from their OWN hand.
+
+    Guards the victim routing through `mine_victim_id`. That context slot is a
+    single shared string, and the steps that consume it (`ForceDiscardStep`,
+    its `SelectStep`, `DiscardCardStep`) hold only the key name and re-read it
+    when they resolve. It works because each mover's whole trigger→prompt→
+    discard chain is pushed on top of the *other* mover's still-pending
+    MoveUnitStep, so it drains before the second write lands.
+
+    If a refactor ever moves both units before resolving mines, the second
+    write clobbers the first and BOTH discards would target the second mover —
+    Hanu escapes free and the ally pays twice. No crash; just the wrong player
+    losing a card. This test is the only thing that would notice.
+    """
+    state = _this_way_mine_state(mine_owner, mine_hexes=())
+    _place_passable_mine(
+        state,
+        _TW_ANCHOR_PATH,
+        owner_id=mine_owner,
+        mine_id="blast_hanu",
+        token_type=TokenType.MINE_BLAST,
     )
-    _place_passable_mine(state, (2, 1, -3), "red_mine_owner")
+    _place_passable_mine(
+        state,
+        _TW_PARTNER_PATH,
+        owner_id=mine_owner,
+        mine_id="blast_ally",
+        token_type=TokenType.MINE_BLAST,
+    )
+    state.get_hero("hero_hanu").hand = [hero_card("Hanu", "monkey_trick")]
+    state.get_hero("red_ally").hand = [hero_card("Hanu", "this_way")]
+
+    run = run_card(state, "hero_hanu")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("red_ally").expect_input(InputRequestType.SELECT_NUMBER)
+    run.choose(2).expect_input(InputRequestType.SELECT_HEX)
+    run.choose(Hex(q=2, r=0, s=-2))
+
+    if not detonates:
+        # Friendly blast mines are inert: no prompt, no discard, mines stay put.
+        run.finish()
+        assert _pos(state, "blast_hanu") == _TW_ANCHOR_PATH
+        assert _pos(state, "blast_ally") == _TW_PARTNER_PATH
+        assert state.get_hero("hero_hanu").discard_pile == []
+        assert state.get_hero("red_ally").discard_pile == []
+        return
+
+    # Hanu crosses first and is prompted for HIS hand...
+    run.expect_input(InputRequestType.SELECT_CARD)
+    assert run.latest_request.player_id == "hero_hanu"
+    assert _option_set(run) == {"monkey_trick"}
+    # ...while the ally has not moved yet. This is the ordering the routing
+    # depends on: Hanu's discard resolves before the ally's move rewrites
+    # mine_victim_id.
+    assert _pos(state, "red_ally") == (0, 1, -1)
+
+    # ...then the ally crosses and is prompted for THEIR hand.
+    run.choose("monkey_trick").expect_input(InputRequestType.SELECT_CARD)
+    assert run.latest_request.player_id == "red_ally"
+    assert _option_set(run) == {"this_way"}
+    assert _pos(state, "red_ally") == (2, 1, -3)
+
+    run.choose("this_way").finish()
+
+    assert _pos(state, "hero_hanu") == (2, 0, -2)
+    assert _pos(state, "red_ally") == (2, 1, -3)
+    assert sorted(_mine_triggered_ids(run)) == ["blast_ally", "blast_hanu"]
+    # Each hero lost exactly their own card — not two off one hand.
+    assert [c.id for c in state.get_hero("hero_hanu").discard_pile] == ["monkey_trick"]
+    assert [c.id for c in state.get_hero("red_ally").discard_pile] == ["this_way"]
+
+
+@pytest.mark.effect_flow
+@pytest.mark.parametrize("mine_owner", ["blue_mine_owner", "red_mine_owner"])
+def test_this_way_cannot_land_on_passable_mine(mine_owner: str) -> None:
+    """A mine is traversable but never a legal landing hex, whoever owns it."""
+    mine_hex = Hex(q=1, r=0, s=-1)
+    state = _this_way_mine_state(mine_owner)
+
+    run = run_card(state, "hero_hanu")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("red_ally").expect_input(InputRequestType.SELECT_NUMBER)
+    run.choose(1).expect_input(InputRequestType.SELECT_HEX)
+
+    options = _option_set(run)
+    assert mine_hex not in options
+    assert options, "other directions at distance 1 should still be offered"
+
+
+@pytest.mark.effect_flow
+@pytest.mark.parametrize("mine_owner", ["blue_mine_owner", "red_mine_owner"])
+def test_this_way_rejects_direction_when_partner_would_land_on_mine(mine_owner: str) -> None:
+    """A mine on the PARTNER's landing hex kills the whole direction for both.
+
+    Hanu's own landing (2,0,-2) is clear, so this only fails if the partner's
+    mirrored landing is validated too.
+    """
+    partner_destination = (2, 1, -3)
+    state = _this_way_mine_state(mine_owner, mine_hexes=(partner_destination,))
 
     run = run_card(state, "hero_hanu")
     run.expect_input(InputRequestType.CHOOSE_ACTION)

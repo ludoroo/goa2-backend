@@ -199,6 +199,95 @@ def test_attack_sequence_expansion(combat_state):
     assert isinstance(current, SelectStep)
 
 
+def test_attack_sequence_missing_preselected_target_aborts(combat_state):
+    result = AttackSequenceStep(
+        damage=3,
+        range_val=1,
+        target_id_key="restricted_target",
+    ).resolve(combat_state, combat_state.execution_context)
+
+    assert result.abort_action is True
+    assert result.new_steps == []
+
+
+def test_optional_attack_sequence_missing_preselected_target_fizzles(combat_state):
+    result = AttackSequenceStep(
+        damage=3,
+        range_val=1,
+        target_id_key="restricted_target",
+        is_mandatory=False,
+    ).resolve(combat_state, combat_state.execution_context)
+
+    assert result.abort_action is False
+    assert result.new_steps == []
+
+
+def test_attack_sequence_uses_preselected_target_without_picker(combat_state):
+    combat_state.execution_context["restricted_target"] = "hero_blue"
+
+    result = AttackSequenceStep(
+        damage=3,
+        range_val=1,
+        target_id_key="restricted_target",
+    ).resolve(combat_state, combat_state.execution_context)
+
+    assert not any(isinstance(step, SelectStep) for step in result.new_steps)
+    assert isinstance(result.new_steps[0], ReactionWindowStep)
+    assert result.new_steps[0].target_player_key == "restricted_target"
+
+
+def test_attack_sequence_can_explicitly_pick_and_store_own_target(combat_state):
+    result = AttackSequenceStep(
+        damage=3,
+        range_val=1,
+        target_output_key="picked_target",
+    ).resolve(combat_state, combat_state.execution_context)
+
+    assert isinstance(result.new_steps[0], SelectStep)
+    assert result.new_steps[0].output_key == "picked_target"
+
+
+def test_attack_sequence_uses_output_fallback_when_preselection_is_missing(combat_state):
+    result = AttackSequenceStep(
+        damage=3,
+        target_id_key="preferred_target",
+        target_output_key="fallback_target",
+    ).resolve(combat_state, combat_state.execution_context)
+
+    assert isinstance(result.new_steps[0], SelectStep)
+    assert result.new_steps[0].output_key == "fallback_target"
+
+
+def test_attack_sequence_prefers_preselected_target_over_output(combat_state):
+    combat_state.execution_context["preferred_target"] = "hero_blue"
+
+    result = AttackSequenceStep(
+        damage=3,
+        target_id_key="preferred_target",
+        target_output_key="fallback_target",
+    ).resolve(combat_state, combat_state.execution_context)
+
+    assert not any(isinstance(step, SelectStep) for step in result.new_steps)
+    assert isinstance(result.new_steps[0], ReactionWindowStep)
+    assert result.new_steps[0].target_player_key == "preferred_target"
+
+
+def test_attack_sequence_target_keys_round_trip(combat_state):
+    combat_state.execution_stack = [
+        AttackSequenceStep(
+            damage=3,
+            target_id_key="preferred_target",
+            target_output_key="fallback_target",
+        )
+    ]
+
+    restored = GameState.model_validate_json(combat_state.model_dump_json())
+
+    assert isinstance(restored.execution_stack[0], AttackSequenceStep)
+    assert restored.execution_stack[0].target_id_key == "preferred_target"
+    assert restored.execution_stack[0].target_output_key == "fallback_target"
+
+
 def test_attack_sequence_is_ranged_false(combat_state):
     # Test explicit is_ranged=False sets context correctly
     combat_state.place_entity("hero_blue", Hex(q=1, r=0, s=-1))

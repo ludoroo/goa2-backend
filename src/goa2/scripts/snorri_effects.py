@@ -777,6 +777,7 @@ class RuneSigilsEffect(CardEffect):
         range_value: int,
         actor_key: str,
         anvil_active: bool,
+        target_output_key: str | None = None,
         target_filters: list[Any] | None = None,
     ) -> list[GameStep]:
         steps: list[GameStep] = [
@@ -785,6 +786,7 @@ class RuneSigilsEffect(CardEffect):
                 range_val=range_value,
                 is_ranged=True,
                 target_id_key=target_key,
+                target_output_key=target_output_key,
                 target_filters=target_filters or [],
             ),
             CheckUnitTypeStep(
@@ -829,6 +831,7 @@ class RuneSigilsEffect(CardEffect):
                 range_value=range_value,
                 actor_key="rs_actor",
                 anvil_active=anvil_active,
+                target_output_key="rs_target",
                 target_filters=[RangeFilter(max_range=1)],
             )
         )

@@ -161,7 +161,7 @@ class ParagonOfGraceEffect(CardEffect):
                 damage=stats.primary_value,
                 range_val=range_val,
                 is_ranged=is_ranged,
-                target_id_key="victim_id_1",
+                target_output_key="victim_id_1",
             ),
             *coin_steps,
             MayRepeatOnceStep(
@@ -171,7 +171,7 @@ class ParagonOfGraceEffect(CardEffect):
                         damage=stats.primary_value,
                         range_val=range_val,
                         is_ranged=is_ranged,
-                        target_id_key="victim_id_2",
+                        target_output_key="victim_id_2",
                         target_filters=[
                             ExcludeIdentityFilter(exclude_keys=["victim_id_1"]),
                         ],
@@ -289,7 +289,7 @@ class ParagonOfValorEffect(CardEffect):
                 damage=stats.primary_value,
                 range_val=range_val,
                 is_ranged=is_ranged,
-                target_id_key="victim_id_1",
+                target_output_key="victim_id_1",
             ),
             *ally_retrieve_steps,
             # "if they do" — only offer repeat if ally was selected
@@ -301,7 +301,7 @@ class ParagonOfValorEffect(CardEffect):
                         damage=stats.primary_value,
                         range_val=range_val,
                         is_ranged=is_ranged,
-                        target_id_key="victim_id_2",
+                        target_output_key="victim_id_2",
                         target_filters=[
                             ExcludeIdentityFilter(exclude_keys=["victim_id_1"]),
                         ],

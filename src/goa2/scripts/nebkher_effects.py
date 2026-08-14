@@ -821,7 +821,7 @@ class TwistFateEffect(CardEffect):
                 damage=stats.primary_value,
                 range_val=stats.range or 0,
                 is_ranged=True,
-                target_id_key="tf_victim",
+                target_output_key="tf_victim",
             ),
             SelectStep(
                 target_type=TargetType.UNIT,

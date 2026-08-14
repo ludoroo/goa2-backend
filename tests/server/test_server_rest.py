@@ -213,6 +213,32 @@ def test_get_game_view(client, game_data):
     assert body["view"]["phase"] == "PLANNING"
 
 
+def test_get_game_view_names_the_awaited_player_to_a_non_responder(client, game_data):
+    from goa2.domain.input import InputRequestType, create_input_request
+    from goa2.engine.session import SessionResult, SessionResultType
+
+    game = client.app.state.registry.get(game_data["game_id"])
+    game.last_result = SessionResult(
+        result_type=SessionResultType.INPUT_NEEDED,
+        current_phase=game.session.state.phase,
+        input_request=create_input_request(
+            InputRequestType.SELECT_CARD_OR_PASS,
+            player_id="hero_wasp",
+            prompt="Choose a defense",
+            options=[{"id": "magnetic_dagger", "text": "Magnetic Dagger"}],
+        ),
+    )
+
+    resp = client.get(
+        f"/games/{game_data['game_id']}",
+        headers=_auth(_token_for(game_data, "hero_arien")),
+    )
+    body = resp.json()
+
+    assert body["awaiting_input"] == ["hero_wasp"]
+    assert body["input_request"] is None
+
+
 def test_get_game_view_spectator(client, game_data):
     resp = client.get(
         f"/games/{game_data['game_id']}",

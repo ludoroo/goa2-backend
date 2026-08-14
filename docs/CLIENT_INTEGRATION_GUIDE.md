@@ -14,7 +14,8 @@ This guide covers everything a frontend developer needs to connect to the GoA2 b
 8. [Events](#events)
 9. [Persistence & Reconnection](#persistence--reconnection)
 10. [Character Draft Lobby](#character-draft-lobby)
-11. [Error Handling](#error-handling)
+11. [Consensus Overrides](#consensus-overrides)
+12. [Error Handling](#error-handling)
 
 ---
 
@@ -62,6 +63,7 @@ Games are untimed unless creation (or draft-lobby settings) includes an explicit
 {
   "planning_allowance_seconds": 60,
   "resolution_allowance_seconds": 45,
+  "initiative_bonus_seconds": 15,
   "response_grant_seconds": 15,
   "initial_time_bank_seconds": 120,
   "time_bank_increment_seconds": 10,
@@ -73,9 +75,12 @@ Games are untimed unless creation (or draft-lobby settings) includes an explicit
 
 Time fields are integers from 0 through 86,400, `automatic_turn_limit` is an
 integer from 0 through 100, and the maximum Time Bank must be at least its
-initial value. The automatic limit counts consecutive shared turns completed
-without an accepted human gameplay decision; `0` disables inactivity
-suspension. A timed game stays in its public ready check until
+initial value. `initiative_bonus_seconds` is a one-shot bonus for the first
+primary Resolution actor in each shared turn. It is spendable only by that
+actor's primary Resolution clock; it is not part of the Time Bank and cannot
+be spent during Response prompts. The automatic limit counts consecutive
+shared turns completed without an accepted human gameplay decision; `0`
+disables inactivity suspension. A timed game stays in its public ready check until
 every player readies through `POST /games/{game_id}/ready` with
 `{"ready":true}`, or the WebSocket `SET_READY` message below. Game decisions
 are rejected until then. Disconnecting does not pause a running clock.
@@ -233,11 +238,14 @@ Get the current game view for the authenticated player.
 {
   "view": { ... },
   "input_request": null,
+  "awaiting_input": ["hero_wasp"],
   "winner": "RED"
 }
 ```
 
 The `view` object contains the player-scoped game state (see [Understanding the Game View](#understanding-the-game-view)). The `input_request` is present only when the authenticated hero is allowed to answer it. Opponents and spectators receive `null`. Team-level requests are visible only to that team's heroes; simultaneous upgrade requests contain only the authenticated hero's entry.
+
+The `awaiting_input` array names every hero the pending request is waiting on, and is sent to **all** recipients — including those whose `input_request` was withheld. Use it to render "waiting for X" indicators; use `input_request` to decide whether *you* may answer. See [Who is being waited on](#who-is-being-waited-on).
 
 The `winner` key is only present when game has ended (`view.phase === "GAME_OVER"`). Its value is `"RED"` or `"BLUE"` for a team victory, or the winning hero ID (for example, `"hero_cutter"`) for an individual victory. Check for its presence with `response.get("winner")` rather than assuming it exists.
 
@@ -484,6 +492,7 @@ All mutation endpoints return this shape:
 | `current_phase` | string | Current game phase (see [Game Flow](#game-flow)) |
 | `events` | array | Recipient-scoped game events emitted during this action (see [Events](#events)) |
 | `input_request` | object/null | Present only when the authenticated action performer may answer the pending request. It can be `null` even when `result_type` is `INPUT_NEEDED` if the action advanced to another player's decision |
+| `awaiting_input` | array | Hero IDs the pending request is waiting on, unscoped; `[]` when none. Populated even when `input_request` is `null` — that pairing is exactly the "waiting on someone else" case (see [Who is being waited on](#who-is-being-waited-on)) |
 | `winner` | string/null | `"RED"`/`"BLUE"` for a team victory or a hero ID for an individual victory when `result_type` is `GAME_OVER` |
 
 ---
@@ -693,6 +702,7 @@ Sent on connection, on `GET_VIEW` requests, and broadcast to all connected clien
   "type": "STATE_UPDATE",
   "view": { ... },
   "input_request": { ... },
+  "awaiting_input": ["hero_wasp"],
   "winner": "RED",
   "events": [ ... ]
 }
@@ -700,9 +710,11 @@ Sent on connection, on `GET_VIEW` requests, and broadcast to all connected clien
 
 The `input_request` key is present only when the receiving hero is allowed to answer the pending request. It is omitted for opponents and spectators. Team-level requests go only to that team, and simultaneous upgrade requests contain only the receiving hero's `players` entry. Check for its presence with `msg.get("input_request")` rather than assuming it exists.
 
+The `awaiting_input` array is always present and identical for every recipient, naming the heroes the pending request is waiting on (`[]` when there is none). Unlike `input_request` it is not scoped, so observers can name the blocking player. See [Who is being waited on](#who-is-being-waited-on).
+
 The `winner` key is only present when the game has ended (`view.phase === "GAME_OVER"`). Its value is `"RED"` or `"BLUE"` for a team victory, or the winning hero ID for an individual victory. Check for its presence with `msg.get("winner")` rather than assuming it exists.
 
-The `events` key is only present on **broadcasts that follow a mutation**. It lets every connected client — including non-acting players and spectators — animate the action, not just the actor. Event metadata is projected independently for each recipient: hidden card IDs/names are `null` (or omitted from ID lists), and facedown mine placement reports `metadata.token_type: "mine"` outside the owning team. It is **absent** on the initial connection update and on `GET_VIEW` responses (there is nothing to animate), so treat it as optional with `msg.get("events", [])`. The view itself remains authoritative; events are for animation only.
+The `events` key is only present on **broadcasts that follow a mutation**. It lets every connected client — including non-acting players and spectators — animate the action, not just the actor. Event metadata is projected independently for each recipient: hidden card IDs/names are `null` (or omitted from ID lists), and facedown mine placement reports `metadata.token_type: "mine"` to everyone except the token's owner. It is **absent** on the initial connection update and on `GET_VIEW` responses (there is nothing to animate), so treat it as optional with `msg.get("events", [])`. The view itself remains authoritative; events are for animation only.
 
 #### `ACTION_RESULT`
 
@@ -715,6 +727,7 @@ Sent to the player who performed the action:
   "current_phase": "RESOLUTION",
   "events": [ ... ],
   "input_request": { ... },
+  "awaiting_input": ["hero_wasp"],
   "winner": null
 }
 ```
@@ -836,7 +849,10 @@ The `view` object returned by `GET /games/{game_id}` and WebSocket `STATE_UPDATE
 For a timed match, `time_control` is the immutable creation configuration and
 `clock` is a public snapshot containing `status`, `server_now_ms`, the shared
 `turn_key`, `ready_hero_ids`, active clock kind/targets, and every hero's
-remaining Planning, Resolution, Response, Upgrade, and Time Bank milliseconds.
+remaining Planning, Resolution, Initiative Bonus, Response, Upgrade, and Time
+Bank milliseconds. The Initiative Bonus is granted when the first primary
+Resolution request of a shared turn starts and is reset at the next shared
+turn.
 Clients should extrapolate running values from `server_now_ms`; the server does
 not broadcast one-second ticks. Timeout outcomes arrive as `TIMER_EXPIRED`
 events, while the authoritative state update contains the resulting automatic
@@ -1152,10 +1168,10 @@ Tokens are board objects (obstacles, traps, bombs, etc.) that are distinct from 
 |-------|------|-------------|
 | `id` | string | Unique token ID (also appears in `entity_locations` and tile `occupant_id`). Facedown mine IDs are opaque and must not be interpreted as a subtype or supply order |
 | `name` | string | Display name |
-| `token_type` | string | Token type: `"smoke_bomb"`, `"grenade"`, `"mine_blast"`, `"mine_dud"`, `"zombie"`, `"pyro"`, `"barrier"`, `"ice"`, `"totem"`, `"tree"`, `"rock"`, `"magma"`, `"glitch"`, `"illusion"`, `"familiar"`. For facedown enemy tokens, this is `"mine"` (true type hidden) |
+| `token_type` | string | Token type: `"smoke_bomb"`, `"grenade"`, `"mine_blast"`, `"mine_dud"`, `"zombie"`, `"pyro"`, `"barrier"`, `"ice"`, `"totem"`, `"tree"`, `"rock"`, `"magma"`, `"glitch"`, `"illusion"`, `"familiar"`. For facedown tokens the viewer does not own, this is `"mine"` (true type hidden) |
 | `owner_id` | string/null | Hero ID that owns/placed this token |
 | `is_passable` | boolean | If `true`, units can move through this token but not land on it. Mine tokens are passable |
-| `is_facedown` | boolean | If `true`, the token's actual type is hidden from opponents. The owning team sees the real `token_type`; opponents see `"mine"` |
+| `is_facedown` | boolean | If `true`, the token's actual type is hidden from everyone but its owner. Only the owning hero sees the real `token_type`; teammates, opponents, and spectators see `"mine"` |
 | `hex` | hex | Current position on the board |
 
 Tokens are obstacles — any tile with a token as `occupant_id` is impassable unless the token is **passable** (e.g. mines). Passable tokens can be traversed but not landed on. When an enemy hero moves through a passable mine token, the mine is triggered and removed. Blast mines (`mine_blast`) force the moved hero to discard a card; dud mines (`mine_dud`) have no effect. Some effects can make specific tokens unselectable by enemy actions, such as Tali's Venerated Totem.
@@ -1232,6 +1248,24 @@ The path choice is made by the **current actor** (the player controlling the mov
 ## Handling Input Requests
 
 When the engine needs a hero's input, only that hero (or an authorized member for a team-level request) receives the `input_request` object. Other players and spectators receive `null` via REST and no `input_request` key via WebSocket. A simultaneous upgrade request is reduced to the receiving hero's own `players` entry.
+
+### Who is being waited on
+
+The scoping above hides the request body from everyone who may not answer it — including its *identity*, which observers need to render "waiting for X". The `awaiting_input` array carries that identity separately, unscoped, on every REST view response, `ACTION_RESULT`, and `STATE_UPDATE`:
+
+| Request `player_id` | `awaiting_input` |
+|---|---|
+| A hero ID (`"hero_wasp"`) | `["hero_wasp"]` |
+| `"team:RED"` | every hero on that team |
+| `"simultaneous"` | every hero with an entry still pending |
+| No pending request | `[]` |
+
+It contains only hero IDs, never options or card identities, so it is safe to send to opponents and spectators.
+
+Two consequences worth designing around:
+
+- **`current_actor_id` is not a fallback for this.** During a defense reaction the current actor is still the *attacker* while the *defender* is being waited on. Read `awaiting_input`; fall back to `view.current_actor_id` only when it is empty.
+- **A simultaneous request shrinks as players finish.** Heroes drop out of `awaiting_input` as their pending upgrades reach zero, and a hero owed several upgrades stays listed until all are spent. A player who has finished still receives the request with an empty `players` entry — that is the "done, waiting on others" state, and `awaiting_input` tells them who remains.
 
 ### Input request shape
 
@@ -1447,7 +1481,7 @@ Events describe what happened during a game action. They are meant for animation
 | `UNIT_MOVED` | A unit walked to a new hex | `actor_id`, `from_hex`, `to_hex` |
 | `TOKEN_MOVED` | A token moved to a new hex | `target_id`, `from_hex`, `to_hex` |
 | `UNIT_PLACED` | A unit was placed on the board (spawn, summon) | `actor_id`, `to_hex` |
-| `TOKEN_PLACED` | A token was placed on the board. `metadata.token_type` is the real type for visible tokens/the owning team and `"mine"` for a facedown enemy mine or spectator | `actor_id`, `target_id`, `to_hex`, `metadata.token_type` |
+| `TOKEN_PLACED` | A token was placed on the board. `metadata.token_type` is the real type for visible tokens and for the owner of a facedown mine, and `"mine"` for everyone else (teammates, opponents, spectators) | `actor_id`, `target_id`, `to_hex`, `metadata.token_type` |
 | `BOARD_ENTITY_PLACED` | A non-unit, non-token board entity was placed or repositioned | `actor_id`, `target_id`, `from_hex`, `to_hex`, `metadata.entity_kind` |
 | `UNIT_PUSHED` | A unit was forcibly moved | `actor_id`, `from_hex`, `to_hex` |
 | `TOKEN_PUSHED` | A token was forcibly moved | `actor_id`, `target_id`, `from_hex`, `to_hex` |
@@ -1611,6 +1645,7 @@ are left unchanged. Broadcasts a `STATE_UPDATE` like any other mutation:
   "time_control": {
     "planning_allowance_seconds": 60,
     "resolution_allowance_seconds": 45,
+    "initiative_bonus_seconds": 15,
     "response_grant_seconds": 15,
     "initial_time_bank_seconds": 120,
     "time_bank_increment_seconds": 10,
@@ -1751,6 +1786,154 @@ In addition to the standard error shape (`{"detail": "..."}`), draft endpoints c
 | `404` | Unknown `draft_id` or `player_id` |
 | `409` | Lobby full; wrong draft phase; hero already banned/picked; hero not claimable |
 | `400` | Invalid team; unsupported player count; unknown map or draft mode |
+
+---
+
+## Consensus Overrides
+
+When the engine gets something wrong — refuses a legal move, resolves a defeat
+that should not have happened, wedges mid-action — the table can force the game
+into the state it should be in, by majority vote. Three families of override
+exist:
+
+- **patch** — correct a wrong value (position, defeat, gold, life counters, …)
+- **unstick** — escape a wedged control flow (skip the pending input, abort the
+  action, force the turn to end, fix the actor)
+- **rewind** — return the whole game to an earlier decision index
+
+Overrides are recorded as replay decisions and survive reconstruction; the
+negotiation itself (proposals, votes) is transient — it is **not** part of
+`build_view()` output and does not survive a server restart (re-propose).
+
+### Consensus rules
+
+- Eligible voters are the players **connected at proposal time** (snapshotted).
+  Spectators never vote. The proposer automatically counts as a yes.
+- The threshold is a strict majority of the snapshot. In a 2-player game both
+  players must agree.
+- One open proposal at a time.
+- Proposals expire after 120 seconds (server-configurable via
+  `GOA2_OVERRIDE_TIMEOUT_SECONDS`); expiry is a **rejection**.
+- The turn clock is paused while a proposal is open and resumes on resolution.
+- Propose/vote/cancel are WebSocket-only; there are no REST equivalents.
+
+### WebSocket messages
+
+Client → server:
+
+```json
+{"type": "PROPOSE_OVERRIDE", "family": "patch", "op": "move_entity",
+ "args": {"entity_id": "minion_4", "hex": {"q": 1, "r": -2, "s": 1}}}
+
+{"type": "PROPOSE_OVERRIDE", "family": "rewind", "to": 47}
+
+{"type": "VOTE_OVERRIDE", "proposal_id": "abc123", "approve": true}
+
+{"type": "CANCEL_OVERRIDE", "proposal_id": "abc123"}
+```
+
+Only the proposer may cancel. A spectator sending any of these gets an
+`ERROR` (spectators can only `GET_VIEW`).
+
+Server → all connections (players and spectators):
+
+```json
+{"type": "OVERRIDE_PROPOSED",
+ "proposal_id": "abc123",
+ "proposer_hero_id": "hero_arien",
+ "family": "patch",
+ "op": "move_entity",
+ "args": {"entity_id": "minion_4", "hex": {"q": 1, "r": -2, "s": 1}},
+ "to": null,
+ "summary": "Move minion_4 to {'q': 1, 'r': -2, 's': 1}",
+ "eligible_voters": ["hero_arien", "hero_wasp"],
+ "threshold": 2,
+ "tally": {"yes": ["hero_arien"], "no": []},
+ "expires_at": 1718900123.4}
+```
+
+`expires_at` is an absolute epoch timestamp so clients can render a countdown
+without clock-skew guesswork. `summary` is a server-rendered human summary for
+the vote prompt — no follow-up fetch needed.
+
+```json
+{"type": "OVERRIDE_UPDATED", "proposal_id": "abc123",
+ "tally": {"yes": ["hero_arien"], "no": ["hero_wasp"]}}
+
+{"type": "OVERRIDE_RESOLVED", "proposal_id": "abc123",
+ "outcome": "applied",
+ "tally": {"yes": ["hero_arien", "hero_wasp"], "no": []}}
+```
+
+`outcome` is one of `applied` / `rejected` / `expired` / `cancelled`. When an
+*approved* override fails validation at apply time (e.g. the target hex became
+occupied), the outcome is `rejected` **with** a structured `reason`:
+
+```json
+{"type": "OVERRIDE_RESOLVED", "proposal_id": "abc123",
+ "outcome": "rejected",
+ "tally": {"yes": ["hero_arien", "hero_wasp"], "no": []},
+ "reason": {"code": "not_on_board", "message": "minion_999 is not on the board"}}
+```
+
+No `reason` field means the proposal was outvoted, cancelled, or expired.
+
+On `applied`, every connection receives the `OVERRIDE_RESOLVED` message first,
+immediately followed by a fresh `STATE_UPDATE`.
+
+**After an applied patch, any in-flight `SUBMIT_INPUT` may be rejected** with a
+request-id mismatch error: the pending input request is re-derived against the
+patched board and gets a **new** request id. Read the fresh `input_request`
+from the broadcast and re-render.
+
+### `GET /overrides/schema`
+
+Static, unauthenticated, game-independent — fetch once and cache. Returns the
+full op catalogue with a JSON Schema per op, so clients never hardcode the op
+list:
+
+```json
+{"ops": [
+  {"name": "move_entity", "family": "patch", "label": "Move entity",
+   "description": "Move a unit, hero piece, or token to a hex (fixes a refused legal move).",
+   "args_schema": {"type": "object", "properties": {"entity_id": {"type": "string"},
+                    "hex": {"$ref": "#/$defs/HexArg"}}, "required": ["entity_id", "hex"]}}
+]}
+```
+
+Patch ops: `move_entity`, `remove_entity`, `place_entity`, `set_life_counters`,
+`set_gold`, `set_level`, `add_marker`, `remove_marker`, `add_effect`,
+`remove_effect`, `move_card`, `set_wave_counter`, `set_tie_breaker_team`.
+Unstick ops: `skip_input`, `abort_action`, `end_turn`, `force_actor`.
+(The endpoint output is authoritative; this list is illustrative.)
+
+### `GET /games/{game_id}/overrides/history`
+
+Bearer-authenticated (player or spectator token). Renders the game's decision
+list so a rewind target index means something to the table:
+
+```json
+{"total": 3, "decisions": [
+  {"index": 0, "type": "commit", "round": 1, "turn": 1,
+   "hero_id": "hero_arien", "label": "hero_arien committed a card",
+   "superseded": true},
+  {"index": 1, "type": "ov_rewind", "round": 1, "turn": 1,
+   "hero_id": "hero_arien", "label": "The table rewound the game to decision 0",
+   "superseded": false},
+  {"index": 2, "type": "pass", "round": 1, "turn": 1,
+   "hero_id": "hero_arien", "label": "hero_arien passed", "superseded": false}
+]}
+```
+
+- Card identity in labels is player-scoped with the same visibility rule as the
+  view: an opponent's facedown commit reads "a card" until the card is public;
+  spectators get the fully-masked form.
+- `superseded: true` marks records behind a rewind (dead segments). Render
+  `ov_rewind` rows as visible markers and grey out superseded rows rather than
+  hiding them.
+- `PROPOSE_OVERRIDE` with `family: "rewind"` takes `to` in this `index` space.
+  Rewind depth is unrestricted by design — a table that votes to go back past a
+  round boundary has accepted that already-seen cards become hidden again.
 
 ---
 

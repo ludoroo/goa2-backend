@@ -10,6 +10,7 @@ from goa2.domain.time_control import (
     begin_shared_turn,
     create_game_clock,
     exhausted_active_hero_ids,
+    grant_initiative_bonus,
     grant_response_time,
     milliseconds_until_next_exhaustion,
     public_clock_view,
@@ -67,6 +68,7 @@ def test_automatic_turn_limit_defaults_for_older_saved_configurations() -> None:
         }
     )
     assert config.automatic_turn_limit == 2
+    assert config.initiative_bonus_seconds == 0
 
 
 def test_initial_turn_has_allowances_and_no_increment(config: TimeControlConfig) -> None:
@@ -98,6 +100,8 @@ def test_new_turn_resets_allowances_clears_response_and_caps_bank(
     player.time_bank_ms = 38_000
     player.planning_complete = True
     player.planning_locked_by_timeout = True
+    player.initiative_bonus_ms = 15_000
+    clock.initiative_bonus_hero_id = "hero_a"
 
     assert begin_shared_turn(
         clock,
@@ -109,6 +113,8 @@ def test_new_turn_resets_allowances_clears_response_and_caps_bank(
     assert player.planning_allowance_ms == 10_000
     assert player.resolution_allowance_ms == 20_000
     assert player.response_time_ms == 0
+    assert player.initiative_bonus_ms == 0
+    assert clock.initiative_bonus_hero_id is None
     assert player.time_bank_ms == 40_000
     assert not player.planning_complete
     assert not player.planning_locked_by_timeout
@@ -155,6 +161,44 @@ def test_response_spends_temporary_time_before_resolution_and_bank(
     assert player.resolution_allowance_ms == 18_000
     assert player.time_bank_ms == 30_000
     assert usable_time_ms(player, ClockKind.RESPONSE) == 48_000
+
+
+def test_initiative_bonus_is_primary_resolution_only(config: TimeControlConfig) -> None:
+    config = config.model_copy(update={"initiative_bonus_seconds": 15})
+    clock = _clock(config)
+    player = clock.players["hero_a"]
+    start_game_clock(clock, 0)
+
+    assert grant_initiative_bonus(clock, config, "hero_a")
+    assert player.initiative_bonus_ms == 15_000
+    assert usable_time_ms(player, ClockKind.RESOLUTION) == 65_000
+
+    grant_response_time(clock, config, "response-1", ["hero_a"])
+    activate_clocks(
+        clock,
+        ClockKind.RESPONSE,
+        ["hero_a"],
+        request_id="response-1",
+        now_ms=0,
+    )
+    settle_clock(clock, 20_000)
+
+    # Response time can consume its grant and Resolution allowance, but never
+    # the separate initiative bonus.
+    assert player.response_time_ms == 0
+    assert player.resolution_allowance_ms == 5_000
+    assert player.initiative_bonus_ms == 15_000
+
+    activate_clocks(
+        clock,
+        ClockKind.RESOLUTION,
+        ["hero_a"],
+        request_id="primary-1",
+        now_ms=20_000,
+    )
+    settle_clock(clock, 35_000)
+    assert player.initiative_bonus_ms == 0
+    assert player.resolution_allowance_ms == 5_000
 
 
 def test_team_targets_run_simultaneously_and_exhaust_independently(

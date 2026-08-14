@@ -40,6 +40,9 @@ data/replays/
 # Bug reports (created during testing / live servers)
 data/bug_reports/
 
+# Baked replay shares (created during testing / live servers)
+data/shares/
+
 extracted_assets/images
 Guards of Atlantis II - 2nd Printing_web-2.pdf
 .gitignore

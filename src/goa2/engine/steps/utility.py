@@ -1003,14 +1003,18 @@ class ApplyAfterAttackCardTextStep(GameStep):
             state, hero, red_card, compute_card_stats(state, hero.id, red_card)
         )
 
-        # If the red card's attack used a custom target_id_key, propagate the
-        # defender ID to that key so after-attack steps that gate on it (e.g.
-        # Nebkher's Twisted Fate using "tf_victim") can find the attacked unit.
+        # Propagate the defender through any custom target channels so rebuilt
+        # after-attack steps can find the unit that was actually attacked.
         for step in red_steps:
-            if isinstance(step, AttackSequenceStep) and step.target_id_key:
+            if isinstance(step, AttackSequenceStep):
+                target_keys = (step.target_id_key, step.target_output_key)
+                if not any(target_keys):
+                    continue
                 defender = context.get("defender_id")
                 if defender:
-                    context[step.target_id_key] = defender
+                    for target_key in target_keys:
+                        if target_key:
+                            context[target_key] = defender
                 break
 
         # Strip everything up to and including the AttackSequenceStep

@@ -202,11 +202,9 @@ class EbbAndFlowEffect(CardEffect):
                             UnitTypeFilter(unit_type="MINION"),
                             TeamFilter(relation="ENEMY"),
                             RangeFilter(max_range=stats.range),  # Range from NEW position
-                            ExcludeIdentityFilter(
-                                exclude_self=True, exclude_keys=["swap_target_1"]
-                            ),
+                            ExcludeIdentityFilter(exclude_self=True),
                         ],
-                        prompt="Select another enemy minion to swap with (Repeat)",
+                        prompt="Select an enemy minion to swap with (Repeat)",
                         output_key="swap_target_2",
                         is_mandatory=False,
                     ),

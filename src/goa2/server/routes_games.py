@@ -44,7 +44,11 @@ from goa2.server.time_control import (
     stop_clock_for_accepted_decision,
     timed_rest_mutation,
 )
-from goa2.server.visibility import events_for_viewer, input_request_for_viewer
+from goa2.server.visibility import (
+    awaiting_input_hero_ids,
+    events_for_viewer,
+    input_request_for_viewer,
+)
 
 router = APIRouter(prefix="/games", tags=["games"])
 
@@ -89,6 +93,7 @@ def _result_to_response(
         current_phase=result.current_phase.value,
         events=events_for_viewer([ev.model_dump() for ev in result.events], state, for_hero_id),
         input_request=input_request_for_viewer(result.input_request, state, for_hero_id),
+        awaiting_input=awaiting_input_hero_ids(result.input_request, state),
         winner=result.winner,
     )
 
@@ -170,6 +175,10 @@ async def set_ready(
                     state,
                     player.hero_id,
                 ),
+                awaiting_input=awaiting_input_hero_ids(
+                    game.last_result.input_request if game.last_result else None,
+                    state,
+                ),
                 winner=game.last_result.winner if game.last_result else None,
             )
 
@@ -202,6 +211,7 @@ async def get_game_view(
     return GameViewResponse(
         view=view,
         input_request=input_request_for_viewer(ir, game.session.state, hero_id),
+        awaiting_input=awaiting_input_hero_ids(ir, game.session.state),
         winner=winner,
     )
 

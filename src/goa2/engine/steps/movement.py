@@ -259,9 +259,16 @@ class MoveUnitStep(GameStep):
 
         new_steps: list[GameStep] = []
         if triggered_mines:
+            # Write legacy shared keys for compatibility; queued step snapshots
+            # literals so batched moves cannot clobber each other.
             context["triggered_mine_ids"] = triggered_mines
             context["mine_victim_id"] = target_unit_id
-            new_steps.append(TriggerMineStep())
+            new_steps.append(
+                TriggerMineStep(
+                    mine_ids=list(triggered_mines),
+                    victim_id=str(target_unit_id),
+                )
+            )
 
         return StepResult(
             is_finished=True,
@@ -714,11 +721,16 @@ class MinePathChoiceStep(GameStep):
 class TriggerMineStep(GameStep):
     """Triggers mines after movement - removes tokens and emits events.
 
-    For each blast mine, pushes a ForceDiscardStep targeting the moved hero
-    (identified by ``victim_key`` in context).
+    For each blast mine, pushes a ForceDiscardStep targeting the moved hero.
+    ``mine_ids`` / ``victim_id`` literals (preferred, snapshot at build time)
+    fall back to ``mine_ids_key`` / ``victim_key`` in context for legacy
+    callers. ``mine_ids`` uses ``is not None`` (an explicit empty list means
+    "no mines"); ``victim_id`` uses non-empty semantics.
     """
 
     type: StepType = StepType.TRIGGER_MINE
+    mine_ids: list[str] | None = None
+    victim_id: str | None = None
     mine_ids_key: str = "triggered_mine_ids"
     victim_key: str = "mine_victim_id"
 
@@ -726,9 +738,17 @@ class TriggerMineStep(GameStep):
         from goa2.engine.steps.cards import ForceDiscardStep
         from goa2.engine.steps.markers import _remove_token_from_board
 
-        mine_ids = context.get(self.mine_ids_key, [])
+        if self.mine_ids is not None:
+            mine_ids: list[str] = list(self.mine_ids)
+        else:
+            mine_ids = list(context.get(self.mine_ids_key, []) or [])
         if not mine_ids:
             return StepResult(is_finished=True)
+
+        victim_id: str | None = self.victim_id or None
+        if not victim_id and self.victim_key:
+            ctx_victim = context.get(self.victim_key)
+            victim_id = str(ctx_victim) if ctx_victim else None
 
         events: list[GameEvent] = []
         blast_sources: list[str | None] = []
@@ -757,6 +777,7 @@ class TriggerMineStep(GameStep):
                     )
                 )
 
+        # Clear legacy shared queue; the literal-based chain does not depend on it.
         context[self.mine_ids_key] = []
         # Mine reveal is a segment boundary: any pre-mine rollback snapshot
         # would restore the removed mine and undo hidden info the actor now
@@ -765,9 +786,10 @@ class TriggerMineStep(GameStep):
         # ForceDiscardStep, or a later attack target selection).
         context["rollback_reanchor_pending"] = True
 
-        # Each blast mine forces the moved hero to discard a card (if able)
+        # Snapshot victim as literal so downstream chains are not rerouted.
         new_steps: list[GameStep] = [
             ForceDiscardStep(
+                victim_id=victim_id,
                 victim_key=self.victim_key,
                 immunity_source_id=source_id,
             )
@@ -1315,9 +1337,16 @@ class PushUnitStep(GameStep):
                                 if owner_hero and owner_hero.team != pushed_team:
                                     enemy_mine_ids.append(str(tok_entity.id))
                 if enemy_mine_ids:
+                    # Legacy shared keys kept for compatibility; literal
+                    # snapshot on the queued step routes batched pushes/moves.
                     context["triggered_mine_ids"] = enemy_mine_ids
                     context["mine_victim_id"] = actual_target_id
-                    post_push_steps.append(TriggerMineStep())
+                    post_push_steps.append(
+                        TriggerMineStep(
+                            mine_ids=list(enemy_mine_ids),
+                            victim_id=str(actual_target_id),
+                        )
+                    )
 
         target_misc = state.misc_entities.get(BoardEntityID(actual_target_id))
         is_token_target = isinstance(target_misc, Token)

@@ -9,6 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from fastapi import WebSocket
 
@@ -36,6 +37,12 @@ class ManagedGame:
     game_logger: GameLogger | None = None
     replay_recorder: ReplayRecorder | None = None
     timer_task: asyncio.Task[None] | None = None
+    # Consensus-override negotiation state. Coordination, not game state:
+    # never saved, never in views; unresolved proposals die on restart.
+    # Typed loosely to avoid a registry <-> overrides import cycle
+    # (OverrideProposal lives in server/overrides.py).
+    pending_override: Any | None = None
+    override_expiry_task: asyncio.Task[None] | None = None
 
     @property
     def current_responder(self) -> str | None:
@@ -115,6 +122,8 @@ class GameRegistry:
         game = self._games.pop(game_id, None)
         if game is not None and game.timer_task is not None:
             game.timer_task.cancel()
+        if game is not None and game.override_expiry_task is not None:
+            game.override_expiry_task.cancel()
         if self._save_dir:
             from goa2.engine.persistence import delete_game_save
 

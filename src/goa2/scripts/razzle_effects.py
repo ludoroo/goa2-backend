@@ -320,7 +320,7 @@ def _twin_strike_repeat_steps(
         AttackSequenceStep(
             damage=stats.primary_value,
             range_val=1,
-            target_id_key=repeat_target_key,
+            target_output_key=repeat_target_key,
             target_filters=[
                 ExcludeIdentityFilter(exclude_self=False, exclude_keys=[first_target_key])
             ],

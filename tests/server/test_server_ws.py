@@ -567,6 +567,52 @@ def test_ws_cheats_gold_broadcasts_state(client):
         assert wasp_view_arien_gold == 5
 
 
+def test_ws_broadcast_names_the_awaited_player_without_leaking_their_options(client, game_data):
+    import asyncio
+
+    from goa2.domain.input import InputRequestType, create_input_request
+    from goa2.engine.session import SessionResult, SessionResultType
+    from goa2.server.ws import broadcast
+
+    class RecordingSocket:
+        def __init__(self):
+            self.message = None
+
+        async def send_json(self, data):
+            self.message = data
+
+    game = client.app.state.registry.get(game_data["game_id"])
+    game.last_result = SessionResult(
+        result_type=SessionResultType.INPUT_NEEDED,
+        current_phase=game.session.state.phase,
+        input_request=create_input_request(
+            InputRequestType.SELECT_CARD_OR_PASS,
+            player_id="hero_wasp",
+            prompt="Choose a defense",
+            options=[{"id": "magnetic_dagger", "text": "Magnetic Dagger"}],
+        ),
+    )
+
+    sockets = {
+        _token_for(game_data, "hero_arien"): RecordingSocket(),
+        _token_for(game_data, "hero_wasp"): RecordingSocket(),
+    }
+    spectator_socket = RecordingSocket()
+    game.ws_connections = sockets
+    game.spectator_ws_connections = {id(spectator_socket): spectator_socket}
+
+    asyncio.run(broadcast(game, client.app.state.registry))
+
+    attacker_msg = sockets[_token_for(game_data, "hero_arien")].message
+    defender_msg = sockets[_token_for(game_data, "hero_wasp")].message
+
+    assert attacker_msg["awaiting_input"] == ["hero_wasp"]
+    assert "input_request" not in attacker_msg
+    assert spectator_socket.message["awaiting_input"] == ["hero_wasp"]
+    assert defender_msg["awaiting_input"] == ["hero_wasp"]
+    assert defender_msg["input_request"]["options"][0]["id"] == "magnetic_dagger"
+
+
 def test_ws_broadcast_projects_hidden_mine_event_per_connection(client, game_data):
     import asyncio
 

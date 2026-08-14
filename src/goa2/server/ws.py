@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -15,6 +16,9 @@ from goa2.domain.input import InputResponse
 from goa2.domain.models import GamePhase
 from goa2.domain.types import HeroID
 from goa2.domain.views import build_view
+from goa2.engine.overrides import OverrideRejectedError, apply_override_decision
+from goa2.engine.session import SessionResult
+from goa2.server import overrides as ov
 from goa2.server.errors import (
     CardNotInHandError,
     GameNotFoundError,
@@ -24,16 +28,22 @@ from goa2.server.errors import (
     validate_simultaneous_input_scope,
 )
 from goa2.server.registry import GameRegistry, ManagedGame
+from goa2.server.replay import load_replay, rebuild_session_for_rewind
 from goa2.server.time_control import (
     client_decision_timed_out,
     finalize_timed_mutation,
     mark_human_action,
     now_ms,
     prepare_timed_mutation,
+    reconcile_game_clock,
     set_player_ready,
     stop_clock_for_accepted_decision,
 )
-from goa2.server.visibility import events_for_viewer, input_request_for_viewer
+from goa2.server.visibility import (
+    awaiting_input_hero_ids,
+    events_for_viewer,
+    input_request_for_viewer,
+)
 
 router = APIRouter()
 
@@ -148,6 +158,23 @@ def _capture_ping(game: ManagedGame, hero_id: str, target: dict[str, Any]) -> Ca
     return messages
 
 
+def _action_result_message(
+    game: ManagedGame, result: SessionResult, hero_id: str | None
+) -> dict[str, Any]:
+    """Build the ACTION_RESULT reply sent to the player who acted."""
+    return {
+        "type": "ACTION_RESULT",
+        "result_type": result.result_type.value,
+        "current_phase": result.current_phase.value,
+        "events": [ev.model_dump() for ev in result.events],
+        "input_request": input_request_for_viewer(
+            result.input_request, game.session.state, hero_id
+        ),
+        "awaiting_input": awaiting_input_hero_ids(result.input_request, game.session.state),
+        "winner": result.winner,
+    }
+
+
 def _build_state_update(game: ManagedGame, hero_id: str | None) -> dict[str, Any]:
     """Build a STATE_UPDATE message for a specific player."""
     hero_id_typed = HeroID(hero_id) if hero_id else None
@@ -161,6 +188,7 @@ def _build_state_update(game: ManagedGame, hero_id: str | None) -> dict[str, Any
     input_request = input_request_for_viewer(ir, game.session.state, hero_id)
     if input_request:
         msg["input_request"] = input_request
+    msg["awaiting_input"] = awaiting_input_hero_ids(ir, game.session.state)
     if winner:
         msg["winner"] = winner
     return msg
@@ -289,16 +317,7 @@ async def _handle_submit_input(
         game.replay_recorder.record_input(hero_id, data.get("selection"), rec_round, rec_turn)
     game.last_result = result
     _log_ws_result(game, result)
-    return {
-        "type": "ACTION_RESULT",
-        "result_type": result.result_type.value,
-        "current_phase": result.current_phase.value,
-        "events": [ev.model_dump() for ev in result.events],
-        "input_request": input_request_for_viewer(
-            result.input_request, game.session.state, hero_id
-        ),
-        "winner": result.winner,
-    }
+    return _action_result_message(game, result, hero_id)
 
 
 async def _handle_commit_card(
@@ -332,16 +351,7 @@ async def _handle_commit_card(
     if game.game_logger:
         game.game_logger.log_card_commit(hero_id, card_id)
     _log_ws_result(game, result)
-    return {
-        "type": "ACTION_RESULT",
-        "result_type": result.result_type.value,
-        "current_phase": result.current_phase.value,
-        "events": [ev.model_dump() for ev in result.events],
-        "input_request": input_request_for_viewer(
-            result.input_request, game.session.state, hero_id
-        ),
-        "winner": result.winner,
-    }
+    return _action_result_message(game, result, hero_id)
 
 
 async def _handle_uncommit_card(game: ManagedGame, hero_id: str) -> dict[str, Any]:
@@ -374,16 +384,7 @@ async def _handle_uncommit_card(game: ManagedGame, hero_id: str) -> dict[str, An
     if game.game_logger and card is not None:
         game.game_logger.log_card_uncommit(hero_id, card.id)
     _log_ws_result(game, result)
-    return {
-        "type": "ACTION_RESULT",
-        "result_type": result.result_type.value,
-        "current_phase": result.current_phase.value,
-        "events": [ev.model_dump() for ev in result.events],
-        "input_request": input_request_for_viewer(
-            result.input_request, game.session.state, hero_id
-        ),
-        "winner": result.winner,
-    }
+    return _action_result_message(game, result, hero_id)
 
 
 async def _handle_set_ready(
@@ -419,16 +420,7 @@ async def _handle_finish_planning(game: ManagedGame, hero_id: str) -> dict[str, 
         game.replay_recorder.record_finish_planning(hero_id, rec_round, rec_turn)
     game.last_result = result
     _log_ws_result(game, result)
-    return {
-        "type": "ACTION_RESULT",
-        "result_type": result.result_type.value,
-        "current_phase": result.current_phase.value,
-        "events": [ev.model_dump() for ev in result.events],
-        "input_request": input_request_for_viewer(
-            result.input_request, game.session.state, hero_id
-        ),
-        "winner": result.winner,
-    }
+    return _action_result_message(game, result, hero_id)
 
 
 async def _handle_pass_turn(game: ManagedGame, hero_id: str) -> dict[str, Any]:
@@ -451,16 +443,7 @@ async def _handle_pass_turn(game: ManagedGame, hero_id: str) -> dict[str, Any]:
     if game.game_logger:
         game.game_logger.log_pass_turn(hero_id)
     _log_ws_result(game, result)
-    return {
-        "type": "ACTION_RESULT",
-        "result_type": result.result_type.value,
-        "current_phase": result.current_phase.value,
-        "events": [ev.model_dump() for ev in result.events],
-        "input_request": input_request_for_viewer(
-            result.input_request, game.session.state, hero_id
-        ),
-        "winner": result.winner,
-    }
+    return _action_result_message(game, result, hero_id)
 
 
 async def _handle_rollback(game: ManagedGame, hero_id: str) -> dict[str, Any]:
@@ -486,16 +469,7 @@ async def _handle_rollback(game: ManagedGame, hero_id: str) -> dict[str, Any]:
         game.replay_recorder.record_rollback(hero_id, rec_round, rec_turn)
     game.last_result = result
     _log_ws_result(game, result)
-    return {
-        "type": "ACTION_RESULT",
-        "result_type": result.result_type.value,
-        "current_phase": result.current_phase.value,
-        "events": [ev.model_dump() for ev in result.events],
-        "input_request": input_request_for_viewer(
-            result.input_request, game.session.state, hero_id
-        ),
-        "winner": result.winner,
-    }
+    return _action_result_message(game, result, hero_id)
 
 
 async def _handle_cheats_gold(
@@ -548,6 +522,165 @@ async def _handle_cheats_gold(
         "input_request": None,
         "winner": None,
     }
+
+
+def _override_broadcast_to_all(game: ManagedGame, msg: dict[str, Any]) -> CapturedBroadcast:
+    """Capture one override-protocol message for every connection (spectators
+    included — they may watch the negotiation, never vote in it)."""
+    messages: CapturedBroadcast = [
+        (token, ws_conn, dict(msg)) for token, ws_conn in list(game.ws_connections.items())
+    ]
+    messages.extend(
+        (None, ws_conn, dict(msg)) for ws_conn in list(game.spectator_ws_connections.values())
+    )
+    return messages
+
+
+async def _resolve_override(
+    game: ManagedGame,
+    registry: GameRegistry,
+    outcome: str,
+    reason: dict[str, str] | None = None,
+) -> CapturedBroadcast:
+    """Resolve the open proposal (caller holds game.lock). Returns broadcasts.
+
+    On approval, spec ordering applies: apply via the op registry -> append
+    the replay record -> save -> broadcast. A patch that fails validation at
+    apply time downgrades the outcome to ``rejected`` with a structured reason.
+    """
+    proposal = game.pending_override
+    assert proposal is not None
+    game.pending_override = None
+    if game.override_expiry_task is not None:
+        game.override_expiry_task.cancel()
+        game.override_expiry_task = None
+
+    messages: CapturedBroadcast = []
+    events: list[dict[str, Any]] | None = None
+
+    if outcome == "applied":
+        prepare_timed_mutation(game, registry=registry)
+        rec_round, rec_turn = game.session.state.round, game.session.state.turn
+        try:
+            if proposal.family == "rewind":
+                if game.replay_recorder is None:
+                    raise OverrideRejectedError(
+                        "This game has no replay log to rewind", code="no_replay"
+                    )
+                new_session = rebuild_session_for_rewind(
+                    str(game.replay_recorder.path), proposal.to
+                )
+                game.session = new_session
+                if new_session.state.phase in (GamePhase.PLANNING, GamePhase.GAME_OVER):
+                    game.last_result = None
+                else:
+                    game.last_result = new_session.advance(None)
+            else:
+                result = apply_override_decision(game.session, proposal.op, proposal.args)
+                if result is not None:
+                    game.last_result = result
+                    events = [ev.model_dump() for ev in result.events]
+        except (OverrideRejectedError, ValueError) as exc:
+            outcome = "rejected"
+            code = getattr(exc, "code", "invalid_op")
+            reason = {"code": code, "message": str(exc)}
+        else:
+            record: dict[str, Any] = {
+                "type": "ov_rewind" if proposal.family == "rewind" else f"ov_{proposal.family}",
+                "r": rec_round,
+                "t": rec_turn,
+                "hero": proposal.proposer_hero_id,
+                "voters": proposal.tally()["yes"],
+            }
+            if proposal.family == "rewind":
+                record["to"] = proposal.to
+            else:
+                record["op"] = proposal.op
+                record["args"] = proposal.args
+            if game.replay_recorder:
+                game.replay_recorder.record_override(record)
+        finalize_timed_mutation(game, registry)  # reconcile + save + reschedule
+        # Outcome first, then the fresh state, in one flush.
+        messages.extend(
+            _override_broadcast_to_all(game, ov.resolved_msg(proposal, outcome, reason))
+        )
+        if outcome == "applied":
+            messages.extend(_capture_broadcast(game, events))
+    else:
+        # No state mutation; just un-pause the clocks.
+        reconcile_game_clock(game, now_ms())
+        registry.save_game(game.game_id)
+        messages.extend(
+            _override_broadcast_to_all(game, ov.resolved_msg(proposal, outcome, reason))
+        )
+    return messages
+
+
+async def _expire_override(game: ManagedGame, registry: GameRegistry, proposal_id: str) -> None:
+    """Background task: expiry is a rejection (nobody actively agreed)."""
+    proposal = game.pending_override
+    if proposal is None:
+        return
+    delay = max(0.0, proposal.expires_at - time.time())
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        return
+    async with game.outbound_lock:
+        async with game.lock:
+            current = game.pending_override
+            if current is None or current.id != proposal_id:
+                return
+            messages = await _resolve_override(game, registry, "expired")
+        await _send_captured_broadcast(game, messages)
+
+
+async def _handle_override_message(
+    game: ManagedGame,
+    registry: GameRegistry,
+    hero_id: str,
+    msg_type: str,
+    data: dict[str, Any],
+) -> CapturedBroadcast:
+    """Handle PROPOSE/VOTE/CANCEL under game.lock; returns captured broadcasts.
+
+    These are deliberately NOT in MUTATION_MESSAGE_TYPES: a proposal or vote
+    alone mutates nothing. The apply step runs its own prepare/finalize.
+    """
+    if msg_type == "PROPOSE_OVERRIDE":
+        proposal = ov.create_proposal(game, hero_id, data)
+        if proposal.family == "rewind" and game.replay_recorder is not None:
+            target = proposal.to if proposal.to is not None else -1
+            _, decisions = load_replay(str(game.replay_recorder.path))
+            if not 0 <= target <= len(decisions):
+                raise ValueError(f"Rewind target {proposal.to} out of range 0..{len(decisions)}")
+        game.pending_override = proposal
+        reconcile_game_clock(game, now_ms())  # pause the turn clock
+        game.override_expiry_task = asyncio.create_task(
+            _expire_override(game, registry, proposal.id)
+        )
+        messages = _override_broadcast_to_all(game, ov.proposed_msg(proposal))
+        # A single-connected-player game reaches its majority on the
+        # proposer's auto-yes alone.
+        if proposal.outcome() == "applied":
+            messages.extend(await _resolve_override(game, registry, "applied"))
+        return messages
+
+    proposal = game.pending_override  # type: ignore[assignment]  # Any on ManagedGame
+    if proposal is None or proposal.id != data.get("proposal_id"):
+        raise ValueError("No matching open proposal")
+
+    if msg_type == "VOTE_OVERRIDE":
+        ov.register_vote(proposal, hero_id, bool(data.get("approve")))
+        outcome = proposal.outcome()
+        if outcome is None:
+            return _override_broadcast_to_all(game, ov.updated_msg(proposal))
+        return await _resolve_override(game, registry, outcome)
+
+    # CANCEL_OVERRIDE
+    if hero_id != proposal.proposer_hero_id:
+        raise ValueError("Only the proposer may cancel an override proposal")
+    return await _resolve_override(game, registry, "cancelled")
 
 
 @router.websocket("/games/{game_id}/ws")
@@ -638,6 +771,21 @@ async def game_ws(websocket: WebSocket, game_id: str) -> None:
                             ping_messages = _capture_ping(game, hero_id, target)
                         await _send_captured_broadcast(game, ping_messages)
                 except ValueError as exc:
+                    async with game.outbound_lock:
+                        await websocket.send_json({"type": "ERROR", "detail": str(exc)})
+                continue
+
+            if msg_type in ("PROPOSE_OVERRIDE", "VOTE_OVERRIDE", "CANCEL_OVERRIDE"):
+                try:
+                    async with game.outbound_lock:
+                        async with game.lock:
+                            override_messages = await _handle_override_message(
+                                game, registry, hero_id, msg_type, data
+                            )
+                        await _send_captured_broadcast(game, override_messages)
+                except ValueError as exc:
+                    if game.game_logger:
+                        game.game_logger.log_error(str(exc), hero_id)
                     async with game.outbound_lock:
                         await websocket.send_json({"type": "ERROR", "detail": str(exc)})
                 continue

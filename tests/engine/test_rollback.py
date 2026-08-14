@@ -28,6 +28,7 @@ from goa2.engine.steps import (
     AskConfirmationStep,
     ConfirmResolutionStep,
     FinalizeHeroTurnStep,
+    RevealHandCardStep,
     SelectStep,
 )
 
@@ -145,6 +146,55 @@ class TestConfirmResolutionStep:
 
 
 class TestRollbackSegmentBoundary:
+    def test_card_tier_reveal_reanchors_at_next_owner_prompt(self):
+        """A public hand-card reveal is a boundary, not a permanent freeze.
+
+        The actor may reconsider a later decision without restoring the
+        hidden card or crossing back to the pre-reveal prompt.
+        """
+        state = _make_state()
+        state.current_actor_id = "hero_a"
+        state.resolution_owner_id = HeroID("hero_a")
+        state.execution_context["revealed_owner"] = "hero_b"
+        state.execution_context["revealed_card"] = "filler_0"
+        session = GameSession(state)
+
+        push_steps(
+            state,
+            [
+                AskConfirmationStep(player_id="hero_a", prompt="Pre-Reveal"),
+                RevealHandCardStep(
+                    owner_key="revealed_owner",
+                    card_key="revealed_card",
+                ),
+                AskConfirmationStep(player_id="hero_a", prompt="Post-Reveal"),
+                ConfirmResolutionStep(hero_id="hero_a"),
+            ],
+        )
+
+        pre_reveal = session.advance()
+        assert pre_reveal.input_request.prompt == "Pre-Reveal"
+        pre_reveal_snapshot = session._rollback_snapshot
+        assert pre_reveal_snapshot is not None
+
+        post_reveal = _respond(session, pre_reveal, "YES")
+        assert post_reveal.input_request.prompt == "Post-Reveal"
+        assert post_reveal.input_request.can_rollback is True
+        assert state.execution_context.get("rollback_frozen") is not True
+        assert state.execution_context.get("rollback_reanchor_pending") is not True
+        assert session._rollback_snapshot is not pre_reveal_snapshot
+        assert state.card_reveal is not None
+        assert state.card_reveal["card_id"] == "filler_0"
+
+        confirm = _respond(session, post_reveal, "YES")
+        assert confirm.input_request.can_rollback is True
+
+        rolled_back = session.rollback()
+        assert rolled_back.input_request.prompt == "Post-Reveal"
+        assert rolled_back.input_request.can_rollback is True
+        assert session.state.card_reveal is not None
+        assert session.state.card_reveal["card_id"] == "filler_0"
+
     def test_foreign_input_clears_snapshot_without_freezing(self):
         """Foreign input drops the pre-foreign snapshot but does NOT set
         ``rollback_frozen`` — the resolution is a segment boundary, not

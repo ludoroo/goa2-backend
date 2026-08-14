@@ -17,31 +17,51 @@ is hard-coded `True` here.
 from __future__ import annotations
 
 import json
+import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from goa2.domain.views import build_view
+from goa2.server import shares
 from goa2.server.admin import replay_api_enabled, require_admin
 from goa2.server.replay import (
     ReplayCursor,
     _replay_dir,
     index_for_round_turn,
     load_replay,
+    state_body,
 )
+from goa2.server.share_bake import bake_in_subprocess
+from goa2.server.shares import _share_dir
 
 __all__ = ["replay_api_enabled", "router"]
 
 router = APIRouter(prefix="/replays", tags=["replays"], dependencies=[Depends(require_admin)])
 
 
-# Tiny in-process LRU of reconstructed cursors. This is a single-user dev tool,
-# so it is a plain dict with no concurrency hardening; it is a pure optimization
-# (identical inputs always yield identical views).
-_CACHE: OrderedDict[str, ReplayCursor] = OrderedDict()
+# Tiny in-process LRU of reconstructed cursors, a pure optimization: identical
+# inputs always yield identical views.
+#
+# Each entry is keyed by game_id and stamped with the log file's (mtime_ns,
+# size). A replay of a *live* game keeps growing on disk and a cursor holds the
+# decision list it was built from, so a stale stamp must not be served — that is
+# what froze `total_decisions` at whatever the file held when first viewed.
+#
+# Replay logs are append-only, so a grown file usually still starts with the
+# decisions already applied. In that case the cursor is kept and its decision
+# list extended in place (a ~3 ms re-parse) rather than discarded (a rebuild from
+# the seed, seconds for a long game). Only a genuinely divergent prefix rebuilds.
+#
+# `_LOCKS` guards seeking: `ReplayCursor.seek` mutates one shared GameSession, so
+# two concurrent requests for the same game would interleave and corrupt it.
+# Endpoints are sync `def`, so FastAPI runs them in a threadpool and this really
+# can happen.
+_CACHE: OrderedDict[str, tuple[tuple[int, int], ReplayCursor]] = OrderedDict()
 _CACHE_MAX = 8
+_LOCKS: OrderedDict[str, threading.Lock] = OrderedDict()
+_LOCKS_GUARD = threading.Lock()
 
 
 def _replay_path(game_id: str) -> Path:
@@ -54,16 +74,46 @@ def _replay_path(game_id: str) -> Path:
     return path
 
 
+def _game_lock(game_id: str) -> threading.Lock:
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(game_id)
+        if lock is None:
+            lock = _LOCKS[game_id] = threading.Lock()
+        _LOCKS.move_to_end(game_id)
+        while len(_LOCKS) > _CACHE_MAX * 4:
+            # Evicting a lock only loses mutual exclusion for a game nobody has
+            # touched in a long while; the cursor it guarded is long gone too.
+            _LOCKS.popitem(last=False)
+    return lock
+
+
 def _get_cursor(game_id: str) -> ReplayCursor:
-    """Return a cached ReplayCursor for the game, loading it if necessary."""
-    cached = _CACHE.get(game_id)
-    if cached is not None:
-        _CACHE.move_to_end(game_id)
-        return cached
+    """Return a ReplayCursor for the game, reusing it across appends when possible.
+
+    Call under `_game_lock(game_id)`: the returned cursor is shared mutable state.
+    """
     path = _replay_path(game_id)
+    st = path.stat()
+    stamp = (st.st_mtime_ns, st.st_size)
+
+    cached = _CACHE.get(game_id)
+    if cached is not None and cached[0] == stamp:
+        _CACHE.move_to_end(game_id)
+        return cached[1]
+
     setup, decisions = load_replay(str(path))
-    cursor = ReplayCursor(setup, decisions)
-    _CACHE[game_id] = cursor
+    cursor: ReplayCursor | None = None
+    if cached is not None:
+        previous = cached[1]
+        applied = previous.decisions
+        if decisions[: len(applied)] == applied:
+            # Pure append: everything already applied to the session still holds.
+            previous.decisions = decisions
+            cursor = previous
+    if cursor is None:
+        cursor = ReplayCursor(setup, decisions)
+
+    _CACHE[game_id] = (stamp, cursor)
     _CACHE.move_to_end(game_id)
     while len(_CACHE) > _CACHE_MAX:
         _CACHE.popitem(last=False)
@@ -130,6 +180,50 @@ def get_replay_meta(game_id: str) -> dict[str, Any]:
     }
 
 
+@router.post("/{game_id}/share", status_code=201)
+def create_share(game_id: str) -> dict[str, Any]:
+    """Bake a finished game into a shareable artifact and return its token.
+
+    The bake runs in a child process (see server/share_bake.py): it re-simulates
+    the whole game, which is seconds of GIL-holding Python, and doing that in
+    this process would stall live games. The request still waits for the result,
+    so the API stays synchronous — no pending shares, no polling — while the
+    interpreter serving live games stays responsive.
+    """
+    path = _replay_path(game_id)
+    try:
+        load_replay(str(path))  # fail fast on a malformed log, before spawning
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    # Idempotent: a finished game's artifact can never change, so re-sharing
+    # returns the existing link rather than baking a second copy of it.
+    existing = shares.share_for_game(game_id)
+    if existing is not None:
+        return {"token": existing["token"], "url": f"/shared/{existing['token']}"}
+
+    result = bake_in_subprocess(str(path), game_id, _share_dir())
+
+    if not result["ok"]:
+        reason = result["reason"]
+        if reason == "unfinished":
+            raise HTTPException(
+                status_code=409,
+                detail="Only finished games can be shared; this game has no winner yet",
+            )
+        if reason == "rewind":
+            raise HTTPException(status_code=422, detail="Cannot share a replay containing a rewind")
+        if reason == "crashed":
+            raise HTTPException(status_code=500, detail="The bake process died; check server logs")
+        raise HTTPException(
+            status_code=422,
+            detail=f"Replay reconstruction failed at decision {result['at']}: {result['error']}",
+        )
+
+    token = result["token"]
+    return {"token": token, "url": f"/shared/{token}"}
+
+
 @router.get("/{game_id}/state")
 def get_replay_state(
     game_id: str,
@@ -142,37 +236,24 @@ def get_replay_state(
     Position is chosen by, in priority order: `decision` (apply N decisions),
     else `round`/`turn` (start of that moment), else the end of the game.
     """
-    cursor = _get_cursor(game_id)
-    if decision is not None:
-        target = decision
-    elif round is not None:
-        target = index_for_round_turn(cursor.decisions, round, turn)
-    else:
-        target = cursor.total
-    target = max(0, min(target, cursor.total))
+    with _game_lock(game_id):
+        cursor = _get_cursor(game_id)
+        if decision is not None:
+            target = decision
+        elif round is not None:
+            target = index_for_round_turn(cursor.decisions, round, turn)
+        else:
+            target = cursor.total
+        target = max(0, min(target, cursor.total))
 
-    try:
-        session = cursor.seek(target)
-    except ValueError as e:
-        # Engine/replay drift (e.g. a recorded card no longer in hand). Surface
-        # it: compare the header's `engine` sha to the current engine.
-        raise HTTPException(
-            status_code=422, detail=f"Replay reconstruction failed at decision {cursor.cursor}: {e}"
-        ) from e
+        try:
+            session = cursor.seek(target)
+        except ValueError as e:
+            # Engine/replay drift (e.g. a recorded card no longer in hand). Surface
+            # it: compare the header's `engine` sha to the current engine.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Replay reconstruction failed at decision {cursor.cursor}: {e}",
+            ) from e
 
-    state = session.state
-    winner: str | None
-    if state.individual_winner_id is not None:
-        winner = str(state.individual_winner_id)
-    else:
-        winner = state.winner.value if state.winner else None
-    return {
-        "view": build_view(state, reveal_all=True),
-        "position": {
-            "decision_index": cursor.cursor,
-            "round": state.round,
-            "turn": state.turn,
-            "total_decisions": cursor.total,
-        },
-        "winner": winner,
-    }
+        return state_body(session, cursor_index=cursor.cursor, total=cursor.total)

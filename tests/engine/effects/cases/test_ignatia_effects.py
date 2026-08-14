@@ -13,7 +13,7 @@ from goa2.domain.events import GameEventType
 from goa2.domain.input import InputRequestType
 from goa2.domain.models import TeamColor
 
-from ..builders import EffectScenarioBuilder, hero_card
+from ..builders import EffectScenarioBuilder, hero_card, hex_at
 from ..runner import run_card
 
 
@@ -139,6 +139,49 @@ def test_playing_with_fire_blue_resolves_attack_on_off_axis_target() -> None:
     run.choose("off_axis").finish()
 
     assert any(e.event_type == GameEventType.COMBAT_RESOLVED for e in run.events)
+
+
+@pytest.mark.effect_flow
+def test_loosely_aimed_firebolts_orange_skips_the_repeat_with_no_second_hero() -> None:
+    """An unsatisfiable YES would abort the action, ultimate included."""
+    state = (
+        EffectScenarioBuilder()
+        .with_hexes(_hex_disk(3))
+        .red_hero(
+            "hero_ignatia",
+            at=(0, 0, 0),
+            current_card=hero_card("Ignatia", "loosely_aimed_firebolts"),
+        )
+        .blue_hero("h_on", at=ON_AXIS)  # the only enemy hero anywhere
+        .with_actor("hero_ignatia")
+        .build()
+    )
+    _set_coin(state, "ORANGE")
+    _enable_ultimate(state)
+
+    run = run_card(state, "hero_ignatia")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("ATTACK").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("h_on").expect_input("SELECT_CARD_OR_PASS")
+    # Straight past the repeat, to the ultimate's own prompt.
+    run.choose("PASS").expect_input(InputRequestType.SELECT_OPTION)
+    assert "Chaos Incarnate" in run.latest_request.prompt
+
+
+@pytest.mark.effect_flow
+def test_loosely_aimed_firebolts_repeat_gate_does_not_leak_across_equilibrium() -> None:
+    """The repeat's ``active_if_key`` exempts it from Equilibrium's branch
+    gating, so its gate must stay unset on the blue branch."""
+    state = _fire_state("loosely_aimed_firebolts")
+    _set_coin(state, "ORANGE")
+    _enable_equilibrium(state)
+
+    run = run_card(state, "hero_ignatia")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("ATTACK").expect_input(InputRequestType.SELECT_NUMBER)
+    run.choose(1).expect_input(InputRequestType.SELECT_UNIT)  # 1 = Blue
+    # Blue has no repeat clause; the orange gate must not fire.
+    run.choose("off_axis").finish()
 
 
 def _fire_hero_state(card_id: str):
@@ -386,7 +429,7 @@ def _imminent_blue_state():
 
 
 @pytest.mark.effect_flow
-def test_imminent_eruption_blue_repeats_on_a_different_adjacent_minion() -> None:
+def test_imminent_eruption_blue_repeats_on_another_adjacent_minion() -> None:
     state = _imminent_blue_state()
     _set_coin(state, "BLUE")
 
@@ -398,9 +441,83 @@ def test_imminent_eruption_blue_repeats_on_a_different_adjacent_minion() -> None
     run.choose("YES").expect_input(InputRequestType.SELECT_UNIT)
 
     opts = _option_set(run)
-    assert "m2" in opts  # a different adjacent minion
-    assert "m1" not in opts  # first target excluded
+    assert "m2" in opts  # another adjacent minion
+    assert "m1" not in opts  # the first target died to the attack
     assert "h1" not in opts  # repeat must be a minion, not a hero
+
+
+@pytest.mark.effect_flow
+def test_imminent_eruption_blue_skips_the_repeat_with_no_minion_left() -> None:
+    state = (
+        EffectScenarioBuilder()
+        .with_hexes(_hex_disk(5))
+        .red_hero(
+            "hero_ignatia", at=(0, 0, 0), current_card=hero_card("Ignatia", "imminent_eruption")
+        )
+        .blue_minion("m1", at=(1, 0, -1))  # the only adjacent minion
+        .with_actor("hero_ignatia")
+        .build()
+    )
+    _set_coin(state, "BLUE")
+
+    run = run_card(state, "hero_ignatia")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("ATTACK").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("m1").finish()  # m1 dies; nothing left to repeat on
+
+    assert "m1" not in state.entity_locations
+
+
+def _protect_minion(state, minion_id: str, protector_id: str, token_at) -> None:
+    """Cover ``minion_id`` with a totem-style MINION_PROTECTION, so an attack
+    defeats it without removing it from the board (see the Brogan/Tali ruling)."""
+    from goa2.domain.models import Token, TokenType
+    from goa2.domain.models.effect import (
+        ActiveEffect,
+        AffectsFilter,
+        DurationType,
+        EffectScope,
+        EffectType,
+        Shape,
+    )
+
+    token = Token(id="totem_1", name="Totem", token_type=TokenType.TOTEM, owner_id=protector_id)
+    state.misc_entities[token.id] = token
+    state.place_entity(token.id, hex_at(token_at))
+    state.add_effect(
+        ActiveEffect(
+            id="totem_protection",
+            source_id=protector_id,
+            token_id=token.id,
+            effect_type=EffectType.MINION_PROTECTION,
+            scope=EffectScope(
+                shape=Shape.ADJACENT, origin_id=token.id, affects=AffectsFilter.FRIENDLY_UNITS
+            ),
+            duration=DurationType.PASSIVE,
+            sacrifice_origin_token=True,
+            created_at_turn=state.turn,
+            created_at_round=state.round,
+        )
+    )
+
+
+@pytest.mark.effect_flow
+def test_imminent_eruption_blue_may_repeat_on_the_same_minion_if_it_survives() -> None:
+    """ "May repeat once on a minion" — not "a different minion"."""
+    state = _imminent_blue_state()
+    _set_coin(state, "BLUE")
+    _protect_minion(state, "m1", protector_id="h1", token_at=(2, 0, -2))
+
+    run = run_card(state, "hero_ignatia")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("ATTACK").expect_input(InputRequestType.SELECT_UNIT)
+    run.choose("m1").expect_input(InputRequestType.SELECT_OPTION)
+    run.choose("YES").expect_input(InputRequestType.SELECT_UNIT)
+
+    assert "m1" in state.entity_locations  # the totem saved it
+    opts = _option_set(run)
+    assert "m1" in opts  # same minion may be hit again
+    assert "m2" in opts
 
 
 # =============================================================================
@@ -660,6 +777,78 @@ def test_scorching_blaze_allows_distance_two_or_three() -> None:
     coords = _hex_coords(run)
     assert (4, 0, -4) in coords  # distance 2
     assert (5, 0, -5) in coords  # distance 3
+
+
+def _blocked_ally_state(card_id: str, *, leave_lane_open: bool):
+    """Ignatia at (0,0,0) with a friendly ally at (1,0,-1) whose straight lines
+    are all blocked at the first step — except, when ``leave_lane_open``, the
+    (0,-1,1) ray: a passable Mine sits 2 spaces out at (1,-2,1), so the ally can
+    be moved 3 spaces to (1,-3,2) but cannot land at 2."""
+    from goa2.domain.models import Token, TokenType
+
+    builder = (
+        EffectScenarioBuilder()
+        .with_hexes(_hex_disk(5))
+        .red_hero("hero_ignatia", at=(0, 0, 0), current_card=hero_card("Ignatia", card_id))
+        .red_hero("ally", at=(1, 0, -1))
+        # Four of the ally's six neighbours; Ignatia herself blocks the fifth.
+        .blue_minion("b1", at=(2, -1, -1))
+        .blue_minion("b2", at=(2, 0, -2))
+        .blue_minion("b3", at=(1, 1, -2))
+        .blue_minion("b4", at=(0, 1, -1))
+    )
+    if not leave_lane_open:
+        builder = builder.blue_minion("b5", at=(1, -1, 0))  # seals the last ray
+    state = builder.with_actor("hero_ignatia").build()
+
+    if leave_lane_open:
+        mine = Token(id="mine_1", name="Mine", token_type=TokenType.MINE_DUD, is_passable=True)
+        state.misc_entities[mine.id] = mine
+        state.place_entity(mine.id, hex_at((1, -2, 1)))
+    return state
+
+
+@pytest.mark.effect_flow
+def test_searing_heat_does_not_offer_a_hero_who_cannot_be_moved() -> None:
+    """Picking a boxed-in hero would dead-end at the destination select."""
+    state = _blocked_ally_state("searing_heat", leave_lane_open=False)
+    _set_coin(state, "BLUE")
+
+    run = run_card(state, "hero_ignatia")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").finish()  # no legal target at all -> nothing to ask
+
+    assert _pos(state, "ally") == (1, 0, -1)
+
+
+@pytest.mark.effect_flow
+def test_searing_heat_does_not_offer_a_hero_who_can_only_move_three() -> None:
+    state = _blocked_ally_state("searing_heat", leave_lane_open=True)
+    _set_coin(state, "BLUE")
+
+    run = run_card(state, "hero_ignatia")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").finish()  # Searing Heat moves exactly 2 — no landing
+
+    assert _pos(state, "ally") == (1, 0, -1)
+
+
+@pytest.mark.effect_flow
+def test_scorching_blaze_offers_a_hero_who_can_only_move_three() -> None:
+    """Scorching Blaze moves 2 OR 3, so the same ally is a legal target."""
+    state = _blocked_ally_state("scorching_blaze", leave_lane_open=True)
+    _set_coin(state, "BLUE")
+
+    run = run_card(state, "hero_ignatia")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("SKILL").expect_input(InputRequestType.SELECT_UNIT)
+    assert "ally" in _option_set(run)
+
+    run.choose("ally").expect_input(InputRequestType.SELECT_HEX)
+    assert _hex_coords(run) == {(1, -3, 2)}  # over the passable Mine, not onto it
+
+    run.choose({"q": 1, "r": -3, "s": 2}).finish()
+    assert _pos(state, "ally") == (1, -3, 2)
 
 
 # =============================================================================

@@ -231,3 +231,26 @@ def test_violent_torrent_repeat_cannot_fall_back_to_the_first_target() -> None:
 
     # Declining it ends the card — no generic "Select Attack Target" fallback.
     run.skip().finish()
+
+
+@pytest.mark.effect_flow
+def test_ebb_and_flow_repeat_may_swap_back_with_the_same_minion() -> None:
+    """A bare "may repeat once" — no "different" — leaves the same minion legal."""
+    arena = [(q, r, -q - r) for q in range(-3, 4) for r in range(-3, 4) if abs(-q - r) <= 3]
+    state = (
+        EffectScenarioBuilder()
+        .with_hexes(arena)
+        .red_hero("hero_arien", at=(0, 0, 0), current_card=hero_card("Arien", "ebb_and_flow"))
+        .blue_minion("adj_minion", at=(1, -1, 0))
+        .with_actor("hero_arien")
+        .build()
+    )
+
+    run = run_card(state, "hero_arien")
+    run.expect_input(InputRequestType.CHOOSE_ACTION).choose("SKILL")
+    run.expect_input(InputRequestType.SELECT_UNIT).choose("adj_minion")
+    # It was adjacent before the swap, so the repeat is offered.
+    run.expect_input(InputRequestType.SELECT_OPTION).choose("YES")
+
+    run.expect_input(InputRequestType.SELECT_UNIT)
+    assert "adj_minion" in _option_set(run)  # swapping back is a legal play

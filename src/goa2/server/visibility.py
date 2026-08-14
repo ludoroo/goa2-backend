@@ -18,13 +18,6 @@ from goa2.domain.state import GameState
 from goa2.domain.types import BoardEntityID, HeroID
 
 
-def _viewer_team(state: GameState, for_hero_id: str | None) -> TeamColor | None:
-    if for_hero_id is None:
-        return None
-    hero = state.get_hero(HeroID(for_hero_id))
-    return hero.team if hero else None
-
-
 def _can_answer_input(state: GameState, expected: str, for_hero_id: str | None) -> bool:
     if for_hero_id is None:
         return False
@@ -61,6 +54,28 @@ def input_request_for_viewer(
         return None
     payload["players"] = {for_hero_id: players[for_hero_id]}
     return payload
+
+
+def awaiting_input_hero_ids(request: InputRequest | None, state: GameState) -> list[str]:
+    """Return every hero a pending request is still waiting on.
+
+    Who is being waited on is public even where the request body is not, so
+    this travels beside the scoped payload from ``input_request_for_viewer``:
+    observers can name the blocking player without seeing their options. A
+    simultaneous request drops a hero from ``players`` as soon as they have
+    nothing left to answer, so the list shrinks as players finish.
+    """
+    if request is None:
+        return []
+
+    expected = request.player_id
+    if expected == "simultaneous":
+        players = request.context.get("players")
+        return sorted(str(hero_id) for hero_id in players) if isinstance(players, dict) else []
+    if expected.startswith("team:"):
+        team = state.teams.get(TeamColor(expected[5:]))
+        return [str(hero.id) for hero in team.heroes] if team else []
+    return [expected]
 
 
 def _card_location(state: GameState, card_id: str) -> tuple[str, str, Card] | None:
@@ -195,10 +210,7 @@ def _sanitize_card_values(
 def _token_identity_visible(state: GameState, token: Token, for_hero_id: str | None) -> bool:
     if not token.is_facedown:
         return True
-    viewer_team = _viewer_team(state, for_hero_id)
-    owner = state.get_hero(token.owner_id) if token.owner_id else None
-    owner_team = owner.team if owner else None
-    return bool(viewer_team is not None and viewer_team == owner_team)
+    return bool(for_hero_id is not None and token.owner_id == for_hero_id)
 
 
 def events_for_viewer(

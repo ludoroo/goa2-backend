@@ -161,7 +161,7 @@ class RainOfArrowsEffect(CardEffect):
                 damage=dmg,
                 range_val=r,
                 is_ranged=True,
-                target_id_key="rain_victim_1",
+                target_output_key="rain_victim_1",
                 target_filters=[RangeFilter(min_range=r, max_range=r)],
             ),
             # 2. Was the first target a hero? Convert bool -> True/None gate.

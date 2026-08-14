@@ -515,14 +515,13 @@ def test_planning_timeout_commits_one_random_card_and_locks_takeback() -> None:
 
     assert game.replay_recorder is not None
     replay_record = json.loads(game.replay_recorder.path.read_text().splitlines()[-1])
-    assert replay_record == {
-        "type": "timer_timeout",
-        "action": "commit",
-        "r": 1,
-        "t": 1,
-        "hero": "hero_arien",
-        "card": committed.id,
-    }
+    assert replay_record["type"] == "timer_timeout"
+    assert replay_record["action"] == "commit"
+    assert replay_record["r"] == 1
+    assert replay_record["t"] == 1
+    assert replay_record["hero"] == "hero_arien"
+    assert replay_record["card"] == committed.id
+    assert isinstance(replay_record["ts"], float)
 
 
 def test_emmitt_timeout_keeps_an_existing_first_commit_and_finishes_planning() -> None:
@@ -587,6 +586,109 @@ def test_out_of_turn_and_team_requests_get_response_time_once() -> None:
     assert clock.active_kind == ClockKind.RESPONSE
     assert clock.active_hero_ids == ["hero_wasp"]
     assert clock.players["hero_wasp"].response_time_ms == 30_000
+
+
+def test_first_primary_resolution_actor_receives_initiative_bonus_once() -> None:
+    game = _game(_config(initiative_bonus_seconds=15))
+    _start(game)
+    state = game.session.state
+    clock = state.clock
+    assert clock is not None
+    state.phase = GamePhase.RESOLUTION
+    state.resolution_owner_id = HeroID("hero_arien")
+
+    primary = InputRequest(
+        id="primary-1",
+        request_type=InputRequestType.CHOOSE_ACTION,
+        player_id="hero_arien",
+        options=[InputOption(id="HOLD", text="Hold")],
+    )
+    game.last_result = SessionResult(
+        result_type=SessionResultType.INPUT_NEEDED,
+        input_request=primary,
+        current_phase=GamePhase.RESOLUTION,
+    )
+    reconcile_game_clock(game, 0)
+
+    arien_clock = clock.players["hero_arien"]
+    wasp_clock = clock.players["hero_wasp"]
+    assert clock.initiative_bonus_hero_id == "hero_arien"
+    assert arien_clock.initiative_bonus_ms == 15_000
+    assert wasp_clock.initiative_bonus_ms == 0
+
+    # Reconciliation is idempotent and cannot grant the same shared-turn
+    # bonus again.
+    reconcile_game_clock(game, 0)
+    assert arien_clock.initiative_bonus_ms == 15_000
+
+    # A later response by the first actor does not spend the bonus.
+    state.resolution_owner_id = HeroID("hero_wasp")
+    response = primary.model_copy(update={"id": "response-1", "player_id": "hero_arien"})
+    game.last_result = game.last_result.model_copy(update={"input_request": response})
+    reconcile_game_clock(game, 0)
+    assert clock.active_kind == ClockKind.RESPONSE
+    reconcile_game_clock(game, 5_000)
+    assert arien_clock.initiative_bonus_ms == 15_000
+
+    # The next primary actor cannot claim the first-actor bonus in the same
+    # shared turn.
+    state.resolution_owner_id = HeroID("hero_wasp")
+    next_primary = response.model_copy(update={"id": "primary-2", "player_id": "hero_wasp"})
+    game.last_result = game.last_result.model_copy(update={"input_request": next_primary})
+    reconcile_game_clock(game, 5_000)
+    assert clock.active_kind == ClockKind.RESOLUTION
+    assert wasp_clock.initiative_bonus_ms == 0
+
+    # Moving to a fresh shared turn resets the old grant and makes the new
+    # first primary actor eligible again.
+    state.turn = 2
+    reconcile_game_clock(game, 5_000)
+    assert clock.initiative_bonus_hero_id == "hero_wasp"
+    assert arien_clock.initiative_bonus_ms == 0
+    assert wasp_clock.initiative_bonus_ms == 15_000
+
+
+def test_turn_boundary_prompt_without_owner_cannot_claim_initiative_bonus() -> None:
+    """Expiring-effect finishing steps run with no resolution owner.
+
+    They are still RESOLUTION-phase, hero-scoped prompts, so they charge the
+    Resolution allowance — but they belong to nobody's turn and must not
+    consume the shared turn's one-shot bonus.
+    """
+    game = _game(_config(initiative_bonus_seconds=15))
+    _start(game)
+    state = game.session.state
+    clock = state.clock
+    assert clock is not None
+    state.phase = GamePhase.RESOLUTION
+    # FinalizeHeroTurnStep cleared the owner before the turn-boundary steps.
+    state.resolution_owner_id = None
+
+    finishing = InputRequest(
+        id="delayed-jump-1",
+        request_type=InputRequestType.SELECT_HEX,
+        player_id="hero_arien",
+        options=[InputOption(id="hex", text="Hex")],
+    )
+    game.last_result = SessionResult(
+        result_type=SessionResultType.INPUT_NEEDED,
+        input_request=finishing,
+        current_phase=GamePhase.RESOLUTION,
+    )
+    reconcile_game_clock(game, 0)
+
+    assert clock.active_kind == ClockKind.RESOLUTION
+    assert clock.initiative_bonus_hero_id is None
+    assert clock.players["hero_arien"].initiative_bonus_ms == 0
+
+    # The bonus survives for the next shared turn's real first actor.
+    state.turn = 2
+    state.resolution_owner_id = HeroID("hero_wasp")
+    primary = finishing.model_copy(update={"id": "primary-1", "player_id": "hero_wasp"})
+    game.last_result = game.last_result.model_copy(update={"input_request": primary})
+    reconcile_game_clock(game, 0)
+    assert clock.initiative_bonus_hero_id == "hero_wasp"
+    assert clock.players["hero_wasp"].initiative_bonus_ms == 15_000
 
 
 def test_team_timeout_waits_until_every_eligible_person_exhausts(monkeypatch) -> None:

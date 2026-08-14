@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from goa2.domain.input import InputRequestType
 from goa2.domain.models import (
     ActionType,
@@ -136,3 +139,96 @@ def test_filtered_force_discard_does_not_enable_shield_without_matching_hand_car
 
     assert result.input_request is None
     assert [card.id for card in victim.played_cards if card is not None] == ["discard_shield"]
+
+
+# ---------------------------------------------------------------------------
+# Victim source semantics: validation + non-empty literal override + fallback.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"victim_id": "", "victim_key": ""},
+        {"victim_id": None, "victim_key": None},
+        {"victim_id": ""},
+        {"victim_key": ""},
+    ],
+)
+def test_force_discard_rejects_missing_or_empty_victim_source(kwargs) -> None:
+    """ForceDiscardStep must reject construction without a non-empty source."""
+    with pytest.raises(ValidationError):
+        ForceDiscardStep(**kwargs)
+
+
+def test_force_discard_validator_runs_on_model_validate() -> None:
+    """Validator also fires on deserialization, not just direct construction."""
+    with pytest.raises(ValidationError):
+        ForceDiscardStep.model_validate({"type": "force_discard"})
+
+
+def _prompt(state):
+    request = process_stack(state)
+    assert request.input_request is not None
+    assert request.input_request.request_type == InputRequestType.SELECT_CARD
+    return request.input_request
+
+
+def _setup_two_heroes_with_cards():
+    state = _state()
+    state.get_hero("hero_actor").hand = [_card("actor_card", basic=False)]
+    state.get_hero("hero_victim").hand = [_card("victim_card", basic=False)]
+    return state
+
+
+def test_force_discard_non_empty_literal_wins_over_conflicting_key() -> None:
+    """Non-empty ``victim_id`` overrides a conflicting context ``victim_key``."""
+    state = _setup_two_heroes_with_cards()
+    state.execution_context["victim"] = "hero_actor"  # would route to wrong hero
+
+    push_steps(state, [ForceDiscardStep(victim_id="hero_victim", victim_key="victim")])
+    req = _prompt(state)
+
+    assert req.player_id == "hero_victim"
+    assert {opt.id for opt in req.options} == {"victim_card"}
+
+
+def test_force_discard_empty_literal_falls_back_to_key() -> None:
+    """An empty ``victim_id`` is treated as absent and resolves from ``victim_key``."""
+    state = _setup_two_heroes_with_cards()
+    state.execution_context["victim"] = "hero_victim"
+
+    push_steps(state, [ForceDiscardStep(victim_id="", victim_key="victim")])
+    req = _prompt(state)
+
+    assert req.player_id == "hero_victim"
+    assert {opt.id for opt in req.options} == {"victim_card"}
+
+
+def test_select_step_empty_literals_fall_back_to_keys() -> None:
+    """SelectStep empty literals fall back to keys for prompt + card owner."""
+    from goa2.domain.models.enums import TargetType
+    from goa2.engine.steps import SelectStep
+
+    state = _setup_two_heroes_with_cards()
+    state.execution_context["victim"] = "hero_victim"
+
+    push_steps(
+        state,
+        [
+            SelectStep(
+                target_type=TargetType.CARD,
+                prompt="pick",
+                context_hero_id="",
+                override_player_id="",
+                context_hero_id_key="victim",
+                override_player_id_key="victim",
+                is_mandatory=True,
+            )
+        ],
+    )
+    req = _prompt(state)
+
+    assert req.player_id == "hero_victim"
+    assert {opt.id for opt in req.options} == {"victim_card"}

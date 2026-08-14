@@ -64,6 +64,7 @@ class SelectStep(GameStep):
     output_key: str = "selection"
     filters: list[FilterCondition] = Field(default_factory=list)
     auto_select_if_one: bool = False
+    context_hero_id: str | None = None  # Non-empty literal wins over context_hero_id_key
     context_hero_id_key: str | None = None  # Key in context to find hero (for CARD/HAND selection)
     card_container: CardContainerType = (
         CardContainerType.HAND
@@ -82,6 +83,7 @@ class SelectStep(GameStep):
     number_labels: dict[int, str] = Field(default_factory=dict)  # Display text per number option
     skip_immunity_filter: bool = False  # Set True to disable automatic ImmunityFilter
     skip_self_filter: bool = False  # Set True to allow selecting self (e.g. "yourself")
+    override_player_id: str | None = None  # Non-empty literal wins over override_player_id_key
     override_player_id_key: str | None = None  # Key in context to find player ID who provides input
     # Card property filters (applied before candidate extraction for CARD selections)
     card_action_types: list[ActionType] | None = (
@@ -149,7 +151,10 @@ class SelectStep(GameStep):
     def _resolve_actor_id(self, state: GameState, context: dict[str, Any]) -> Any:
         """The acting unit for this selection, honoring override_player_id_key."""
         actor_id = state.current_actor_id
-        if self.override_player_id_key:
+        # Non-empty literal wins; empty literal falls back to key lookup.
+        if self.override_player_id:
+            actor_id = HeroID(str(self.override_player_id))
+        elif self.override_player_id_key:
             found = context.get(self.override_player_id_key)
             if found:
                 actor_id = HeroID(str(found))
@@ -193,7 +198,10 @@ class SelectStep(GameStep):
             candidates = list(self.number_options)
         elif self.target_type == TargetType.CARD:
             target_id = actor_id
-            if self.context_hero_id_key:
+            # Non-empty literal wins; empty literal falls back to key lookup.
+            if self.context_hero_id:
+                target_id = HeroID(str(self.context_hero_id))
+            elif self.context_hero_id_key:
                 found_id = context.get(self.context_hero_id_key)
                 if found_id:
                     target_id = HeroID(str(found_id))
