@@ -816,7 +816,8 @@ def test_searing_heat_does_not_offer_a_hero_who_cannot_be_moved() -> None:
 
     run = run_card(state, "hero_ignatia")
     run.expect_input(InputRequestType.CHOOSE_ACTION)
-    run.choose("SKILL").finish()  # no legal target at all -> nothing to ask
+    assert "SKILL" not in {option.id for option in run.latest_request.options}
+    run.choose("HOLD").finish()
 
     assert _pos(state, "ally") == (1, 0, -1)
 
@@ -828,7 +829,8 @@ def test_searing_heat_does_not_offer_a_hero_who_can_only_move_three() -> None:
 
     run = run_card(state, "hero_ignatia")
     run.expect_input(InputRequestType.CHOOSE_ACTION)
-    run.choose("SKILL").finish()  # Searing Heat moves exactly 2 — no landing
+    assert "SKILL" not in {option.id for option in run.latest_request.options}
+    run.choose("HOLD").finish()
 
     assert _pos(state, "ally") == (1, 0, -1)
 

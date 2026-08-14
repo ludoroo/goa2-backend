@@ -202,6 +202,7 @@ Create a new game. No authentication required.
 | `cheats_enabled` | boolean | `false` | Enable cheats for this game (unlocks gold cheat API) |
 | `game_type` | string | `"LONG"` | `"QUICK"` or `"LONG"`. Controls wave and life counter setup (see below) |
 | `time_control` | object/null | `null` | Optional timed-match configuration shown in the quick-start example above |
+| `bots` | object/null | `null` | Optional server-managed AI configuration. See [Server-managed bots](#server-managed-bots) below. |
 
 **Game types:**
 
@@ -227,6 +228,121 @@ Omitting `game_type` defaults to `"LONG"` (standard game).
   "spectator_token": "ghi789..."
 }
 ```
+
+The response shape is **identical** whether or not `bots` is supplied. Every hero on the roster — human or bot — receives an entry in `player_tokens`. See [Server-managed bots](#server-managed-bots) for details on when and how those bot tokens matter.
+
+#### Server-managed bots
+
+An optional `bots` field on `POST /games` requests configures server-managed AI heroes. The mapping is keyed by hero ID (the same identifier that appears in the game view and `player_tokens`, e.g. `"hero_wasp"`) and each value is a `CreateBotSpec`:
+
+```json
+{
+  "map_name": "forgotten_island",
+  "red_heroes": ["arien"],
+  "blue_heroes": ["wasp"],
+  "bots": {
+    "hero_wasp": {"kind": "random"}
+  }
+}
+```
+
+Multiple bots on either team are allowed. A mixed human/bot game is fully supported:
+
+```json
+{
+  "map_name": "forgotten_island",
+  "red_heroes": ["arien", "min"],
+  "blue_heroes": ["wasp", "brogan"],
+  "bots": {
+    "hero_wasp": {"kind": "random"},
+    "hero_brogan": {"kind": "heuristic"}
+  }
+}
+```
+
+**`CreateBotSpec` fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | string | Agent implementation. Must be `"random"`, `"heuristic"`, or `"ismcts"`. Any other value is a 422 validation error. |
+| `search` | object or null | Optional bounded search settings. **Only valid when `kind == "ismcts"`.** Supplying `search` for any other kind is a 422. Omitting it uses the production defaults. |
+
+The public schema only accepts the fields above (`additionalProperties: false` in the OpenAPI schema); unknown fields return a 422.
+
+**`SearchSettings` (for `kind: "ismcts"`):**
+
+| Field | Type | Default | Bounds | Description |
+|-------|------|---------|--------|-------------|
+| `iterations` | integer | 200 | 1 ≤ iterations ≤ 1000 | Determinized playouts per decision. |
+| `decision_timeout_seconds` | number | 2.0 | 0.05 ≤ timeout ≤ 5.0 | Wall-clock cap on a single decision. On timeout the server falls back to a Heuristic decision so the game keeps progressing. |
+
+Requests that violate these bounds fail with a 422 (Pydantic validation) before the game is created. The same bounds apply on save/restore, so a hand-edited save file cannot bypass them either.
+
+**Supported agent kinds:**
+
+- `"random"` — Uniformly random legal action. Instant compute, no rollouts. Useful for smoke tests and low-difficulty games.
+- `"heuristic"` — Rule-based agent that plays reasonably against a random opponent. Instant compute.
+- `"ismcts"` — Information-Set Monte Carlo Tree Search. Bounded execution — the server enforces a process-wide concurrency limit, a per-decision timeout, and a queue-wait cap; on any bound violation the server transparently falls back to a Heuristic decision on the same cloned state so the game keeps progressing. See §Bounded ISMCTS below.
+
+Additional agent kinds may be introduced in future releases. Clients should treat an unknown-`kind` 422 as "not yet supported by this server" and fall back accordingly.
+
+**Bounded ISMCTS (operational):**
+
+The server runs every ISMCTS decision on a background thread — never on the event loop — guarded by:
+
+- **Owner-scoped routing.** The coordinator identifies the actual mapped bot that will answer the next decision (without invoking any policy) and only takes the bounded path when that specific bot is ISMCTS. A Heuristic / Random teammate of an ISMCTS bot is never dragged through the semaphore for its own turn, and the per-decision timeout is always the actual owner's `search.decision_timeout_seconds`.
+- **Process-wide concurrency semaphore.** Only a small number of ISMCTS searches run at once across the whole server. Extra callers queue for a short bounded wait; if the queue times out the coordinator falls back to a Heuristic decision.
+- **Per-decision search timeout.** `search.decision_timeout_seconds` caps a single decision's wall-clock time. On timeout the coordinator falls back to a Heuristic decision. The still-running search is left to finish on its worker thread (occupying its concurrency slot until the thread actually completes) and its result is discarded — the game state has already advanced by the time it returns.
+- **Driver-side selection validation.** Every INPUT selection an ISMCTS bot produces is validated against the request's legal raw values (option-derived values plus `"SKIP"` when `can_skip` is true) before it can be applied. An illegal selection triggers the same Heuristic fallback path as a search timeout or exception — the engine never sees an out-of-options answer or a phantom `SKIP` on a non-skippable request.
+- **Per-hero Heuristic fallback cache.** The coordinator caches one fallback `HeuristicAgent` **per hero** (not per game), each seeded from a stable game-id + hero-id derivation, so a fallback triggered on one bot never advances another bot's RNG. Fallbacks are runtime-only and cleared on game removal.
+- **Shutdown drain.** On app shutdown the coordinator awaits every in-flight bounded-search future (bounded by a drain timeout) so no background thread outlives the process. A runaway search is logged and left to finish; the drain never hangs shutdown.
+
+None of this behavior is observable at the request boundary — the client's REST/WebSocket contract is identical whether a bot's action came from the primary search or the Heuristic fallback. Operators can observe fallbacks and latency through the `bots` structured log stream and the `ismcts_metrics` counter in `goa2.server.bots` (counter fields: `total_calls`, `fallback_queue_timeout`, `fallback_search_timeout`, `fallback_error`, `fallback_invalid_decision`, `late_completions`, `peak_queue_depth`).
+
+**Tokens for bot heroes:**
+
+Every hero — human or bot — receives an entry in `player_tokens`, and a spectator token is always issued. This preserves the response shape whether or not `bots` is set.
+
+The tokens issued for bot heroes are **informational**: the server drives each bot through the same engine seams a human would use, and there is no supported flow for an external client to "take over" a bot by presenting the bot's token to REST/WebSocket endpoints — doing so does not disable the bot coordinator, will race the coordinator's decisions, and is not part of the public contract. Treat bot tokens as opaque state you may safely ignore in clients that do not spectate or debug.
+
+**Timed matches (readiness):**
+
+For timed matches, `ClockStatus.WAITING_FOR_PLAYERS` requires every hero to send `POST /games/{game_id}/ready` before the clock starts. Bot heroes are **auto-readied** by the server at game creation; humans still need to ready up. Once every ready signal has landed, the clock transitions to `RUNNING` and the bot coordinator begins driving decisions.
+
+**Validation errors:**
+
+| Case | Status | Detail |
+|------|--------|--------|
+| Bot hero id not in `red_heroes` / `blue_heroes` | 400 | `"bot_specs references hero '<id>' which is not in the game roster ..."` |
+| Unknown `kind` (e.g. `"nnpuct"`, `"puct"`) | 422 | Pydantic literal error on `bots.<hero_id>.kind` |
+| `search` field on a non-ISMCTS spec (`random` / `heuristic`) | 422 | Pydantic model validator: `"search settings are only valid for kind='ismcts'"` |
+| `search.iterations` outside `[1, 1000]` | 422 | Pydantic bounds error on `bots.<hero_id>.search.iterations` |
+| `search.decision_timeout_seconds` outside `[0.05, 5.0]` | 422 | Pydantic bounds error on `bots.<hero_id>.search.decision_timeout_seconds` |
+| Any field other than `kind` / `search` on a bot spec | 422 | Pydantic `extra_forbidden` on `bots.<hero_id>.<field>` |
+
+**Limitations:**
+
+- **Draft-created games do not accept `bots`.** `POST /drafts` and `PATCH /drafts/{id}/settings` explicitly reject a top-level `bots` key with a 422 whose detail mentions that the field is not supported for drafts. Configure bots via a direct `POST /games` instead. Adding bots to draft-created games is out of scope for the current release.
+- **No mid-game reconfiguration.** Bot assignments are frozen at game creation; there is no endpoint to swap a bot in or out after the game exists.
+- **Bot search time counts against the bot's own clock** on timed matches.
+
+**Persistence & restore:**
+
+Bot games survive server restarts. Every accepted bot mutation runs through the same `finalize_timed_mutation` seam human REST/WS mutations use, so the on-disk save file is refreshed after every applied bot decision. On startup, the server's `lifespan` restore hook:
+
+1. Loads every saved game (including its `bot_specs`).
+2. Resumes surviving deadline timers.
+3. Runs `start_bot_lifecycle` for each restored game with bot metadata — auto-readies bot heroes on timed games, persists + reconciles the clock, and schedules the coordinator so play resumes.
+
+Only the *serializable* `bot_specs` (kind + optional search bounds) round-trip through disk. Live agent objects, RNG state, in-flight search futures, and the async worker task are runtime-only — they are rebuilt against a stable game-id-derived entropy source on restore, so replaying the same save deterministically reproduces the same seeded RNG streams without keeping any process-local secrets on disk. A save file written by a server that supports fewer / more `kind`s must still restore: unknown kinds are logged and dropped from `bot_specs` (the affected hero becomes a human slot for the remainder of that game); everything else loads unchanged.
+
+**Bot heroes and rollback:**
+
+An accepted bot input decision is treated as an "externally revealed" response for the rollback contract (same as a timer-driven automatic decision). It freezes the rollback point at the state the bot answered, so a human client cannot retroactively rewind a bot's applied answer to try a different sequence. This mirrors the existing timeout / defender-defended rollback boundaries.
+
+**AI ladder — current status:**
+
+Today the strength ceiling of a live bot is set by the **hand-crafted** `HeuristicValue` + `HeuristicPrior` under the ISMCTS search. There is no learned model in production. See `docs/plan_ai_ladder.md` for the ladder plan; the shipped bots correspond to Rung 0 (baselines) + a bounded server integration of the same search. Remaining ladder work — Rung 2 (learned value), Rung 3 (learned policy prior), Rung 4 (joint NN) — is scoped out of the current release; when a learned model lands, it will replace `HeuristicValue` / `HeuristicPrior` behind the same `ValueFn` / `Policy` protocols without changing the public bot request contract. Clients should not depend on any observable strength difference between server versions beyond what the request `kind` advertises.
 
 ### `GET /games/{game_id}`
 

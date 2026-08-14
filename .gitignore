@@ -43,6 +43,9 @@ data/bug_reports/
 # Baked replay shares (created during testing / live servers)
 data/shares/
 
+# Evaluation checkpoints (created by the targeted eval CLI)
+data/evaluations/
+
 extracted_assets/images
 Guards of Atlantis II - 2nd Printing_web-2.pdf
 .gitignore

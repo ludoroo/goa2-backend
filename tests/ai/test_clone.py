@@ -57,9 +57,7 @@ def _positions(state: GameState) -> dict[str, tuple[int, int, int]]:
 
 
 def _occupancy(state: GameState) -> dict[str, str]:
-    return {
-        str(tid): str(t.occupant_id) for tid, t in state.board.tiles.items() if t.occupant_id
-    }
+    return {str(tid): str(t.occupant_id) for tid, t in state.board.tiles.items() if t.occupant_id}
 
 
 def test_clone_shares_static_geometry_but_not_tiles() -> None:

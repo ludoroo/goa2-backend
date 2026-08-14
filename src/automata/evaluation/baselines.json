@@ -70,5 +70,35 @@
     "Xargatha"
   ],
   "search_games": 4,
-  "search_iterations": 2
+  "search_iterations": 2,
+  "targeted_evaluations": [
+    {
+      "a": "ismcts",
+      "a_winrate": 1.0,
+      "a_wins": 12,
+      "avg_rounds": 7.5,
+      "avg_steps": 428.0,
+      "b": "heuristic",
+      "b_wins": 0,
+      "base_seed": 0,
+      "case_timeout_seconds": null,
+      "checkpoint_identity": "b9ff319fca59dbcc",
+      "dirty_tree_hash": "4ea292349af4f647",
+      "draws": 0,
+      "games": 12,
+      "ismcts_cutoff_rounds": 1,
+      "ismcts_iterations": 4,
+      "max_step_terminations": 0,
+      "max_steps": 20000,
+      "paired_seeds": 6,
+      "promotion_passed": true,
+      "recorded_on": "2026-08-11",
+      "screening_passed": true,
+      "source_revision": "c482a9de586213ec92ab0ab784ba597fd8083086",
+      "wilson_ci": [
+        0.757,
+        1.0
+      ]
+    }
+  ]
 }

@@ -356,16 +356,16 @@ def test_hand_crossbow_offers_adjacent_and_bounty_targets_together(game_state):
     option_ids = {option.id for option in run.latest_request.options}
 
     # Adjacent category: adjacent minion + adjacent enemy hero both qualify.
-    assert "minion_1" in option_ids, (
-        f"Adjacent minion should qualify via adjacent-unit branch; got {sorted(option_ids)!r}"
-    )
-    assert "enemy_hero" in option_ids, (
-        f"Adjacent enemy hero should qualify via adjacent-unit branch; got {sorted(option_ids)!r}"
-    )
+    assert (
+        "minion_1" in option_ids
+    ), f"Adjacent minion should qualify via adjacent-unit branch; got {sorted(option_ids)!r}"
+    assert (
+        "enemy_hero" in option_ids
+    ), f"Adjacent enemy hero should qualify via adjacent-unit branch; got {sorted(option_ids)!r}"
     # Bounty category: nonadjacent bounty-marked enemy hero qualifies.
-    assert "enemy_hero_2" in option_ids, (
-        f"Nonadjacent bounty-marked hero should qualify via bounty branch; got {sorted(option_ids)!r}"
-    )
+    assert (
+        "enemy_hero_2" in option_ids
+    ), f"Nonadjacent bounty-marked hero should qualify via bounty branch; got {sorted(option_ids)!r}"
 
 
 def test_hand_crossbow_excludes_nonqualifying_ranged_targets(game_state):
@@ -390,9 +390,9 @@ def test_hand_crossbow_excludes_nonqualifying_ranged_targets(game_state):
     option_ids = {option.id for option in run.latest_request.options}
 
     # The nonadjacent, non-bounty enemy is in range but does not qualify.
-    assert "enemy_hero_3" not in option_ids, (
-        f"Nonadjacent enemy without Bounty must be excluded; got {sorted(option_ids)!r}"
-    )
+    assert (
+        "enemy_hero_3" not in option_ids
+    ), f"Nonadjacent enemy without Bounty must be excluded; got {sorted(option_ids)!r}"
     # Sanity: legitimate targets are still offered.
     assert "enemy_hero" in option_ids  # adjacent
     assert "enemy_hero_2" in option_ids  # bounty
@@ -418,9 +418,7 @@ def test_hand_crossbow_resolves_adjacent_category_target(game_state):
     _drain_to_completion(run)
 
     combat_targets = [
-        event.target_id
-        for event in run.events
-        if event.event_type == GameEventType.COMBAT_RESOLVED
+        event.target_id for event in run.events if event.event_type == GameEventType.COMBAT_RESOLVED
     ]
     assert combat_targets == ["minion_1"], (
         "Adjacent-category attack must resolve with minion_1 as the "
@@ -449,9 +447,7 @@ def test_hand_crossbow_resolves_bounty_category_target(game_state):
     _drain_to_completion(run)
 
     combat_targets = [
-        event.target_id
-        for event in run.events
-        if event.event_type == GameEventType.COMBAT_RESOLVED
+        event.target_id for event in run.events if event.event_type == GameEventType.COMBAT_RESOLVED
     ]
     assert combat_targets == ["enemy_hero_2"], (
         "Bounty-category attack must resolve with enemy_hero_2 as the "

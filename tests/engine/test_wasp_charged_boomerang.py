@@ -160,9 +160,9 @@ def test_charged_boomerang_valid_targets(wasp_boomerang_state):
     assert "enemy_diagonal2" in valid_options, "Second diagonal target should be valid"
 
     # Should NOT include: enemy_adjacent (adjacent = in straight line)
-    assert "enemy_adjacent" not in valid_options, (
-        "Adjacent targets should be excluded (in straight line)"
-    )
+    assert (
+        "enemy_adjacent" not in valid_options
+    ), "Adjacent targets should be excluded (in straight line)"
 
     # Should NOT include: enemy_straight (same q-axis = in straight line)
     assert "enemy_straight" not in valid_options, "Straight line targets should be excluded"

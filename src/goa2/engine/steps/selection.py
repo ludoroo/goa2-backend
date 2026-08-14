@@ -390,13 +390,8 @@ class SelectStep(GameStep):
             )
             return StepResult(is_finished=True)
 
-        actor_id = state.current_actor_id
+        actor_id = self._resolve_actor_id(state, context)
         prompt_player_id = normalize_prompt_player_id(state, actor_id) if actor_id else None
-        if self.override_player_id_key:
-            found = context.get(self.override_player_id_key)
-            if found:
-                actor_id = HeroID(str(found))
-                prompt_player_id = normalize_prompt_player_id(state, found)
 
         candidates, card_candidates = self._build_candidates(state, context, actor_id)
 
@@ -1257,6 +1252,7 @@ class RevealAndResolveGuessStep(GameStep):
             actual_color=actual_color,
             correct=is_correct,
         )
+        state.record_public_revealed_card(victim.id, str(target_card.id))
 
         return StepResult(
             is_finished=True,

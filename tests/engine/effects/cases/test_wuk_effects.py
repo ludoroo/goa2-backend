@@ -110,16 +110,16 @@ def _drive_canopy_swap(
                 f"Canopy swap must not use SELECT_NUMBER; got prompt={req.to_dict()!r}"
             )
         if request_type == InputRequestType.SELECT_UNIT_OR_TOKEN:
-            assert not tree_chosen, (
-                f"Tree prompt appeared twice in one canopy swap; latest={req.to_dict()!r}"
-            )
+            assert (
+                not tree_chosen
+            ), f"Tree prompt appeared twice in one canopy swap; latest={req.to_dict()!r}"
             state.execution_stack[-1].pending_input = {"selection": tree_id}
             tree_chosen = True
             continue
         if request_type == InputRequestType.SELECT_UNIT:
-            assert not participant_chosen, (
-                f"Participant prompt appeared twice in one canopy swap; latest={req.to_dict()!r}"
-            )
+            assert (
+                not participant_chosen
+            ), f"Participant prompt appeared twice in one canopy swap; latest={req.to_dict()!r}"
             saw_participant_prompt = True
             option_ids = {str(option.id) for option in req.options}
             if expect_participant_options_superset is not None:

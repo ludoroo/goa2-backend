@@ -332,6 +332,9 @@ class DiscardCardStep(GameStep):
             discard_source = "current_turn"
 
         hero.discard_card(target_card, from_hand=(actual_source == CardContainerType.HAND))
+        # The discard pile is public regardless of the card's previous face.
+        # Record only after the lifecycle transition succeeds.
+        state.record_public_revealed_card(owner_id, str(target_card.id))
 
         # Record in the turn-scoped discard log (cleared at end_turn); read by
         # "retrieve all cards discarded this turn" effects (Emmitt).
@@ -1835,6 +1838,7 @@ class RevealHandCardStep(GameStep):
             "card_id": target_card.id,
             "tier_value": tier_value,
         }
+        state.record_public_revealed_card(owner.id, str(target_card.id))
 
         return StepResult(
             is_finished=True,

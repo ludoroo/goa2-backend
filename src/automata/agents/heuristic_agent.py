@@ -14,15 +14,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from goa2.domain.input import InputRequest
-from goa2.domain.models import ActionType, TeamColor
+import goa2.engine.stats as stats
+from goa2.domain.hex import Hex
+from goa2.domain.input import InputRequest, selection_value
+from goa2.domain.models import ActionType, StatType, TeamColor
 from goa2.domain.models.card import Card
-from goa2.domain.models.unit import Hero
+from goa2.domain.models.effect import EffectType
+from goa2.domain.models.unit import Hero, is_hero_unit
 from goa2.domain.state import GameState
-from goa2.domain.types import HeroID
+from goa2.domain.types import HeroID, UnitID
 from goa2.engine.map_logic import zones_between
-
-from .base import HexLike, hex_distance, option_selection_value
+from goa2.engine.rules import validate_target
+from goa2.engine.stats import calculate_minion_defense_modifier, compute_card_stats
+from goa2.engine.topology import get_topology_service
 
 # CHOOSE_ACTION priority (higher = preferred as the played action).
 _ACTION_PRIORITY = {
@@ -36,6 +40,16 @@ _ACTION_PRIORITY = {
 }
 
 
+def _is_reversed_initiative(state: GameState) -> bool:
+    return any(
+        effect.effect_type == EffectType.REVERSED_INITIATIVE
+        and effect.is_active
+        and state.round == effect.created_at_round
+        and state.turn == effect.created_at_turn + 1
+        for effect in state.active_effects
+    )
+
+
 class HeuristicAgent:
     def __init__(self, seed: int = 0) -> None:
         import random
@@ -47,19 +61,15 @@ class HeuristicAgent:
         enemy = TeamColor.BLUE if team == TeamColor.RED else TeamColor.RED
         out = []
         for unit in [*state.teams[enemy].heroes, *state.teams[enemy].minions]:
-            loc = state.unit_locations.get(unit.id)
-            if loc is not None:
-                out.append(loc)
+            out.extend(state.get_positions(str(unit.id)))
         return out
 
     def _unit_team(self, state: GameState, uid: str) -> TeamColor | None:
+        owner_id = state.hero_owner_id(uid)
         for color, team in state.teams.items():
-            if any(u.id == uid for u in [*team.heroes, *team.minions]):
+            if any(str(u.id) == owner_id for u in [*team.heroes, *team.minions]):
                 return color
         return None
-
-    def _is_hero(self, state: GameState, uid: str) -> bool:
-        return any(h.id == uid for t in state.teams.values() for h in t.heroes)
 
     def _zone_of(self, state: GameState, loc: Any) -> str | None:
         for zid, zone in state.board.zones.items():
@@ -71,10 +81,23 @@ class HeuristicAgent:
     def choose_card(self, state: GameState, hero: Hero) -> Card | None:
         if not hero.hand:
             return None
-        # Highest score; break ties by initiative (act earlier), then rng.
+        initiative_direction = -1 if _is_reversed_initiative(state) else 1
+
+        # Highest score; break ties by effective acting order, then rng.
         best = max(
             hero.hand,
-            key=lambda c: (self.score_card(state, hero, c), c.initiative, self._rng.random()),
+            key=lambda card: (
+                self.score_card(state, hero, card),
+                initiative_direction
+                * stats.get_computed_stat(
+                    state,
+                    hero.id,
+                    StatType.INITIATIVE,
+                    card.get_base_stat_value(StatType.INITIATIVE),
+                    performing_card=card,
+                ),
+                self._rng.random(),
+            ),
         )
         return best
 
@@ -85,16 +108,19 @@ class HeuristicAgent:
         side-effect free; does not consult the RNG (callers break ties).
         """
         team = hero.team or TeamColor.RED
-        pos = state.unit_locations.get(hero.id)
+        positions = state.get_positions(str(hero.id))
         enemies = self._enemy_positions(state, team)
-        nearest = min((hex_distance(pos, e) for e in enemies), default=99) if pos else 99
+        topology = get_topology_service()
+        nearest = min(
+            (topology.distance(pos, enemy, state) for pos in positions for enemy in enemies),
+            default=float("inf"),
+        )
 
         pa = card.primary_action
-        val = card.primary_action_value or 0
+        stats = compute_card_stats(state, UnitID(str(hero.id)), card)
         if pa == ActionType.ATTACK:
-            reach = card.range_value or 1
-            reachable = nearest <= reach
-            return 10 + val + (5 if reachable else -3)
+            reachable = self._has_attack_target(state, hero, stats.range)
+            return 10 + stats.primary_value + (5 if reachable else -3)
         if pa == ActionType.SKILL:
             return 6
         if pa == ActionType.MOVEMENT:
@@ -103,8 +129,43 @@ class HeuristicAgent:
             return 4
         return 3
 
+    def _has_attack_target(self, state: GameState, hero: Hero, range_val: int) -> bool:
+        """Return whether the canonical target validator finds a public enemy."""
+        team = hero.team or TeamColor.RED
+        source_ids = state.get_piece_ids(str(hero.id)) or [str(hero.id)]
+        sources = [state.get_unit(UnitID(uid)) for uid in source_ids]
+        for other_color, other_team in state.teams.items():
+            if other_color == team:
+                continue
+            target_ids = [
+                piece_id
+                for unit in [*other_team.heroes, *other_team.minions]
+                for piece_id in (state.get_piece_ids(str(unit.id)) or [str(unit.id)])
+            ]
+            for source in sources:
+                if source is None:
+                    continue
+                for target_id in target_ids:
+                    target = state.get_unit(UnitID(target_id))
+                    if target is not None and validate_target(
+                        source, target, ActionType.ATTACK, state, range_val
+                    ):
+                        return True
+        return False
+
     # --- resolution --------------------------------------------------------
-    def choose_input(self, state: GameState, request: InputRequest) -> Any:
+    def choose_input(
+        self,
+        state: GameState,
+        request: InputRequest,
+        *,
+        owned_hero_ids: frozenset[str] | None = None,
+        decision_owner_hero_id: str | None = None,
+    ) -> Any:
+        # ``owned_hero_ids`` is accepted for Agent-protocol compatibility with
+        # the runtime driver (see ``automata.agents.base.Agent``); the
+        # heuristic policy doesn't need it, but the driver passes it
+        # uniformly so search-backed agents can enforce ownership.
         rt = request.request_type.value
         opts = list(request.options)
 
@@ -115,7 +176,7 @@ class HeuristicAgent:
             return "SKIP" if request.can_skip else None
 
         best = max(opts, key=lambda o: self.score_option(state, request, o))
-        return option_selection_value(best)
+        return selection_value(best)
 
     def score_option(self, state: GameState, request: InputRequest, option: Any) -> float:
         """Static desirability of an input ``option`` (higher = better).
@@ -137,15 +198,14 @@ class HeuristicAgent:
 
         if rt == "SELECT_NUMBER":
             # More (push/move/repeat) is usually better.
-            return float(_as_int(option_selection_value(option)))
+            return float(_as_int(selection_value(option)))
 
         if rt in ("DEFENSE_CARD", "SELECT_CARD_OR_PASS"):
             # Prefer to defend (survive) rather than skip into defeat.
-            return float(_as_int(option.metadata.get("defense", 0)))
+            return float(_as_int(option.metadata.get("defense_value", 0)))
 
         # Default: no preference between concrete options.
         return 0.0
-
 
     # --- scoring -----------------------------------------------------------
     def _action_priority(self, option: Any) -> int:
@@ -168,18 +228,29 @@ class HeuristicAgent:
         enemy = ut != team
         if not enemy:
             return -5.0
-        base = 10.0 if self._is_hero(state, uid) else 5.0
-        loc = state.unit_locations.get(uid)
-        in_battle = loc is not None and any(
-            loc in state.board.zones[z].hexes for z in state.battle_zones.values()
+        unit = state.get_unit(UnitID(uid))
+        hero_target = unit is not None and is_hero_unit(unit)
+        base = 10.0 if hero_target else 5.0
+        positions = state.get_positions(uid)
+        in_battle = any(
+            loc in state.board.zones[z].hexes
+            for loc in positions
+            for z in state.battle_zones.values()
         )
-        return base + (2.0 if in_battle else 0.0)
+        score = base + (2.0 if in_battle else 0.0)
+        if hero_target:
+            owner_id = state.hero_owner_id(uid)
+            if owner_id in state.unresolved_hero_ids:
+                score += 2.0
+            score -= float(calculate_minion_defense_modifier(state, UnitID(uid)))
+        return score
 
     def _hex_score(self, state: GameState, option: Any, team: TeamColor) -> float:
         hexd = option.metadata.get("hex")
         if hexd is None:
             return 0.0
-        zid = self._zone_of(state, HexLike(hexd))
+        destination = Hex.model_validate(hexd)
+        zid = self._zone_of(state, destination)
         if zid is None:
             return 0.0
         # Coarse push signal: how many zones this hex is toward the enemy throne.
@@ -198,7 +269,8 @@ class HeuristicAgent:
         enemies = self._enemy_positions(state, team)
         approach = 0.0
         if enemies:
-            nearest = min(hex_distance(hexd, e) for e in enemies)
+            topology = get_topology_service()
+            nearest = min(topology.distance(destination, e, state) for e in enemies)
             approach = max(0.0, 1.0 - nearest / 10.0)
 
         return 10.0 * float(toward_enemy) + approach

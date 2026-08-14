@@ -236,6 +236,7 @@ def start_revelation_phase(state: GameState):
                 card.initiative,
             )
             card.is_facedown = False
+            state.record_public_revealed_card(h_id, str(card.id))
             # card.state is already UNRESOLVED from play_card
 
             hero.current_turn_card = card
@@ -244,6 +245,7 @@ def start_revelation_phase(state: GameState):
             if second is not None:
                 logger.info("%s also reveals %s (Alternative Timelines).", h_id, second.name)
                 second.is_facedown = False
+                state.record_public_revealed_card(h_id, str(second.id))
                 hero.extra_turn_card = second
 
             state.unresolved_hero_ids.append(h_id)

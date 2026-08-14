@@ -94,7 +94,9 @@ def test_heuristic_prior_exposes_weights_aligned_with_order() -> None:
     hero = state.teams[next(iter(state.teams))].heroes[0]
     if len(hero.hand) < 2:
         return
-    result = HeuristicPrior()(state, Decision("CARD", hero=hero), legal_keys(Decision("CARD", hero=hero)))
+    result = HeuristicPrior()(
+        state, Decision("CARD", hero=hero), legal_keys(Decision("CARD", hero=hero))
+    )
     # Weights present, cover the order, and are non-increasing along the order.
     assert result.weights is not None
     ws = [result.weights[k] for k in result.order]

@@ -1110,7 +1110,8 @@ def test_fight_and_flight_aborts_with_no_adjacent_unit() -> None:
     )
     run = run_card(state, "hero_hanu")
     run.expect_input(InputRequestType.CHOOSE_ACTION)
-    run.choose("ATTACK").finish()  # no adjacent target -> abort
+    assert "ATTACK" not in {option.id for option in run.latest_request.options}
+    run.choose("HOLD").finish()
     assert _pos(state, "hero_hanu") == (0, 0, 0)
     assert _combat_values(run) == []
 

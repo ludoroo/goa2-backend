@@ -23,6 +23,8 @@ from goa2.engine.session import GameSession
 
 logger = logging.getLogger(__name__)
 
+# Bump when the save schema changes in a non-backward-compatible way. New
+# optional fields are read with .get(...) fallbacks and do NOT require a bump.
 SAVE_VERSION = 1
 
 
@@ -36,8 +38,24 @@ def save_game(
     save_dir: str,
     rollback_snapshot: dict[str, Any] | None = None,
     rollback_actor_id: str | None = None,
+    bot_specs: dict[str, Any] | None = None,
 ) -> Path:
-    """Serialize game data to a JSON file with atomic write."""
+    """Serialize game data to a JSON file with atomic write.
+
+    ``bot_specs`` accepts either a mapping of ``hero_id -> BotSpec`` (Pydantic
+    model) or already-serialized JSON dicts. Either way, we normalize to plain
+    dicts so this module doesn't take a runtime dependency on the ``server``
+    package. Passing ``None`` (the default) writes an empty mapping and remains
+    load-compatible with older saves that lacked the key entirely.
+    """
+    serialized_specs: dict[str, Any] = {}
+    if bot_specs:
+        for hero_id, spec in bot_specs.items():
+            if hasattr(spec, "model_dump"):
+                serialized_specs[hero_id] = spec.model_dump(mode="json")
+            else:
+                serialized_specs[hero_id] = spec
+
     payload: dict[str, Any] = {
         "version": SAVE_VERSION,
         "game_id": game_id,
@@ -48,6 +66,7 @@ def save_game(
         "state": state.model_dump(mode="json"),
         "rollback_snapshot": rollback_snapshot,
         "rollback_actor_id": rollback_actor_id,
+        "bot_specs": serialized_specs,
     }
 
     os.makedirs(save_dir, exist_ok=True)
@@ -114,6 +133,10 @@ def load_game(file_path: str) -> dict[str, Any]:
         "hero_to_token": payload["hero_to_token"],
         "created_at": payload["created_at"],
         "last_result": last_result,
+        # Raw dicts (not BotSpec models) — the registry layer knows how to
+        # rebuild them into Pydantic instances. Absent in legacy saves; return
+        # an empty mapping so callers can rely on the key.
+        "bot_specs": payload.get("bot_specs", {}) or {},
     }
 
 
