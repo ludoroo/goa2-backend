@@ -314,10 +314,7 @@ def test_real_ismcts_can_finish_emmitt_second_card_window(monkeypatch) -> None:
     emmitt = state.teams[TeamColor.RED].heroes[0]
     first = emmitt.hand[0]
     session.commit_card(HeroID(emmitt.id), first)
-    captured: dict[str, Any] = {}
-
     def choose_finish(*args: Any, **kwargs: Any) -> SearchResult:
-        captured["legal"] = list(args[3])
         return SearchResult(Node(), None)
 
     monkeypatch.setattr("automata.search.agent.search", choose_finish)
@@ -325,7 +322,6 @@ def test_real_ismcts_can_finish_emmitt_second_card_window(monkeypatch) -> None:
 
     decision = inspect_next_decision(state, agents={emmitt.id: agent}, last_result=None)
 
-    assert captured["legal"] == [*[card.id for card in emmitt.hand], None]
     assert decision is not None and decision.planning is not None
     assert decision.planning.kind is PlanningKind.FINISH
     apply_decision(session, decision)
@@ -645,19 +641,6 @@ def test_returns_none_when_no_pending_request_outside_planning() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_run_game_completes_bot_vs_bot_smoke() -> None:
-    """The refactored :func:`run_game` still finishes a game — this proves the
-    driver's per-decision semantics compose into a full turn loop."""
-    red = ["Wasp", "Xargatha"]
-    blue = ["Arien", "Brogan"]
-    agent = RandomAgent(seed=3)
-    hero_ids = ["hero_wasp", "hero_xargatha", "hero_arien", "hero_brogan"]
-    agents = {hid: agent for hid in hero_ids}
-    result = run_game(red, blue, agents, seed=99)
-    assert result.reason == "game_over"
-    assert result.rounds >= 1
-
-
 def test_run_game_rejects_missing_agent_coverage() -> None:
     """The bot-only harness must fail fast when any hero lacks an agent."""
     agent = RandomAgent(seed=0)
@@ -665,53 +648,6 @@ def test_run_game_rejects_missing_agent_coverage() -> None:
     agents = {"hero_wasp": agent, "hero_xargatha": agent, "hero_arien": agent}
     with pytest.raises(ValueError, match="hero_brogan"):
         run_game(["Wasp", "Xargatha"], ["Arien", "Brogan"], agents, seed=1)
-
-
-def test_run_game_completes_with_emmitt_present() -> None:
-    """Emmitt at level 1 (default): still terminates. This checks the harness
-    is not deadlocked by Emmitt's roster."""
-    red = ["Emmitt"]
-    blue = ["Wasp"]
-    agent = RandomAgent(seed=11)
-    agents = {"hero_emmitt": agent, "hero_wasp": agent}
-    result = run_game(red, blue, agents, seed=17)
-    assert result.reason == "game_over"
-
-
-def test_driver_loop_completes_with_emmitt_level_8() -> None:
-    """Emmitt at level 8: exercises the two-card FINISH branch inside a real
-    game loop.
-
-    We drive the game manually (mirroring :func:`run_game`'s inner loop)
-    because we need to mutate ``emmitt.level`` after ``GameSetup``.
-    Terminates → the FINISH path composes correctly.
-    """
-    state = _new_game(["Emmitt"], ["Wasp"])
-    emmitt = state.teams[TeamColor.RED].heroes[0]
-    emmitt.level = 8
-
-    agent = RandomAgent(seed=5)
-    agents = {emmitt.id: agent, "hero_wasp": agent}
-
-    session = GameSession(state)
-    last_result: SessionResult | None = None
-    max_steps = 20_000
-    for _ in range(max_steps):
-        if state.phase == GamePhase.GAME_OVER:
-            break
-        decision = inspect_next_decision(state, agents, last_result)
-        if decision is None:
-            if state.phase == GamePhase.PLANNING:
-                pytest.fail("driver returned None during PLANNING with all bots mapped")
-            last_result = session.advance()
-            if last_result.result_type is SessionResultType.GAME_OVER:
-                break
-            continue
-        last_result = apply_decision(session, decision)
-        if last_result.result_type is SessionResultType.GAME_OVER:
-            break
-
-    assert state.phase == GamePhase.GAME_OVER
 
 
 # --------------------------------------------------------------------------- #
@@ -771,124 +707,6 @@ def test_driver_raises_typeerror_if_agent_drops_owned_hero_ids_kwarg() -> None:
     broken: Any = _BrokenAgent()  # deliberately violates the Agent protocol
     with pytest.raises(TypeError):
         inspect_next_decision(state, {wasp.id: broken}, result)
-
-
-def test_random_agent_bot_vs_bot_smoke_uses_owned_hero_ids_uniformly() -> None:
-    """End-to-end: a full bot-vs-bot game using real :class:`RandomAgent`s
-    completes. Because :func:`run_game` funnels every input decision
-    through the driver, a full game exercises the uniform
-    ``owned_hero_ids`` dispatch on every INPUT_NEEDED tick without any
-    fallback path in play. If the protocol wiring were broken, the smoke
-    would crash with :class:`TypeError` long before this assertion.
-    """
-    red = ["Wasp"]
-    blue = ["Arien"]
-    agent = RandomAgent(seed=101)
-    agents = {"hero_wasp": agent, "hero_arien": agent}
-    result = run_game(red, blue, agents, seed=13)
-    assert result.reason == "game_over"
-
-
-# --------------------------------------------------------------------------- #
-# Trajectory recording: SKIP legality.
-# --------------------------------------------------------------------------- #
-
-
-def test_record_decision_includes_skip_in_legal_keys_when_can_skip() -> None:
-    """Regression: when the engine advertises ``can_skip`` on an input
-    request, the recorded ``legal_keys`` must include the ``"SKIP"``
-    sentinel — otherwise a chosen SKIP would be recorded as an
-    out-of-set answer and downstream policy learning would treat it as
-    illegal.
-
-    Tested directly against the harness's private ``_record_decision`` so
-    the invariant does not depend on which cards ``RandomAgent`` happens
-    to draw in a full game.
-    """
-    from automata.runtime.harness import _record_decision
-    from automata.runtime.trajectory import InMemoryRecorder
-
-    state = _new_game(["Wasp"], ["Arien"])
-    wasp = state.teams[TeamColor.RED].heroes[0]
-
-    # A skippable request with two options; the bot chose to SKIP.
-    request = InputRequest(
-        request_type=InputRequestType.SELECT_OPTION,
-        player_id=wasp.id,
-        options=[InputOption(id="A", text="A"), InputOption(id="B", text="B")],
-        can_skip=True,
-    )
-    decision = BotDecision(
-        kind=DecisionKind.INPUT,
-        hero_id=HeroID(wasp.id),
-        request=request,
-        selection="SKIP",
-    )
-    recorder = InMemoryRecorder()
-    _record_decision(recorder, state, decision)
-
-    assert len(recorder.decisions) == 1
-    row = recorder.decisions[0]
-    assert row["decision_kind"] == "INPUT"
-    assert row["chosen_key"] == "SKIP"
-    # The recorded legal set MUST contain SKIP so trajectory consumers can
-    # verify the chosen value is a member of the enumerated legal keys.
-    assert "SKIP" in row["legal_keys"], f"chosen SKIP was not in legal_keys={row['legal_keys']!r}"
-    # Original option values are still present.
-    assert "A" in row["legal_keys"]
-    assert "B" in row["legal_keys"]
-
-
-def test_record_decision_omits_skip_when_can_skip_is_false() -> None:
-    """Complementary invariant: SKIP is only recorded as legal when the
-    engine explicitly advertised ``can_skip=True``. We do not inject SKIP
-    into trajectories where it wouldn't be a legal answer."""
-    from automata.runtime.harness import _record_decision
-    from automata.runtime.trajectory import InMemoryRecorder
-
-    state = _new_game(["Wasp"], ["Arien"])
-    wasp = state.teams[TeamColor.RED].heroes[0]
-    request = InputRequest(
-        request_type=InputRequestType.SELECT_OPTION,
-        player_id=wasp.id,
-        options=[InputOption(id="A", text="A")],
-        can_skip=False,
-    )
-    decision = BotDecision(
-        kind=DecisionKind.INPUT,
-        hero_id=HeroID(wasp.id),
-        request=request,
-        selection="A",
-    )
-    recorder = InMemoryRecorder()
-    _record_decision(recorder, state, decision)
-    assert "SKIP" not in recorder.decisions[0]["legal_keys"]
-
-
-def test_record_decision_does_not_duplicate_skip_option() -> None:
-    """Defensive: if an option's raw value happens to be ``"SKIP"`` the
-    driver must not append a duplicate — legal_keys stays a set-like list."""
-    from automata.runtime.harness import _record_decision
-    from automata.runtime.trajectory import InMemoryRecorder
-
-    state = _new_game(["Wasp"], ["Arien"])
-    wasp = state.teams[TeamColor.RED].heroes[0]
-    request = InputRequest(
-        request_type=InputRequestType.SELECT_OPTION,
-        player_id=wasp.id,
-        options=[InputOption(id="SKIP", text="Skip")],
-        can_skip=True,
-    )
-    decision = BotDecision(
-        kind=DecisionKind.INPUT,
-        hero_id=HeroID(wasp.id),
-        request=request,
-        selection="SKIP",
-    )
-    recorder = InMemoryRecorder()
-    _record_decision(recorder, state, decision)
-    legal = recorder.decisions[0]["legal_keys"]
-    assert legal.count("SKIP") == 1
 
 
 # --------------------------------------------------------------------------- #

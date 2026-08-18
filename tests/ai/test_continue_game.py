@@ -31,16 +31,12 @@ def _agents(seed: int) -> dict[str, RandomAgent]:
     }
 
 
-def _continue(*args: Any, **kwargs: Any) -> harness.RunResult:
-    return vars(harness)["continue_game"](*args, **kwargs)
-
-
 def test_continue_game_mutates_fresh_state_but_not_clone_source() -> None:
     original = _state()
     before = original.model_dump(mode="json")
     continuation = clone_state(original)
 
-    result = _continue(continuation, _agents(3), max_steps=1)
+    result = harness.continue_game(continuation, _agents(3), max_steps=1)
 
     assert result.reason == "max_steps"
     assert result.winner is None
@@ -53,8 +49,8 @@ def test_continue_game_is_deterministic_from_same_cloned_state() -> None:
     left = clone_state(original)
     right = clone_state(original)
 
-    left_result = _continue(left, _agents(17), max_steps=40)
-    right_result = _continue(right, _agents(17), max_steps=40)
+    left_result = harness.continue_game(left, _agents(17), max_steps=40)
+    right_result = harness.continue_game(right, _agents(17), max_steps=40)
 
     assert left_result == right_result
     assert left.model_dump(mode="json") == right.model_dump(mode="json")
@@ -66,7 +62,7 @@ def test_continue_game_resumes_partially_completed_planning() -> None:
     GameSession(state).commit_card(HeroID(wasp.id), wasp.hand[0])
     assert HeroID("hero_arien") not in state.pending_inputs
 
-    result = _continue(state, _agents(5), max_steps=1)
+    result = harness.continue_game(state, _agents(5), max_steps=1)
 
     assert result.reason == "max_steps"
     assert HeroID("hero_wasp") in state.pending_inputs
@@ -77,7 +73,7 @@ def test_continue_game_round_cap_is_relative_to_starting_round() -> None:
     state = _state()
     state.round = 6
 
-    result = _continue(state, _agents(7), max_steps=10_000, max_rounds=1)
+    result = harness.continue_game(state, _agents(7), max_steps=10_000, max_rounds=1)
 
     assert result.reason == "max_rounds"
     assert result.winner is None
@@ -96,7 +92,7 @@ def test_continue_game_records_exactly_one_capped_outcome() -> None:
             self.outcomes.append(outcome)
 
     recorder = Recorder()
-    result = _continue(_state(), _agents(2), max_steps=2, recorder=recorder)
+    result = harness.continue_game(_state(), _agents(2), max_steps=2, recorder=recorder)
 
     assert result.reason == "max_steps"
     assert recorder.outcomes == [{"winner": None, "rounds": result.rounds, "reason": result.reason}]

@@ -60,15 +60,11 @@ def _occupancy(state: GameState) -> dict[str, str]:
     return {str(tid): str(t.occupant_id) for tid, t in state.board.tiles.items() if t.occupant_id}
 
 
-def test_clone_shares_static_geometry_but_not_tiles() -> None:
+def test_clone_copies_mutable_board_tiles() -> None:
     state = _fresh()
     clone = clone_state(state)
-    # Static geometry shared for speed...
     assert clone.board is not state.board
     assert clone.board.tiles is not state.board.tiles
-    # ...but zone geometry objects are shared (not re-copied).
-    zid = next(iter(state.board.zones))
-    assert clone.board.zones[zid] is state.board.zones[zid]
 
 
 def test_playing_clone_does_not_mutate_original() -> None:

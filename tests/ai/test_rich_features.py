@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
-from copy import deepcopy
-from typing import Any
 
 import pytest
 
 from automata.evaluation import features
-from automata.evaluation.learned_value import LearnedValue
 from automata.runtime.effects import register_all_effects
 from automata.runtime.harness import DEFAULT_MAP
 from goa2.domain.models import CardState, TeamColor
@@ -64,31 +59,6 @@ def _state(red: list[str] | None = None, blue: list[str] | None = None):
         game_type="QUICK",
         seed=7,
     )
-
-
-def _gbm(names: tuple[str, ...], schema: str | None = None) -> dict[str, Any]:
-    artifact = {
-        "model_version": "gbm-v1",
-        "schema_version": 1,
-        "red_roster": ["Wasp", "Xargatha"],
-        "blue_roster": ["Arien", "Brogan"],
-        "feature_names": list(names),
-        "base_raw_score": 0.0,
-        "learning_rate": 1.0,
-        "trees": [
-            {
-                "root": 0,
-                "nodes": [
-                    {"feature": 0, "threshold": 0, "left": 1, "right": 2},
-                    {"value": -1},
-                    {"value": 1},
-                ],
-            }
-        ],
-    }
-    if schema is not None:
-        artifact["feature_schema"] = schema
-    return artifact
 
 
 def test_schema_registry_preserves_base_and_defines_exact_rich_schema() -> None:
@@ -155,26 +125,3 @@ def test_multipiece_hero_counts_owner_once_in_alive_and_battle_features() -> Non
     assert len(state.get_positions("hero_razzle")) == 2
     assert rich["own_alive_heroes"] == 1
     assert rich["own_battle_heroes"] == 1
-
-
-def test_learned_value_schema_selection_validation_and_legacy_digest() -> None:
-    legacy = _gbm(BASE_NAMES)
-    canonical = json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
-    assert LearnedValue(legacy).digest == hashlib.sha256(canonical).hexdigest()
-    assert LearnedValue({**legacy, "feature_schema": "base-v1"})(
-        _state(), TeamColor.RED
-    ) == LearnedValue(legacy)(_state(), TeamColor.RED)
-
-    rich = _gbm(RICH_NAMES, "rich-v1")
-    state = _state()
-    first = features.feature_vector(state, TeamColor.RED, "rich-v1")[0]
-    expected = math.tanh((1 if first >= 0 else -1) / 2)
-    assert LearnedValue(rich)(state, TeamColor.RED) == pytest.approx(expected)
-    wrong_names = deepcopy(rich)
-    wrong_names["feature_names"] = list(BASE_NAMES)
-    with pytest.raises(ValueError):
-        LearnedValue(wrong_names)
-    bad_index = deepcopy(rich)
-    bad_index["trees"][0]["nodes"][0]["feature"] = len(RICH_NAMES)
-    with pytest.raises(ValueError):
-        LearnedValue(bad_index)

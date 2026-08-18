@@ -77,31 +77,46 @@ def test_builds_fresh_seeded_ismcts_sides_and_wires_cutoff_observers(
 ) -> None:
     module = _module()
     _install_spies(monkeypatch, module)
-    runs: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    monkeypatch.setattr(module, "run_game", lambda *a, **kw: runs.append((a, kw)))
+    runs: list[dict[str, Any]] = []
+
+    def capture_run(red_heroes: Any, blue_heroes: Any, agents: Any, **kwargs: Any) -> None:
+        runs.append(
+            {
+                "red_heroes": red_heroes,
+                "blue_heroes": blue_heroes,
+                "agents": agents,
+                **kwargs,
+            }
+        )
+
+    monkeypatch.setattr(module, "run_game", capture_run)
     out = tmp_path / "labels.jsonl"
 
     assert module.main(_args(out)) == 0
 
-    assert len(runs) == 2
-    assert len(_AgentSpy.calls) == 4
-    assert len(_ObserverSpy.calls) == 4
-    for index, ((pos, run_kw), red_call, blue_call) in enumerate(
-        zip(runs, _AgentSpy.calls[::2], _AgentSpy.calls[1::2], strict=True)
-    ):
-        seed = 11 + index
-        assert list(pos[0]) == RED and list(pos[1]) == BLUE
-        agents = pos[2]
-        assert {agents[name] for name in ("hero_wasp", "hero_xargatha")} == {red_call[2]}
-        assert {agents[name] for name in ("hero_arien", "hero_brogan")} == {blue_call[2]}
-        assert run_kw["seed"] == seed and run_kw["max_steps"] == 700
+    assert {run["seed"] for run in runs} == {11, 12}
+    all_agents: set[object] = set()
+    for run in runs:
+        seed = run["seed"]
+        agents = run["agents"]
+        red_agent = agents["hero_wasp"]
+        blue_agent = agents["hero_arien"]
+        red_call = next(call for call in _AgentSpy.calls if call[2] is red_agent)
+        blue_call = next(call for call in _AgentSpy.calls if call[2] is blue_agent)
+        assert agents["hero_xargatha"] is red_agent
+        assert agents["hero_brogan"] is blue_agent
+        assert red_agent is not blue_agent
+        assert red_agent not in all_agents and blue_agent not in all_agents
+        all_agents.update((red_agent, blue_agent))
+        assert run["max_steps"] == 700
         configs = [red_call[1]["config"], blue_call[1]["config"]]
         assert all(c.iterations == 7 and c.cutoff_rounds == 3 for c in configs)
+        assert configs[0].seed == module.agent_seed(seed, "RED")
+        assert configs[1].seed == module.agent_seed(seed, "BLUE")
         assert configs[0].seed != configs[1].seed
-        assert all(
-            call[1]["value_fn"].__class__.__name__ == "HeuristicValue"
-            for call in (red_call, blue_call)
-        )
+        assert red_call[1]["cutoff_observer"] is not None
+        assert blue_call[1]["cutoff_observer"] is not None
+        assert red_call[1]["cutoff_observer"] is not blue_call[1]["cutoff_observer"]
 
     for args, kwargs in _ObserverSpy.calls:
         assert Path(args[0] if args else kwargs["path"]) == out

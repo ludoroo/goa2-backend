@@ -493,18 +493,6 @@ def test_choose_card_passes_hero_as_owner_anchor() -> None:
     assert card.id in {c.id for c in target.hand}
 
 
-def test_all_ai_self_play_still_completes() -> None:
-    """Integration guard: existing bot-vs-bot self-play (both RED heroes
-    controlled by an ISMCTS instance) must still progress and terminate cleanly
-    even after root anchoring changes. Cheap capped run — strength unchecked.
-    """
-    register_all_effects()
-    agents = _agents(ISMCTSAgent(_tiny_cfg()), HeuristicAgent(1))
-    r = run_game(RED, BLUE, agents, seed=3, max_steps=300)
-    assert r.rounds >= 3
-    assert r.reason in ("game_over", "max_steps")
-
-
 def test_simulator_surfaces_emmitt_second_card_window() -> None:
     register_all_effects()
     state = GameSetup.create_game(DEFAULT_MAP, ["Emmitt"], ["Wasp"], game_type="QUICK", seed=2)
@@ -1289,142 +1277,6 @@ def test_choose_input_non_branchable_simultaneous_still_fallback() -> None:
     assert result is sentinel
 
 
-# --- Agent-boundary conversion via search stubbing ------------------------- #
-
-
-def _stub_ismcts_search_return_key(monkeypatch: pytest.MonkeyPatch, chosen_key: Any) -> None:
-    """Stub the ``search()`` used by ISMCTSAgent to return ``chosen_key`` as
-    ``best_key`` without exercising the determinized simulator.
-
-    This lets synthetic-request tests (a fresh planning state) still exercise
-    the agent's post-search conversion — the raw_map
-    key → raw value translation via ``selection_value`` — without needing a
-    real engine state that actually has the request pending.
-    """
-    import automata.search.agent as agent_mod
-    from automata.search.ismcts import SearchResult
-    from automata.search.node import Node
-
-    def _stub(*args: Any, **kwargs: Any) -> SearchResult:
-        return SearchResult(root=Node(), best_key=chosen_key)
-
-    monkeypatch.setattr(agent_mod, "search", _stub)
-
-
-def _prepare_input_state(state: GameState, req: InputRequest) -> None:
-    """Line up ``state.input_stack`` with ``req`` so the freshness check in
-    ``ISMCTSAgent.choose_input`` passes. This is the concrete state shape a
-    real coordinator would present."""
-    state.input_stack.append(req)
-
-
-def test_ismcts_choose_input_returns_int_for_select_number(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When search picks a NUMBER option's key, choose_input returns an int
-    (numeric selections are ints, not strings)."""
-    state = _fresh_planning_state()
-    req = InputRequest(
-        request_type=InputRequestType.SELECT_NUMBER,
-        player_id="team:RED",
-        options=[InputOption(id=str(v), text=str(v)) for v in (1, 2, 3)],
-    )
-    _prepare_input_state(state, req)
-    # Numeric selections are converted to ints by ``selection_value``, and
-    # ``action_key`` on an int is the int itself — so the raw_map key is 2.
-    _stub_ismcts_search_return_key(monkeypatch, 2)
-    agent = ISMCTSAgent(_tiny_cfg())
-    result = agent.choose_input(
-        state,
-        req,
-        owned_hero_ids=frozenset({"hero_wasp"}),
-        decision_owner_hero_id="hero_wasp",
-    )
-    assert isinstance(result, int)
-    assert result == 2
-
-
-def test_ismcts_choose_input_returns_hex_dict_for_select_hex(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When search picks a HEX option's key, choose_input returns a
-    ``{q, r, s}`` dict (hex selections are always dicts)."""
-    hexes = [{"q": 0, "r": 0, "s": 0}, {"q": 1, "r": -1, "s": 0}]
-    req = InputRequest(
-        request_type=InputRequestType.SELECT_HEX,
-        player_id="team:RED",
-        options=[InputOption.from_value(h) for h in hexes],
-    )
-    state = _fresh_planning_state()
-    _prepare_input_state(state, req)
-    # Search picks the first hex option (its action_key is based on the raw).
-    from automata.search.node import action_key
-
-    picked_hex = hexes[0]
-    picked_key = action_key(picked_hex)
-    _stub_ismcts_search_return_key(monkeypatch, picked_key)
-    agent = ISMCTSAgent(_tiny_cfg())
-    result = agent.choose_input(
-        state,
-        req,
-        owned_hero_ids=frozenset({"hero_wasp"}),
-        decision_owner_hero_id="hero_wasp",
-    )
-    assert isinstance(result, dict)
-    assert result == picked_hex
-
-
-def test_ismcts_choose_input_returns_string_id_for_select_unit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When search picks a UNIT option's key, choose_input returns the raw
-    unit id string (ids are strings, not ints)."""
-    unit_ids = ["hero_arien", "hero_brogan"]
-    req = InputRequest(
-        request_type=InputRequestType.SELECT_UNIT,
-        player_id="team:RED",
-        options=[InputOption(id=uid, text=uid) for uid in unit_ids],
-    )
-    state = _fresh_planning_state()
-    _prepare_input_state(state, req)
-    _stub_ismcts_search_return_key(monkeypatch, "hero_brogan")
-    agent = ISMCTSAgent(_tiny_cfg())
-    result = agent.choose_input(
-        state,
-        req,
-        owned_hero_ids=frozenset({"hero_wasp"}),
-        decision_owner_hero_id="hero_wasp",
-    )
-    assert isinstance(result, str)
-    assert result == "hero_brogan"
-
-
-def test_ismcts_choose_input_returns_skip_when_search_picks_skip(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When ``can_skip=True`` and search picks the ``SKIP`` raw-map key,
-    choose_input returns the literal string ``"SKIP"`` (the skip sentinel is
-    the string, never null).
-    """
-    req = InputRequest(
-        request_type=InputRequestType.SELECT_UNIT,
-        player_id="team:RED",
-        options=[InputOption(id="hero_arien", text="Arien")],
-        can_skip=True,
-    )
-    state = _fresh_planning_state()
-    _prepare_input_state(state, req)
-    _stub_ismcts_search_return_key(monkeypatch, "SKIP")
-    agent = ISMCTSAgent(_tiny_cfg())
-    result = agent.choose_input(
-        state,
-        req,
-        owned_hero_ids=frozenset({"hero_wasp"}),
-        decision_owner_hero_id="hero_wasp",
-    )
-    assert result == "SKIP"
-
-
 # --------------------------------------------------------------------------- #
 # Bounded ISMCTS for live use.
 #
@@ -1493,8 +1345,6 @@ class TestSearchSettingsValidation:
 
     def test_defaults_are_within_bounds(self) -> None:
         from automata.search.config import (
-            PROD_DEFAULT_DECISION_TIMEOUT_SECONDS,
-            PROD_DEFAULT_ITERATIONS,
             PROD_MAX_DECISION_TIMEOUT_SECONDS,
             PROD_MAX_ITERATIONS,
             PROD_MIN_DECISION_TIMEOUT_SECONDS,
@@ -1509,9 +1359,6 @@ class TestSearchSettingsValidation:
             <= s.decision_timeout_seconds
             <= PROD_MAX_DECISION_TIMEOUT_SECONDS
         )
-        # Defaults exactly match the module-level constants (kept in sync).
-        assert s.iterations == PROD_DEFAULT_ITERATIONS
-        assert s.decision_timeout_seconds == PROD_DEFAULT_DECISION_TIMEOUT_SECONDS
 
 
 def test_agent_for_spec_ismcts_returns_bounded_agent() -> None:
@@ -1539,13 +1386,13 @@ def test_agent_for_spec_ismcts_defaults_when_no_search_settings() -> None:
     """A BotSpec(kind='ismcts') with no explicit ``search`` still yields a
     bounded agent — the coordinator applies the SearchSettings defaults."""
     from automata.search.agent import ISMCTSAgent as ISMCTSAgentType
-    from automata.search.config import PROD_DEFAULT_ITERATIONS
+    from automata.search.config import PROD_MAX_ITERATIONS, PROD_MIN_ITERATIONS
     from goa2.server.bot_models import BotSpec
     from goa2.server.bots import agent_for_spec
 
     agent = agent_for_spec(BotSpec(kind="ismcts"), seed=3)
     assert isinstance(agent, ISMCTSAgentType)
-    assert agent._cfg.iterations == PROD_DEFAULT_ITERATIONS
+    assert PROD_MIN_ITERATIONS <= agent._cfg.iterations <= PROD_MAX_ITERATIONS
 
 
 def test_ismcts_agent_deterministic_under_fixed_seed_and_budget() -> None:

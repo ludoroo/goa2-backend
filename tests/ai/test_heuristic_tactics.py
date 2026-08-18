@@ -69,6 +69,21 @@ def _unit_request(*unit_ids: str) -> InputRequest:
     )
 
 
+def _action_request(*options: tuple[ActionType, int]) -> InputRequest:
+    return InputRequest(
+        request_type=InputRequestType.CHOOSE_ACTION,
+        player_id="hero_wasp",
+        options=[
+            InputOption(
+                id=action.name,
+                text=action.name,
+                metadata={"type": action, "value": value},
+            )
+            for action, value in options
+        ],
+    )
+
+
 def _attack(card_id: str = "tactical_attack") -> Card:
     return Card(
         id=card_id,
@@ -84,6 +99,203 @@ def _attack(card_id: str = "tactical_attack") -> Card:
         is_ranged=True,
         range_value=1,
         is_facedown=False,
+    )
+
+
+def _movement_or_fast_travel_card(movement: int) -> Card:
+    return Card(
+        id="travel_card",
+        name="Travel Card",
+        tier=CardTier.I,
+        color=CardColor.RED,
+        initiative=5,
+        primary_action=ActionType.MOVEMENT,
+        primary_action_value=movement,
+        secondary_actions={ActionType.FAST_TRAVEL: 0},
+        effect_id="scripted_movement",
+        effect_text="",
+        is_facedown=False,
+    )
+
+
+def _secondary_attack_card(attack: int) -> Card:
+    return Card(
+        id="secondary_attack",
+        name="Secondary Attack",
+        tier=CardTier.I,
+        color=CardColor.RED,
+        initiative=5,
+        primary_action=ActionType.SKILL,
+        primary_action_value=None,
+        secondary_actions={ActionType.ATTACK: attack},
+        effect_id="scripted_skill",
+        effect_text="",
+        is_ranged=True,
+        range_value=1,
+        is_facedown=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("movement", "expected"),
+    [(6, "MOVEMENT"), (1, "FAST_TRAVEL")],
+    ids=["movement-reaches-a-better-zone", "fast-travel-finds-a-better-position"],
+)
+def test_choose_action_compares_best_legal_movement_and_fast_travel_destinations(
+    state: GameState, movement: int, expected: str
+) -> None:
+    _clear_board(state)
+    wasp = state.get_hero("hero_wasp")
+    assert wasp
+    state.current_actor_id = wasp.id
+    state.place_entity(wasp.id, Hex(q=-4, r=-4, s=8))
+    state.place_entity("hero_arien", Hex(q=-1, r=-3, s=4))
+    wasp.current_turn_card = _movement_or_fast_travel_card(movement)
+    request = _action_request(
+        (ActionType.MOVEMENT, movement),
+        (ActionType.FAST_TRAVEL, 0),
+    )
+
+    assert HeuristicAgent(0).choose_input(state, request) == expected
+
+
+@pytest.mark.parametrize(
+    ("movement", "positional_action"),
+    [(6, ActionType.MOVEMENT), (1, ActionType.FAST_TRAVEL)],
+)
+def test_generic_skill_outranks_large_dynamic_positional_gain(
+    state: GameState, movement: int, positional_action: ActionType
+) -> None:
+    _clear_board(state)
+    wasp = state.get_hero("hero_wasp")
+    assert wasp
+    state.current_actor_id = wasp.id
+    state.place_entity(wasp.id, Hex(q=-2, r=4, s=-2))
+    wasp.current_turn_card = _movement_or_fast_travel_card(movement)
+    request = _action_request(
+        (positional_action, movement if positional_action == ActionType.MOVEMENT else 0),
+        (ActionType.SKILL, 0),
+    )
+    agent = HeuristicAgent(0)
+    positional_score, skill_score = (
+        agent.score_option(state, request, option) for option in request.options
+    )
+    chosen = agent.choose_input(state, request)
+
+    assert skill_score > positional_score
+    assert chosen == "SKILL"
+
+
+def test_secondary_attack_score_uses_attack_value(state: GameState) -> None:
+    _clear_board(state)
+    wasp = state.get_hero("hero_wasp")
+    assert wasp
+    state.current_actor_id = wasp.id
+    state.place_entity(wasp.id, Hex(q=0, r=0, s=0))
+    state.place_entity("hero_arien", Hex(q=1, r=-1, s=0))
+    agent = HeuristicAgent(0)
+
+    wasp.current_turn_card = _secondary_attack_card(2)
+    low_request = _action_request((ActionType.ATTACK, 2))
+    low_score = agent.score_option(state, low_request, low_request.options[0])
+    wasp.current_turn_card = _secondary_attack_card(5)
+    high_request = _action_request((ActionType.ATTACK, 5))
+    high_score = agent.score_option(state, high_request, high_request.options[0])
+
+    assert high_score > low_score
+
+
+def test_secondary_attack_score_uses_best_legal_target_quality(state: GameState) -> None:
+    _clear_board(state)
+    wasp = state.get_hero("hero_wasp")
+    assert wasp
+    state.current_actor_id = wasp.id
+    state.place_entity(wasp.id, Hex(q=0, r=0, s=0))
+    state.place_entity("hero_arien", Hex(q=1, r=-1, s=0))
+    wasp.current_turn_card = _secondary_attack_card(5)
+    request = _action_request((ActionType.ATTACK, 5))
+    agent = HeuristicAgent(0)
+    hero_score = agent.score_option(state, request, request.options[0])
+
+    state.remove_entity("hero_arien")
+    minion = state.teams[TeamColor.BLUE].minions[0]
+    state.place_entity(minion.id, Hex(q=1, r=-1, s=0))
+    minion_score = agent.score_option(state, request, request.options[0])
+
+    assert hero_score > minion_score
+
+
+def test_secondary_attack_without_a_legal_target_is_not_attractive(state: GameState) -> None:
+    _clear_board(state)
+    wasp = state.get_hero("hero_wasp")
+    assert wasp
+    state.current_actor_id = wasp.id
+    state.place_entity(wasp.id, Hex(q=0, r=0, s=0))
+    wasp.current_turn_card = _secondary_attack_card(5)
+    request = _action_request((ActionType.ATTACK, 5), (ActionType.HOLD, 0))
+    agent = HeuristicAgent(0)
+
+    assert agent.score_option(state, request, request.options[0]) <= agent.score_option(
+        state, request, request.options[1]
+    )
+
+
+def test_basic_primary_attack_without_a_legal_target_is_not_attractive(
+    state: GameState,
+) -> None:
+    _clear_board(state)
+    wasp = state.get_hero("hero_wasp")
+    assert wasp
+    state.current_actor_id = wasp.id
+    state.place_entity(wasp.id, Hex(q=0, r=0, s=0))
+    wasp.current_turn_card = _attack()
+    request = _action_request((ActionType.ATTACK, 2), (ActionType.HOLD, 0))
+    agent = HeuristicAgent(0)
+
+    assert agent.score_option(state, request, request.options[0]) <= agent.score_option(
+        state, request, request.options[1]
+    )
+
+
+@pytest.mark.parametrize("action", [ActionType.ATTACK, ActionType.SKILL])
+def test_scripted_primary_action_keeps_safe_fallback_score(
+    state: GameState, action: ActionType
+) -> None:
+    _clear_board(state)
+    wasp = state.get_hero("hero_wasp")
+    assert wasp
+    state.current_actor_id = wasp.id
+    state.place_entity(wasp.id, Hex(q=0, r=0, s=0))
+    wasp.current_turn_card = _attack().model_copy(
+        update={"primary_action": action, "effect_id": "scripted_primary"}
+    )
+    agent = HeuristicAgent(0)
+    scores = []
+    for value in (1, 9):
+        request = _action_request((action, value))
+        scores.append(agent.score_option(state, request, request.options[0]))
+    state.place_entity("hero_arien", Hex(q=1, r=-1, s=0))
+    request = _action_request((action, 9))
+    scores.append(agent.score_option(state, request, request.options[0]))
+
+    assert scores[0] == scores[1] == scores[2]
+
+
+def test_enemy_approach_score_is_clamped_beyond_ten_hexes(state: GameState) -> None:
+    _clear_board(state)
+    farther = Hex(q=-5, r=3, s=2)
+    nearer = Hex(q=-4, r=2, s=2)
+    enemy = Hex(q=8, r=-3, s=-5)
+    state.place_entity("hero_arien", enemy)
+    topology = get_topology_service()
+
+    assert any(farther in zone.hexes and nearer in zone.hexes for zone in state.board.zones.values())
+    assert topology.distance(farther, enemy, state) > topology.distance(nearer, enemy, state) >= 10
+    request = _movement_request([farther, nearer])
+    agent = HeuristicAgent(0)
+
+    assert agent.score_option(state, request, request.options[0]) == agent.score_option(
+        state, request, request.options[1]
     )
 
 
@@ -176,27 +388,16 @@ def test_target_score_resolves_razzle_piece_to_enemy_hero_owner() -> None:
     )
     _clear_board(state)
     target_id = piece_id("hero_razzle", 1)
-    target_hex = Hex(q=0, r=0, s=0)
-    support = state.teams[TeamColor.BLUE].minions[0]
-    state.place_entity(target_id, target_hex)
-    state.place_entity(support.id, Hex(q=1, r=-1, s=0))
+    minion_id = state.teams[TeamColor.BLUE].minions[0].id
+    state.place_entity(target_id, Hex(q=0, r=0, s=0))
+    state.place_entity(minion_id, Hex(q=1, r=-1, s=0))
     state.unresolved_hero_ids = ["hero_razzle"]
-
-    modifier = calculate_minion_defense_modifier(state, target_id)
-    assert modifier > 0
-    in_battle_bonus = (
-        2.0
-        if any(
-            target_hex in state.board.zones[zone_id].hexes
-            for zone_id in state.battle_zones.values()
-        )
-        else 0.0
+    request = _unit_request(target_id, minion_id)
+    piece_score, minion_score = (
+        HeuristicAgent(0).score_option(state, request, option) for option in request.options
     )
-    request = _unit_request(target_id)
 
-    assert HeuristicAgent(0).score_option(state, request, request.options[0]) == (
-        10.0 + in_battle_bonus + 2.0 - modifier
-    )
+    assert piece_score > minion_score
 
 
 def test_score_card_uses_computed_stats_and_rejects_disconnected_target(state: GameState) -> None:

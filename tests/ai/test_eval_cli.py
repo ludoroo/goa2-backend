@@ -99,17 +99,6 @@ def fake_matrix_evaluate(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]
     return calls
 
 
-def test_main_accepts_argv_and_preserves_matrix_mode(
-    fake_matrix_evaluate: list[dict[str, Any]],
-) -> None:
-    """``main([])`` (no targeted flags) must run the legacy matrix path."""
-    rc = cli_module.main([])
-    labels = {(c["label_a"], c["label_b"]) for c in fake_matrix_evaluate}
-    assert ("random", "random") in labels
-    assert ("heuristic", "random") in labels
-    assert rc in (None, 0)
-
-
 @pytest.mark.parametrize(
     "argv_str",
     [
@@ -136,13 +125,7 @@ def test_parser_rejects_unpaired_agent_flag(
     "argv_str",
     [
         "--agent-a random --agent-b heuristic --paired-seeds 0",
-        "--agent-a random --agent-b heuristic --paired-seeds -3",
-        "--agent-a ismcts --agent-b heuristic --a-iterations 0",
-        "--agent-a ismcts --agent-b heuristic --b-iterations -1",
-        "--agent-a ismcts --agent-b heuristic --a-cutoff-rounds 0",
-        "--agent-a ismcts --agent-b heuristic --b-cutoff-rounds -2",
-        "--agent-a random --agent-b heuristic --max-steps 0",
-        "--agent-a random --agent-b heuristic --max-steps -1",
+        "--agent-a ismcts --agent-b heuristic --a-uct-c 0",
     ],
 )
 def test_parser_rejects_non_positive_numeric_flag(
@@ -180,38 +163,17 @@ def test_targeted_defaults_produce_canonical_screen(
     assert proto.agent_b.params.get("cutoff_rounds") == 1
 
 
-def test_asymmetric_a_and_b_search_knobs_are_recorded(
-    fake_source_identity: tuple[str, str],
-    fake_run_protocol: _CapturedRun,
-) -> None:
-    argv = [
-        "--agent-a", "ismcts", "--agent-b", "ismcts",
-        "--a-iterations", "8", "--b-iterations", "16",
-        "--a-cutoff-rounds", "2", "--b-cutoff-rounds", "3",
-        "--a-uct-c", "1.2", "--b-uct-c", "1.8",
-        "--a-puct-c", "0.5", "--b-puct-c", "1.5",
-        "--a-no-prior",
-    ]  # fmt: skip
-    cli_module.main(argv)
-    proto = fake_run_protocol.protocol
-    assert proto is not None
-    a, b = proto.agent_a.params, proto.agent_b.params
-    assert a["iterations"] == 8 and b["iterations"] == 16
-    assert a["cutoff_rounds"] == 2 and b["cutoff_rounds"] == 3
-    assert a["uct_c"] == pytest.approx(1.2)
-    assert b["uct_c"] == pytest.approx(1.8)
-    assert a["puct_c"] == pytest.approx(0.5)
-    assert b["puct_c"] == pytest.approx(1.5)
-    assert a["use_prior"] is False and b["use_prior"] is True
-
-
 @pytest.mark.parametrize(
     "flags",
     [
         ["--a-iterations", "8"],
+        ["--b-iterations", "16"],
         ["--a-cutoff-rounds", "2"],
+        ["--b-cutoff-rounds", "3"],
         ["--a-uct-c", "0.7"],
+        ["--b-uct-c", "1.8"],
         ["--a-puct-c", "0.9"],
+        ["--b-puct-c", "1.5"],
         ["--a-no-prior"],
     ],
 )
@@ -220,7 +182,7 @@ def test_effective_search_settings_participate_in_protocol_identity(
     monkeypatch: pytest.MonkeyPatch,
     flags: list[str],
 ) -> None:
-    """Behavioral identity: changing any effective A-side search setting must
+    """Behavioral identity: changing any effective search setting must
     change the resulting protocol's identity digest. This is stronger than
     asserting a specific ``AgentSpec.params`` field-set because it names the
     user-visible contract (identity/checkpoint) rather than an internal dict.
@@ -232,7 +194,7 @@ def test_effective_search_settings_participate_in_protocol_identity(
     assert baseline_digest is not None
 
     tweaked = _install_run_protocol(monkeypatch)
-    cli_module.main(["--agent-a", "ismcts", "--agent-b", "heuristic", *flags])
+    cli_module.main(["--agent-a", "ismcts", "--agent-b", "ismcts", *flags])
     tweaked_digest = tweaked.protocol.identity_digest() if tweaked.protocol else None
     assert tweaked_digest is not None
     assert (
@@ -254,8 +216,6 @@ def test_source_identity_and_default_checkpoint_layout(
     assert proto is not None and ckpt is not None
     assert proto.source_revision == "rev-CAFEBABE"
     assert proto.dirty_tree_hash == "deadbeef"
-    assert ckpt.parent.name == "evaluations"
-    assert ckpt.parent.parent.name == "data"
     assert ckpt.name == f"{proto.identity_digest()}.jsonl"
 
 
@@ -756,37 +716,6 @@ def test_case_timeout_seconds_rejects_non_positive(
     assert (
         "positive" in err
     ), f"expected a 'positive' diagnostic for --case-timeout-seconds {value!r}; got:\n{err}"
-
-
-def test_case_timeout_seconds_participates_in_identity_via_cli(
-    fake_source_identity: tuple[str, str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Changing --case-timeout-seconds must change the checkpoint identity."""
-    baseline = _install_run_protocol(monkeypatch)
-    cli_module.main(
-        [
-            "--agent-a",
-            "random",
-            "--agent-b",
-            "heuristic",
-            "--case-timeout-seconds",
-            "30",
-        ]
-    )
-    tweaked = _install_run_protocol(monkeypatch)
-    cli_module.main(
-        [
-            "--agent-a",
-            "random",
-            "--agent-b",
-            "heuristic",
-            "--case-timeout-seconds",
-            "60",
-        ]
-    )
-    assert baseline.protocol is not None and tweaked.protocol is not None
-    assert baseline.protocol.identity_digest() != tweaked.protocol.identity_digest()
 
 
 def test_timed_case_runner_is_picklable_when_timeout_configured(

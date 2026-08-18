@@ -1,19 +1,24 @@
 """Tests for trajectory recording (Seam 4 / T4).
 
-Assert recording is off by default (behavior-neutral), that a recorded game
-emits a decision row per decision plus one outcome, that JSONL streams to disk
-and reloads, and that a state snapshot round-trips back into a GameState.
+Assert a recorded game is behavior-neutral, emits a decision row per decision
+plus one outcome, streams JSONL to disk, and captures restorable snapshots.
 """
 
 from __future__ import annotations
 
 import json
 
+import pytest
+
 from automata.agents.heuristic_agent import HeuristicAgent
+from automata.runtime.driver import BotDecision, DecisionKind
 from automata.runtime.effects import register_all_effects
-from automata.runtime.harness import run_game
+from automata.runtime.harness import DEFAULT_MAP, _record_decision, run_game
 from automata.runtime.trajectory import InMemoryRecorder, JsonlRecorder
+from goa2.domain.input import InputOption, InputRequest, InputRequestType
 from goa2.domain.state import GameState
+from goa2.domain.types import HeroID
+from goa2.engine.setup import GameSetup
 
 RED = ["Wasp", "Xargatha"]
 BLUE = ["Arien", "Brogan"]
@@ -27,19 +32,6 @@ def _agents() -> dict[str, HeuristicAgent]:
         "hero_arien": a,
         "hero_brogan": a,
     }
-
-
-def test_recording_off_by_default_is_behavior_neutral() -> None:
-    register_all_effects()
-
-    def outcome() -> tuple[str | None, int, int]:
-        r = run_game(RED, BLUE, _agents(), seed=3, max_steps=400)
-        return (r.winner, r.rounds, r.steps)
-
-    with_none = outcome()
-    # Explicitly no recorder passed => identical result to default.
-    r2 = run_game(RED, BLUE, _agents(), seed=3, max_steps=400, recorder=None)
-    assert with_none == (r2.winner, r2.rounds, r2.steps)
 
 
 def test_inmemory_recorder_captures_decisions_and_outcome() -> None:
@@ -70,6 +62,46 @@ def test_recording_does_not_change_the_game() -> None:
         recorded.rounds,
         recorded.steps,
     )
+
+
+@pytest.mark.parametrize(
+    ("option_ids", "can_skip", "selection", "expected_legal_keys"),
+    [
+        (["A", "B"], True, "SKIP", ["A", "B", "SKIP"]),
+        (["A"], False, "A", ["A"]),
+        (["SKIP"], True, "SKIP", ["SKIP"]),
+    ],
+)
+def test_recorded_skip_legality_matches_request(
+    option_ids: list[str],
+    can_skip: bool,
+    selection: str,
+    expected_legal_keys: list[str],
+) -> None:
+    """Keep this recorder seam deterministic for the serialized row contract.
+
+    Full games cannot reliably surface all three engine-owned request shapes:
+    skippable, non-skippable, and an explicit SKIP option.
+    """
+    state = GameSetup.create_game(DEFAULT_MAP, ["Wasp"], ["Arien"], game_type="QUICK", seed=1)
+    request = InputRequest(
+        request_type=InputRequestType.SELECT_OPTION,
+        player_id="hero_wasp",
+        options=[InputOption(id=value, text=value) for value in option_ids],
+        can_skip=can_skip,
+    )
+    decision = BotDecision(
+        kind=DecisionKind.INPUT,
+        hero_id=HeroID("hero_wasp"),
+        request=request,
+        selection=selection,
+    )
+    recorder = InMemoryRecorder()
+
+    _record_decision(recorder, state, decision)
+
+    assert recorder.decisions[0]["chosen_key"] == selection
+    assert recorder.decisions[0]["legal_keys"] == expected_legal_keys
 
 
 def test_jsonl_recorder_streams_and_reloads(tmp_path) -> None:

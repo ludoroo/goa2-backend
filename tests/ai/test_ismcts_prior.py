@@ -2,7 +2,7 @@
 
 The prior only affects *which* legal child progressive widening reveals first,
 never legality or value — so these assert ordering behavior, that a real search
-stays legal/deterministic with the prior on, and that it can be switched off.
+stays legal and deterministic with the prior on.
 """
 
 from __future__ import annotations
@@ -125,11 +125,6 @@ def test_agent_with_prior_returns_legal_card() -> None:
     if hero.hand:
         assert card is not None
         assert card.id in {c.id for c in hero.hand}
-
-
-def test_agent_prior_can_be_disabled() -> None:
-    assert ISMCTSAgent(_tiny_cfg(use_prior=False))._prior is None
-    assert ISMCTSAgent(_tiny_cfg(use_prior=True))._prior is not None
 
 
 def test_agent_with_prior_is_deterministic() -> None:

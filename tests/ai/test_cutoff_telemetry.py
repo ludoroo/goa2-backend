@@ -10,88 +10,65 @@ from typing import Any
 
 import pytest
 
-from automata.search.config import SearchConfig
+from automata.runtime.effects import register_all_effects
+from automata.runtime.harness import DEFAULT_MAP
+from automata.search import ISMCTSAgent, SearchConfig
 from automata.search.ismcts import Decision, _rollout
-from goa2.domain.input import InputRequest, InputRequestType
 from goa2.domain.models import TeamColor
+from goa2.engine.setup import GameSetup
 
 
-class _Policy:
-    def choose_input(self, state: Any, request: InputRequest) -> str:
-        return "ok"
-
-
-class _Sim:
-    def __init__(self, *, terminal_after_advance: bool = False) -> None:
-        self.state = SimpleNamespace(round=3)
-        self.our_team = TeamColor.RED
-        self.default_policy = _Policy()
-        self._terminal_after_advance = terminal_after_advance
-
-    def advance(self, response: Any) -> Decision:
-        self.state.round += 1
-        if self._terminal_after_advance:
-            return Decision(kind="OVER", winner="RED")
-        return Decision(kind="INPUT", request=_request("next"))
-
-
-def _request(request_id: str = "root") -> InputRequest:
-    return InputRequest(
-        id=request_id,
-        request_type=InputRequestType.SELECT_OPTION,
-        player_id="hero_test",
-        prompt="choose",
-        options=[],
+def test_public_search_notifies_cutoff_observer_with_active_value() -> None:
+    register_all_effects()
+    state = GameSetup.create_game(
+        DEFAULT_MAP,
+        ["Wasp", "Xargatha"],
+        ["Arien", "Brogan"],
+        game_type="QUICK",
+        seed=2,
     )
-
-
-def _cfg() -> SearchConfig:
-    return SearchConfig(iterations=1, cutoff_rounds=1, seed=0)
-
-
-def test_nonterminal_cutoff_observer_receives_active_normalized_value() -> None:
-    sim = _Sim()
+    hero = state.teams[TeamColor.RED].heroes[0]
     seen: list[tuple[Any, TeamColor, float]] = []
+
+    def value_fn(state: Any, team: TeamColor) -> float:
+        return 0.25
 
     def observer(state: Any, team: TeamColor, active_value: float) -> object:
         seen.append((state, team, active_value))
-        return object()  # Observers are diagnostic; their return is ignored.
+        return None
 
-    reward = _rollout(
-        sim,
-        Decision(kind="INPUT", request=_request()),
-        _cfg(),
-        lambda state, team: 0.25,
+    agent = ISMCTSAgent(
+        SearchConfig(iterations=2, cutoff_rounds=1, seed=0),
+        value_fn=value_fn,
         cutoff_observer=observer,
     )
+    agent.choose_card(state, hero)
 
-    assert seen == [(sim.state, TeamColor.RED, 0.25)]
-    assert reward == pytest.approx(0.625)
+    assert seen
+    assert {(team, value) for _, team, value in seen} == {(TeamColor.RED, 0.25)}
 
 
-def test_terminal_rollout_does_not_notify_cutoff_observer() -> None:
-    seen: list[object] = []
+def test_terminal_rollout_skips_value_and_cutoff_observer() -> None:
+    class Simulator:
+        state = SimpleNamespace(round=3)
+        our_team = TeamColor.RED
+        default_policy = SimpleNamespace(choose_input=lambda state, request: "ok")
+
+        def advance(self, response: Any) -> Decision:
+            self.state.round += 1
+            return Decision(kind="OVER", winner="RED")
+
     reward = _rollout(
-        _Sim(terminal_after_advance=True),
-        Decision(kind="INPUT", request=_request()),
-        _cfg(),
-        lambda state, team: pytest.fail("terminal rollout evaluated ValueFn"),
-        cutoff_observer=lambda state, team, value: seen.append(state),
+        Simulator(),
+        Decision(kind="INPUT", request=SimpleNamespace(id="root")),
+        SearchConfig(iterations=1, cutoff_rounds=1, seed=0),
+        lambda state, team: pytest.fail("terminal rollout evaluated value_fn"),
+        cutoff_observer=lambda state, team, value: pytest.fail(
+            "terminal rollout notified cutoff observer"
+        ),
     )
+
     assert reward == 1.0
-    assert seen == []
-
-
-def test_absent_cutoff_observer_preserves_deterministic_result() -> None:
-    def run() -> float:
-        return _rollout(
-            _Sim(),
-            Decision(kind="INPUT", request=_request()),
-            _cfg(),
-            lambda state, team: -0.4,
-        )
-
-    assert run() == run() == pytest.approx(0.3)
 
 
 def _telemetry_module() -> Any:

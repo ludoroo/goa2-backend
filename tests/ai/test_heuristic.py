@@ -148,6 +148,32 @@ def _defense_request(options: list[InputOption]) -> InputRequest:
     )
 
 
+def _action_request(*actions: ActionType) -> InputRequest:
+    return InputRequest(
+        request_type=InputRequestType.CHOOSE_ACTION,
+        player_id="hero_test",
+        options=[
+            InputOption(id=action.name, text=action.name, metadata={"type": action})
+            for action in actions
+        ],
+    )
+
+
+def test_heuristic_prefers_fast_travel_over_ordinary_movement_when_offered() -> None:
+    request = _action_request(ActionType.MOVEMENT, ActionType.FAST_TRAVEL)
+
+    assert HeuristicAgent(seed=0).choose_input(_stub_state(), request) == "FAST_TRAVEL"
+
+
+@pytest.mark.parametrize("preferred", [ActionType.ATTACK, ActionType.SKILL])
+def test_heuristic_prefers_actionable_attack_or_skill_over_fast_travel(
+    preferred: ActionType,
+) -> None:
+    request = _action_request(ActionType.FAST_TRAVEL, preferred)
+
+    assert HeuristicAgent(seed=0).choose_input(_stub_state(), request) == preferred.name
+
+
 def test_heuristic_scores_computed_defense_from_public_option_metadata() -> None:
     agent = HeuristicAgent(seed=0)
     option = InputOption(
@@ -247,62 +273,25 @@ def test_heuristic_choose_input_returns_skip_when_empty_options_and_can_skip() -
 # --------------------------------------------------------------------------- #
 
 
-def test_random_agent_choose_input_returns_int_for_select_number() -> None:
-    # Single-option SELECT_NUMBER: the pick is forced, and the test is
-    # asserting the *type* of the returned value (int, not str). The RNG
-    # branch that would skip is masked out by ``can_skip=False`` (the default).
-    agent = RandomAgent(seed=0)
-    req = _select_number([7])
-    result = agent.choose_input(_stub_state(), req)
-    assert result == 7
-    assert isinstance(result, int)
-
-
-def test_random_agent_choose_input_returns_hex_dict_for_select_hex() -> None:
-    # Single-option hex request: `InputOption.from_value(dict)` populates
-    # metadata["hex"], and `selection_value` returns that dict verbatim.
-    agent = RandomAgent(seed=0)
-    hex_dict = {"q": 2, "r": -1, "s": -1}
-    req = _select_hex([hex_dict])
-    result = agent.choose_input(_stub_state(), req)
-    assert result == hex_dict
-    assert isinstance(result, dict)
-
-
-def test_random_agent_choose_input_returns_string_id_for_select_unit() -> None:
-    agent = RandomAgent(seed=0)
-    req = _select_unit(["hero_arien"])
-    result = agent.choose_input(_stub_state(), req)
-    assert result == "hero_arien"
-    assert isinstance(result, str)
-
-
-def test_random_agent_choose_input_returns_skip_when_empty_options_and_can_skip() -> None:
-    # No options + can_skip → the sole legal move is to skip.
-    agent = RandomAgent(seed=0)
-    req = InputRequest(
+def test_random_agent_returns_engine_selection_shapes() -> None:
+    hex_value = {"q": 2, "r": -1, "s": -1}
+    skippable = InputRequest(
         request_type=InputRequestType.SELECT_UNIT,
         player_id="hero_test",
         options=[],
         can_skip=True,
     )
-    assert agent.choose_input(_stub_state(), req) == "SKIP"
+    cases = [
+        (_select_number([7]), 7, int),
+        (_select_hex([hex_value]), hex_value, dict),
+        (_select_unit(["hero_arien"]), "hero_arien", str),
+        (skippable, "SKIP", str),
+    ]
 
-
-def test_random_agent_choose_input_multi_option_selection_type_is_stable() -> None:
-    # Multi-option deterministic case: given a fixed seed, the same choice is
-    # made every run, and — regardless of which option wins — the returned
-    # value must be an int (never the numeric string id). Also asserts the
-    # picked value matches `selection_value` for one of the options.
-    agent = RandomAgent(seed=123)
-    req = _select_number([1, 2, 3])
-    result = agent.choose_input(_stub_state(), req)
-    assert isinstance(result, int)
-    assert result in {1, 2, 3}
-    # Deterministic re-run under the same seed picks the same option.
-    assert RandomAgent(seed=123).choose_input(_stub_state(), _select_number([1, 2, 3])) == result
-    # And matches the domain conversion for one of the options.
-    assert result in {selection_value(o) for o in req.options}
+    for request, expected, expected_type in cases:
+        result = RandomAgent(seed=0).choose_input(_stub_state(), request)
+        assert result == expected
+        assert isinstance(result, expected_type)
 
 
 # --------------------------------------------------------------------------- #
