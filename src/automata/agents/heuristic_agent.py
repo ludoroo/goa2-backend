@@ -260,13 +260,15 @@ class HeuristicAgent:
             if movement is None:
                 return fallback
             try:
-                destinations = find_reachable_hexes(
-                    board=state.board,
-                    start=current,
-                    max_steps=movement,
-                    state=state,
-                    actor_id=board_actor_id,
-                    topology_unit_ids=[board_actor_id],
+                destinations = list(
+                    find_reachable_hexes(
+                        board=state.board,
+                        start=current,
+                        max_steps=movement,
+                        state=state,
+                        actor_id=board_actor_id,
+                        topology_unit_ids=[board_actor_id],
+                    )
                 )
             except (AttributeError, KeyError, TypeError, ValueError):
                 return fallback

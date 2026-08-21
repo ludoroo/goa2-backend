@@ -68,7 +68,8 @@ class AgentSpec:
     """Serializable specification of one agent under test.
 
     ``params`` participates in identity hashing so tweaking hyperparameters
-    invalidates prior checkpoints.
+    invalidates prior checkpoints. Artifact and telemetry paths are runtime
+    locations excluded from identity; artifact content digests remain included.
     """
 
     name: str
@@ -96,9 +97,13 @@ class AgentSpec:
         return str(path) if path is not None else None
 
     def identity(self) -> dict[str, Any]:
-        # Runtime location is not experiment identity: identical artifact
+        # Runtime locations are not experiment identity: identical artifact
         # content must resume across machines and checkout paths.
-        runtime_only = {"value_model_path", "cutoff_telemetry_path"}
+        runtime_only = {
+            "value_model_path",
+            "policy_model_path",
+            "cutoff_telemetry_path",
+        }
         params = {key: value for key, value in self.params.items() if key not in runtime_only}
         return {"name": self.name, "kind": self.kind, "params": params}
 

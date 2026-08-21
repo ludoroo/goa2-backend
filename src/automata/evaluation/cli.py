@@ -52,7 +52,7 @@ from ..agents.random_agent import RandomAgent
 # directly on ``automata.evaluation.cli`` without reaching into other
 # packages (see :func:`build_case_runner` and :func:`main`).
 from ..runtime.harness import run_game  # noqa: F401
-from ..search import ISMCTSAgent, SearchConfig
+from ..search import ISMCTSAgent, LearnedPolicy, SearchConfig
 from .cutoff_telemetry import CutoffTelemetryRecorder
 from .learned_value import LearnedValue
 from .matchup import MatchupResult, evaluate, hero_id
@@ -294,7 +294,9 @@ def build_agent(
 
     Supports ``kind`` ∈ {``"random"``, ``"heuristic"``, ``"ismcts"``}. For
     ISMCTS, the :class:`SearchConfig` is reconstructed from ``spec.params``
-    with the per-case ``seed`` merged in (dynamic; never in identity).
+    with the per-case ``seed`` merged in (dynamic; never in identity). Learned
+    value and policy artifacts are reloaded and digest-checked in the case
+    process before being injected into the agent.
     """
     kind = spec.kind
     if kind == "random":
@@ -304,7 +306,8 @@ def build_agent(
     if kind == "ismcts":
         cfg_kwargs: dict[str, Any] = dict(spec.params)
         telemetry_path = cfg_kwargs.pop("cutoff_telemetry_path", None)
-        # AgentSpec crosses the spawn boundary, so reload and revalidate captured model metadata.
+        # AgentSpec crosses the spawn boundary, so reload and revalidate
+        # captured model metadata.
         model_path = cfg_kwargs.pop("value_model_path", None)
         expected_digest = cfg_kwargs.pop("value_model_digest", None)
         if (model_path is None) != (expected_digest is None):
@@ -319,17 +322,36 @@ def build_agent(
                     f"expected digest {expected_digest}, got {learned.digest}"
                 )
             value_fn = learned
+
+        policy_path = cfg_kwargs.pop("policy_model_path", None)
+        expected_policy_digest = cfg_kwargs.pop("policy_model_digest", None)
+        if (policy_path is None) != (expected_policy_digest is None):
+            raise ValueError("learned policy model metadata is incomplete")
+
+        prior: LearnedPolicy | None = None
+        if policy_path is not None:
+            prior = LearnedPolicy(str(policy_path))
+            if prior.digest != expected_policy_digest:
+                raise ValueError(
+                    "learned policy artifact changed after protocol construction: "
+                    f"expected digest {expected_policy_digest}, got {prior.digest}"
+                )
         cfg_kwargs["seed"] = seed
+        config = SearchConfig(**cfg_kwargs)
+        if prior is not None and not config.use_prior:
+            raise ValueError("learned policy model requires SearchConfig.use_prior=True")
         cutoff_observer = (
             CutoffTelemetryRecorder(str(telemetry_path), case_metadata or {})
             if telemetry_path is not None
             else None
         )
-        return ISMCTSAgent(
-            SearchConfig(**cfg_kwargs),
-            value_fn=value_fn,
-            cutoff_observer=cutoff_observer,
-        )
+        agent_kwargs: dict[str, Any] = {
+            "value_fn": value_fn,
+            "cutoff_observer": cutoff_observer,
+        }
+        if prior is not None:
+            agent_kwargs["prior"] = prior
+        return ISMCTSAgent(config, **agent_kwargs)
     raise ValueError(f"unknown agent kind: {kind!r}")
 
 
@@ -605,6 +627,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Learned value JSON artifact for agent B (ISMCTS only).",
     )
     parser.add_argument(
+        "--a-policy-model",
+        type=str,
+        default=None,
+        help="Learned policy JSON artifact for agent A (ISMCTS with prior only).",
+    )
+    parser.add_argument(
+        "--b-policy-model",
+        type=str,
+        default=None,
+        help="Learned policy JSON artifact for agent B (ISMCTS with prior only).",
+    )
+    parser.add_argument(
         "--a-cutoff-telemetry",
         type=str,
         default=None,
@@ -636,6 +670,7 @@ def _build_agent_spec(
     no_prior: bool,
     value_model: str | None,
     cutoff_telemetry: str | None = None,
+    policy_model: str | None = None,
 ) -> AgentSpec:
     """Build an :class:`AgentSpec` whose ``params`` reflect the effective
     SearchConfig (minus dynamic ``seed``) so identity captures every knob.
@@ -646,6 +681,8 @@ def _build_agent_spec(
     """
     if kind != "ismcts":
         return AgentSpec(name=label, kind=kind, params={})
+    if policy_model is not None and no_prior:
+        raise ValueError("learned policy model is incompatible with no_prior")
 
     cfg_kwargs: dict[str, Any] = {
         "iterations": iterations if iterations is not None else _DEFAULT_ISMCTS_ITERATIONS,
@@ -668,6 +705,11 @@ def _build_agent_spec(
         model = LearnedValue(model_path)
         params["value_model_path"] = model_path
         params["value_model_digest"] = model.digest
+    if policy_model is not None:
+        model_path = str(Path(policy_model))
+        policy = LearnedPolicy(model_path)
+        params["policy_model_path"] = model_path
+        params["policy_model_digest"] = policy.digest
     if cutoff_telemetry is not None:
         params["cutoff_telemetry_path"] = str(Path(cutoff_telemetry))
     return AgentSpec(name=label, kind=kind, params=params)
@@ -693,11 +735,21 @@ def _print_targeted_header(
         digest = str(model_digest)
         return f"learned value={model_path} ({digest[:12]})"
 
+    def policy_description(spec: AgentSpec) -> str:
+        model_path = spec.params.get("policy_model_path")
+        model_digest = spec.params.get("policy_model_digest")
+        if model_path is None and model_digest is None:
+            return "heuristic policy" if spec.params.get("use_prior", True) else "policy disabled"
+        if model_path is None or model_digest is None:
+            raise ValueError("learned policy model metadata is incomplete")
+        digest = str(model_digest)
+        return f"learned policy={model_path} ({digest[:12]})"
+
     print(
         f"Protocol: {protocol.agent_a.name} ({protocol.agent_a.kind}, "
-        f"{value_description(protocol.agent_a)}) vs "
+        f"{value_description(protocol.agent_a)}, {policy_description(protocol.agent_a)}) vs "
         f"{protocol.agent_b.name} ({protocol.agent_b.kind}, "
-        f"{value_description(protocol.agent_b)})"
+        f"{value_description(protocol.agent_b)}, {policy_description(protocol.agent_b)})"
     )
     print(f"  paired-seeds={paired_seeds} → {paired_seeds * 2} cases")
     print(f"  max_steps={protocol.max_steps}  identity={protocol.identity_digest()}")
@@ -753,6 +805,7 @@ def _run_targeted(
         no_prior=args.a_no_prior,
         value_model=args.a_value_model,
         cutoff_telemetry=args.a_cutoff_telemetry,
+        policy_model=args.a_policy_model,
     )
     agent_b = _build_agent_spec(
         label="B",
@@ -764,6 +817,7 @@ def _run_targeted(
         no_prior=args.b_no_prior,
         value_model=args.b_value_model,
         cutoff_telemetry=args.b_cutoff_telemetry,
+        policy_model=args.b_policy_model,
     )
 
     # World seeds: contiguous block starting at ``--seed`` so ``--paired-seeds``
@@ -844,6 +898,14 @@ def main(argv: Sequence[str] | None = None) -> int | None:
         parser.error("--a-value-model is valid only when --agent-a is ismcts")
     if args.b_value_model is not None and args.agent_b != "ismcts":
         parser.error("--b-value-model is valid only when --agent-b is ismcts")
+    if args.a_policy_model is not None and args.agent_a != "ismcts":
+        parser.error("--a-policy-model is valid only when --agent-a is ismcts")
+    if args.b_policy_model is not None and args.agent_b != "ismcts":
+        parser.error("--b-policy-model is valid only when --agent-b is ismcts")
+    if args.a_policy_model is not None and args.a_no_prior:
+        parser.error("--a-policy-model is incompatible with --a-no-prior")
+    if args.b_policy_model is not None and args.b_no_prior:
+        parser.error("--b-policy-model is incompatible with --b-no-prior")
     if args.a_cutoff_telemetry is not None and args.agent_a != "ismcts":
         parser.error("--a-cutoff-telemetry is valid only when --agent-a is ismcts")
     if args.b_cutoff_telemetry is not None and args.agent_b != "ismcts":

@@ -17,7 +17,9 @@ The search is anchored by an explicit :class:`~automata.search.ismcts.RootTarget
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Sequence
+from types import MappingProxyType
+from typing import Any, Literal
 
 from goa2.domain.input import InputRequest
 from goa2.domain.models import TeamColor
@@ -34,12 +36,15 @@ from .config import SearchConfig
 from .ismcts import (
     CutoffObserver,
     RootTarget,
+    SearchResult,
     _branchable,
     _input_raw_map,
     _team_of_player,
     search,
 )
-from .prior import HeuristicPrior
+from .node import Key
+from .observation import RootChildStats, RootSearchObservation, RootSearchObserver
+from .prior import HeuristicPrior, Policy
 
 # Engine convention: `player_id="simultaneous"` marks a global broadcast
 # request (UPGRADE_PHASE and other legacy-shaped simultaneous requests). See
@@ -60,8 +65,12 @@ class ISMCTSAgent:
         default_policy: Agent | None = None,
         value_fn: ValueFn | None = None,
         cutoff_observer: CutoffObserver | None = None,
+        prior: Policy | None = None,
+        root_observer: RootSearchObserver | None = None,
     ) -> None:
         self._cfg = config or SearchConfig()
+        if prior is not None and not self._cfg.use_prior:
+            raise ValueError("an explicit prior cannot be used when use_prior=False")
         # Default policy drives opponents and rollouts. Seeded off the search
         # seed for reproducibility.
         self._policy: Agent = default_policy or HeuristicAgent(self._cfg.seed)
@@ -69,13 +78,48 @@ class ISMCTSAgent:
         # value model (Rung 2) without touching the search loop.
         self._value: ValueFn = value_fn or HeuristicValue()
         self._cutoff_observer = cutoff_observer
+        self._root_observer = root_observer
         # Expansion prior reuses the heuristic scorers so widening surfaces
         # promising moves first. Only used when the policy exposes the scorers.
-        self._prior = (
-            HeuristicPrior(self._policy)
-            if self._cfg.use_prior and isinstance(self._policy, HeuristicAgent)
-            else None
+        self._prior: Policy | None = prior
+        if (
+            self._prior is None
+            and self._cfg.use_prior
+            and isinstance(self._policy, HeuristicAgent)
+        ):
+            self._prior = HeuristicPrior(self._policy)
+
+    def _observe_root(
+        self,
+        *,
+        state: GameState,
+        owner_hero_id: str,
+        decision_kind: Literal["CARD", "INPUT"],
+        request: InputRequest | None,
+        legal: Sequence[Key],
+        result: SearchResult,
+    ) -> None:
+        if self._root_observer is None:
+            return
+
+        def child_stats(key: Key) -> RootChildStats:
+            child = result.root.children.get(key)
+            if child is None:
+                return RootChildStats(visits=0, total_value=0.0, q=0.0)
+            return RootChildStats(
+                visits=child.visits, total_value=child.total_value, q=child.q
+            )
+
+        stats = {key: child_stats(key) for key in legal}
+        observation = RootSearchObservation(
+            decision_owner_hero_id=owner_hero_id,
+            decision_kind=decision_kind,
+            request=request,
+            legal_keys=tuple(legal),
+            chosen_key=result.best_key,
+            child_stats=MappingProxyType(stats),
         )
+        self._root_observer(state, observation)
 
     # -- planning ----------------------------------------------------------- #
     def choose_card(
@@ -122,6 +166,14 @@ class ISMCTSAgent:
             self._value,
             root_target=target,
             cutoff_observer=self._cutoff_observer,
+        )
+        self._observe_root(
+            state=state,
+            owner_hero_id=str(hero.id),
+            decision_kind="CARD",
+            request=None,
+            legal=legal,
+            result=result,
         )
         if result.best_key is None:
             return None
@@ -256,6 +308,14 @@ class ISMCTSAgent:
             self._value,
             root_target=target,
             cutoff_observer=self._cutoff_observer,
+        )
+        self._observe_root(
+            state=state,
+            owner_hero_id=decision_owner_hero_id,
+            decision_kind="INPUT",
+            request=request,
+            legal=legal,
+            result=result,
         )
         # `search` never returns a zero-visit key for a non-empty legal set;
         # the >1-key path is the only branch that returns None-best, and by

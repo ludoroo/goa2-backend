@@ -26,10 +26,10 @@ when the evidence justifies it — linear/GBM before any neural net.
 | Policy | `search.prior.Policy` → `PolicyResult(order, weights\|None)` | `HeuristicPrior` (weights = scores) | `LearnedPolicy(model)` |
 | Data | `runtime.trajectory.TrajectoryRecorder` | `Null`/`InMemory`/`Jsonl` | training-set source |
 
-`ISMCTSAgent` takes an injectable `value_fn` and builds a `HeuristicPrior`; the
+`ISMCTSAgent` takes injectable `value_fn`, prior, and root-observer seams. The
 search loop reads `value_fn(...)` at leaves and `policy(...).order` at expansion.
-The `weights` slot is unused today — it's reserved for PUCT (Rung 1) / learned
-policy (Rung 3), so no signature will change when those land.
+It also normalizes and consumes `PolicyResult.weights` during PUCT selection when
+`puct_c > 0`; `puct_c` defaults to 0, so production remains on UCB1 selection.
 
 ## Status
 
@@ -63,6 +63,12 @@ policy (Rung 3), so no signature will change when those land.
 - **Server integration (Tasks 1-9 of `plan_ai_backend_integration.md`): DONE.**
   Random, Heuristic, and (bounded) ISMCTS bots can now be created through the
   public `POST /games` API. See below.
+- **Rung 3 learned-policy pipeline: DONE in code; experiment pending.**
+  Information-safe candidate features, injectable prior/root observations, a
+  compact complete-game policy dataset, resumable expert-data generation,
+  pointwise GBM training, dependency-free `LearnedPolicy`, and learned-policy
+  artifact integration in targeted evaluation are implemented. No expert
+  dataset or policy model has yet been generated, evaluated, or promoted.
 
 ### Server bot integration (delivered)
 
@@ -94,7 +100,8 @@ Explicit non-goals for this integration (still parked):
 
 - **Draft-created bot games.** `POST /drafts` / `PATCH /drafts/{id}/settings`
   reject a `bots` key with a 422; configure bots via a direct `POST /games`.
-- **Learned value / policy models.** Rungs 2-3 below.
+- **Learned value / policy deployment.** The training and evaluation seams exist,
+  but no learned artifact has passed promotion.
 - **Distributed / process-pool search.** Thread-offload keeps the event loop
   responsive but does not defeat the GIL. Bounded concurrency + tight
   per-decision timeouts protect throughput today; a process pool is only
@@ -121,17 +128,16 @@ ISMCTS-vs-Heuristic result: **12-0 over 6 paired seeds** at 4 iterations and a
 ## Next rungs
 
 Even though bots are now in production for Random / Heuristic / bounded
-ISMCTS, the *strength* work below the ladder has not moved: the shipped bots
-use the same hand-crafted `HeuristicValue` / `HeuristicPrior` established at
-Rung 0. Improving strength further is orthogonal to server plumbing and stays
-on the ladder below.
+ISMCTS, shipped search still uses the hand-crafted `HeuristicValue` and
+`HeuristicPrior`, with `HeuristicAgent` for rollout/default policy. No learned
+value or policy artifact is in production. Improving strength further is
+orthogonal to server plumbing and stays on the ladder below.
 
 ### Rung 1 — Squeeze the search (no learning)
 Cheap, high-confidence wins before any ML:
 1. **PUCT selection.** Use `PolicyResult.weights` as prior `P(a)` in the UCB
-   term: `Q(a) + c·P(a)·√N_parent/(1+N(a))`. Today the prior only orders
-   expansion; PUCT also biases selection. Requires: normalize weights →
-   probabilities, thread into `Node.select`, add a `puct_c` config knob.
+   term: `Q(a) + c·P(a)·√N_parent/(1+N(a))`. The prior always orders expansion;
+   PUCT additionally biases selection when enabled.
    **DONE but DEFAULT OFF.** Implemented (`Node.select` + `_normalize_weights` +
    `puct_c`). Measured **2-10 (16.7%) vs plain UCB1** at 8 iters / 12 games —
    PUCT *hurt* at low budget: a strong hand-crafted prior over-commits and
@@ -220,10 +226,73 @@ Cheap, high-confidence wins before any ML:
    Gate remains: equal-budget `ISMCTSAgent(value_fn=LearnedValue)` must beat
    `HeuristicValue` search with no timeout/max-step cases.
 
-### Rung 3 — Learned policy prior
-1. From the same trajectories, learn `P(move | state)` (state → chosen key).
-2. Wrap as `LearnedPolicy(Policy)` returning real `weights`; feeds PUCT directly.
-3. Gate: beat `HeuristicPrior` at equal iteration budget.
+### Rung 3 — Learned policy prior. **Pipeline DONE; experiment pending**
+
+Implemented:
+
+1. Information-safe, public candidate features and injectable prior/root-search
+   observations.
+2. A compact policy dataset containing complete games only, plus a resumable,
+   provenance-bound expert generator for the fixed Wasp/Xargatha vs
+   Arien/Brogan roster.
+3. A pointwise gradient-boosted-tree trainer over expert root visit
+   probabilities and a portable, pure-Python `LearnedPolicy` implementation.
+4. Targeted evaluation integration that validates and hashes the policy artifact
+   into the resumable protocol identity.
+
+No expert dataset or model has yet been generated, evaluated, or promoted; the
+pipeline's existence is not a strength result. The initial experiment sequence
+is:
+
+First pilot (the seed ranges are examples and deliberately disjoint; expert
+generation and evaluation may be expensive):
+
+Run generation from a clean committed tree so every row identifies one exact
+source revision without relying on a dirty-tree hash.
+
+```bash
+# 12 fixed-roster source games (seeds 3000-3011).
+PYTHONPATH=src uv run python -m automata.scripts.generate_policy_data \
+  --out artifacts/policy-pilot.jsonl \
+  --checkpoint artifacts/policy-pilot.checkpoint.jsonl \
+  --seed-start 3000 --seed-end 3012 --game-type QUICK \
+  --expert-iterations 16 --expert-cutoff-rounds 1
+
+PYTHONPATH=src uv run python -m automata.evaluation.train_policy \
+  --input artifacts/policy-pilot.jsonl \
+  --out artifacts/policy-pilot.model.json
+
+# Six paired seeds (12 cases), disjoint from the source-game seeds.
+PYTHONPATH=src uv run python -m automata.evaluation.cli \
+  --agent-a ismcts --agent-b ismcts \
+  --a-policy-model artifacts/policy-pilot.model.json \
+  --a-iterations 4 --b-iterations 4 \
+  --a-cutoff-rounds 1 --b-cutoff-rounds 1 \
+  --a-puct-c 0 --b-puct-c 0 \
+  --seed 4000 --paired-seeds 6 \
+  --checkpoint artifacts/policy-pilot.eval.jsonl
+```
+
+The half-open seed range above generates 12 source games (3000 through 3011).
+`policy-pilot.jsonl` contains the compact root-search examples;
+`policy-pilot.checkpoint.jsonl` records durable per-game completion. Re-running
+the same generation command skips completed games and retries max-step or
+wall-clock-timeout games.
+
+Agent B uses the default `HeuristicPrior`; agent A replaces that prior with the
+learned artifact. Both use equal search budgets and UCB1 selection (`puct_c=0`).
+
+1. Generate fixed-roster expert data at a deliberate higher search budget.
+2. Train the pointwise GBM policy.
+3. At equal iteration budget, evaluate learned-prior expansion ordering against
+   `HeuristicPrior` with `puct_c=0` on both sides. The `gbm-policy-v1` raw
+   weights are ranking scores, not calibrated probability logits; using them
+   for PUCT requires calibration or listwise training first.
+4. Only after that comparison wins its gate, test PUCT selection and then a
+   learned rollout policy separately.
+
+Gate: beat `HeuristicPrior` at equal iteration budget without timeout/max-step
+cases.
 
 ### Rung 4 — NN + joint training (only if Rungs 2–3 plateau)
 Single net with value + policy heads; AlphaZero-style self-play → train → eval
@@ -237,6 +306,8 @@ become the net heads.
   minions + partial hexes). Could later serve as a Round-1 policy prior, but
   positioning extraction stalled (~55% auto-resolved). Parked; revisit only if a
   Round-1-specific prior is wanted.
+- **Human replay ingestion:** parked and not on the Rung-3 critical path; expert
+  search data is the initial policy source.
 - No neural-network infrastructure until lower-capacity models have reliable
   multi-continuation targets and still plateau.
 
