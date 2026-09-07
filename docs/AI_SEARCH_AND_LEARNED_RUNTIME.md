@@ -1,4 +1,17 @@
-# Classic ISMCTS and Learned-model-neutral seams
+# AI search and learned runtime architecture
+
+## Implementation status
+
+- **PR1 complete:** classic runtime, ISMCTS contracts, fallback wrappers, and
+  bounded server lifecycle.
+- **PR2 implemented:** information-safe observations; architecture-neutral
+  `automata.models.contracts` and shared-encoder tensor schemas;
+  joint model, batching, artifact, `SharedEncoderRuntime`, and serving cache;
+  `LearnedSearchPolicy` and `LearnedLeafEvaluator`; independent
+  `policy_source`/`value_source` server composition.
+- **PR3 deferred:** alternative policy-only, shallow, and multiply algorithms,
+  plus all evaluation, training, generation, replay, self-play, arena,
+  promotion, curriculum, CLI, and harness work.
 
 ## Scope
 
@@ -7,6 +20,23 @@ later Learned component can implement. Public architecture is
 **Learned-model-neutral** and uses **Learned**
 (`L`), not a framework or model-family name. PR1 contains no training,
 trajectory, model, observation-encoding, or ML framework dependency.
+
+## Module boundaries
+
+| Boundary | Contract/protocol home | Concrete implementation home |
+|---|---|---|
+| Agents | `automata.agents.contracts` | `random_agent`, `heuristic_agent`, `ismcts_agent` |
+| Learned models | `automata.models.contracts.{observation,candidates,inference,artifacts,compatibility,serialization}` | `automata.models.shared_encoder` |
+| Shared-encoder artifacts | neutral errors, scope, and runtime requirements in `automata.models.contracts.artifacts` | manifest and IO in `automata.models.shared_encoder.artifacts` |
+| Tensor schema/vectorizer | — | `automata.models.shared_encoder.schema.feature_schema` |
+| Observations | `automata.decision.DecisionDescriptor` | `automata.observation.graph.encoder`, `automata.observation.decision_encoder`, `automata.observation.projector` |
+| Hero adapters | `automata.observation.hero_adapters.protocol` | `automata.observation.hero_adapters.registry` |
+| Search components | `automata.search.contracts` | `automata.search.heuristic`, `fallback`, `learned`, `ismcts` |
+
+Artifact errors, scope, and runtime requirements are model contracts. The concrete
+manifest, tensor/file inventory, and artifact export/loading are specific to the
+shared-encoder implementation. Observation code consumes the neutral decision descriptor and
+does not import the concrete ISMCTS implementation.
 
 ## Product closure in PR1
 
@@ -21,9 +51,10 @@ trajectory, model, observation-encoding, or ML framework dependency.
 - Permanent public card-reveal knowledge sufficient to sample hidden upgraded
   loadouts without inspecting an opponent's private cards.
 
-The package boundary deliberately excludes `automata.nn`,
-`automata.observation`, evaluation/training harnesses, learned policy/value
-implementations, Torch, and other ML dependencies.
+In PR1, the package boundary deliberately excluded `automata.models`,
+`automata.observation`, learned policy/value implementations, Torch, and other
+ML dependencies. PR2 adds those runtime pieces while still excluding
+evaluation/training harnesses.
 
 ## Stable search context
 
@@ -55,10 +86,10 @@ order for result alignment and tie breaking.
 
 ## Leaf contract
 
-`LeafEvaluator.evaluate(context, state)` returns a finite normalized value in
-`[-1, 1]`, positive for `context.perspective_team`. `ValueFnLeafEvaluator`
-adapts the older `(state, team) -> value` callable without changing score
-semantics.
+`LeafEvaluator.evaluate(context, state)` returns a `LeafEvaluation` containing
+a finite normalized value in `[-1, 1]`, positive for
+`context.perspective_team`. The Pydantic model validates this contract at every
+evaluator boundary.
 
 `LeafMode` is explicit:
 
@@ -74,19 +105,19 @@ continuation. They may be configured independently.
 ## Composition matrix
 
 `H` means the classic Heuristic component and `L` means a Learned component.
-PR1 guarantees the following useful matrix rather than coupling policy and
-value into one runtime:
+The server exposes the following matrix without coupling policy and value. In
+L/L, both adapters share one `SharedEncoderRuntime`:
 
-| Environment | Continuation policy | Leaf | Purpose |
-|---|---|---|---|
-| H | H | H | fully classic baseline |
-| H | L | H | isolate Learned action ranking |
-| H | H | L | isolate Learned evaluation |
-| H | L | L | Learned continuation and evaluation |
+| `policy_source` | `value_source` | Purpose |
+|---|---|---|
+| H | H | fully classic baseline |
+| L | H | Learned expansion/ranking with heuristic leaf |
+| H | L | heuristic policy with Learned leaf |
+| L | L | shared-runtime Learned policy and value |
 
 The environment remains H in this first product architecture so opponent
-behavior is a fixed search assumption. A fake L implementation is used in PR1
-contract tests; no Learned implementation ships.
+behavior is a fixed search assumption. PR1 used a fake L implementation in
+contract tests; PR2 ships the Learned runtime adapters described above.
 
 ## Availability and fallback
 
@@ -138,7 +169,7 @@ constants, widening, and exploration remain internal.
 
 ## Future PRs
 
-A future implementation may provide an implementation-specific
-`NeuralRuntime`, observation encoder, artifact loading, batching, and training.
-Those modules adapt to `SearchPolicy` and/or `LeafEvaluator`; they do not alter
-root identity, legality, score semantics, fallback rules, or server lifecycle.
+PR2 provides the implementation-specific `SharedEncoderRuntime`, observation encoder,
+artifact loading, and batching. They adapt through `LearnedSearchPolicy` and
+`LearnedLeafEvaluator` and do not alter root identity, legality, score
+semantics, fallback rules, or server lifecycle. Training remains out of scope.

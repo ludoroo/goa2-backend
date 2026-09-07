@@ -208,13 +208,21 @@ Create a new game. No authentication required.
 | `cheats_enabled` | boolean | `false` | Enable cheats for this game (unlocks gold cheat API) |
 | `game_type` | string | `"LONG"` | `"QUICK"` or `"LONG"`. Controls wave and life counter setup (see below) |
 | `time_control` | object/null | `null` | Optional timed-match configuration shown in the quick-start example above |
-| `bots` | object/null | `null` | Optional map of canonical hero ID to a classic bot specification (below) |
+| `bots` | object/null | `null` | Optional map of canonical hero ID to a bot specification (below) |
 
-**Classic bots:**
+**Bots:**
 
 `kind` is `"random"`, `"heuristic"`, or `"ismcts"`. ISMCTS may include a
 bounded `search` object with `iterations` (1–1000, default 200) and
-`decision_timeout_seconds` (0.05–5.0, default 2.0). `search` is rejected for
+`decision_timeout_seconds` (0.05–5.0, default 2.0). ISMCTS independently
+configures `policy_source` and `value_source` as `"heuristic"` or `"learned"`,
+giving H/H, L/H, H/L, and L/L compositions. `leaf_mode` is `"immediate"`
+(default) or `"bounded_continuation"`; `horizon` is 0–10 (default 2).
+
+If either source is learned, `artifact` is required with a server-local
+relative `reference` and pinned lowercase SHA-256 `digest`. H/H rejects an
+artifact and does not load Torch. There is intentionally no separate neural bot
+kind or persisted model-family discriminator. `search` is rejected for
 random and heuristic bots. Every bot key must identify a hero in this game's
 roster. Bot configuration is supported only by direct `POST /games` creation,
 is persisted across server restarts, and is not exposed in player views.
@@ -225,7 +233,18 @@ is persisted across server restarts, and is not exposed in player views.
     "hero_arien": {"kind": "random"},
     "hero_knight": {
       "kind": "ismcts",
-      "search": {"iterations": 300, "decision_timeout_seconds": 2.5}
+      "search": {
+        "iterations": 300,
+        "decision_timeout_seconds": 2.5,
+        "policy_source": "learned",
+        "value_source": "learned",
+        "leaf_mode": "immediate",
+        "horizon": 2,
+        "artifact": {
+          "reference": "champions/joint-v1",
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
     }
   }
 }

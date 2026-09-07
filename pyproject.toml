@@ -54,7 +54,12 @@ source = ["src/goa2", "src/automata"]
 branch = true
 
 [dependency-groups]
+neural = [
+    "numpy>=2.0,<3",
+    "torch>=2.7,<3",
+]
 dev = [
+    { include-group = "neural" },
     "black>=25.11.0",
     "httpx>=0.28.0",
     "mypy>=1.18.2",
