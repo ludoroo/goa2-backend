@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import WebSocket
 
 from goa2.engine.session import GameSession, SessionResult
+from goa2.server.bot_models import BotSpec
 from goa2.server.errors import GameNotFoundError
 from goa2.server.game_logger import GameLogger, create_game_logger
 from goa2.server.replay import ReplayRecorder, create_replay_recorder
@@ -46,6 +47,12 @@ class ManagedGame:
     # (OverrideProposal lives in server/overrides.py).
     pending_override: Any | None = None
     override_expiry_task: asyncio.Task[None] | None = None
+    bot_specs: dict[str, BotSpec] = field(default_factory=dict)
+    bot_task: asyncio.Task[None] | None = None
+    removed: bool = False
+    _bot_agents: dict[str, Any] | None = field(default=None, repr=False)
+    _bot_fallback_agents: dict[str, Any] | None = field(default=None, repr=False)
+    _bot_search_futures: set[asyncio.Future[Any]] = field(default_factory=set, repr=False)
 
     @property
     def current_responder(self) -> str | None:
@@ -78,6 +85,7 @@ class GameRegistry:
         hero_ids: list[str],
         game_id: str | None = None,
         hero_names: dict[str, str] | None = None,
+        bot_specs: dict[str, BotSpec] | None = None,
     ) -> ManagedGame:
         """Register a new game and generate tokens for each hero + spectator."""
         game_id = game_id or uuid.uuid4().hex[:12]
@@ -90,6 +98,14 @@ class GameRegistry:
 
         spectator_token = uuid.uuid4().hex
 
+        roster = set(hero_ids)
+        validated_specs = dict(bot_specs or {})
+        unknown = set(validated_specs) - roster
+        if unknown:
+            raise ValueError(
+                f"bot_specs references hero(s) not in the game roster: {sorted(unknown)}"
+            )
+
         game = ManagedGame(
             game_id=game_id,
             session=session,
@@ -99,6 +115,7 @@ class GameRegistry:
             hero_names=hero_names or {},
             game_logger=create_game_logger(game_id),
             replay_recorder=create_replay_recorder(game_id),
+            bot_specs=validated_specs,
         )
         self._games[game_id] = game
 
@@ -128,6 +145,12 @@ class GameRegistry:
 
     def remove(self, game_id: str) -> None:
         game = self._games.pop(game_id, None)
+        if game is not None:
+            game.removed = True
+            if game.bot_task is not None:
+                game.bot_task.cancel()
+            game._bot_agents = None
+            game._bot_fallback_agents = None
         if game is not None and game.timer_task is not None:
             game.timer_task.cancel()
         if game is not None and game.override_expiry_task is not None:
@@ -158,6 +181,7 @@ class GameRegistry:
                 save_dir=self._save_dir,
                 rollback_snapshot=game.session._rollback_snapshot,
                 rollback_actor_id=game.session._rollback_actor_id,
+                bot_specs=game.bot_specs,
             )
         except Exception:
             logger.exception("Failed to save game %s", game_id)
@@ -174,6 +198,16 @@ class GameRegistry:
         games_data = load_all_games(self._save_dir)
         count = 0
         for data in games_data:
+            roster = set(data["hero_to_token"])
+            restored_specs: dict[str, BotSpec] = {}
+            for hero_id, raw in data.get("bot_specs", {}).items():
+                if hero_id not in roster:
+                    logger.warning("Discarding bot spec for unknown hero %s", hero_id)
+                    continue
+                try:
+                    restored_specs[hero_id] = BotSpec.model_validate(raw)
+                except ValueError:
+                    logger.exception("Discarding invalid bot spec for %s", hero_id)
             game = ManagedGame(
                 game_id=data["game_id"],
                 session=data["session"],
@@ -185,6 +219,7 @@ class GameRegistry:
                 last_result=data["last_result"],
                 game_logger=create_game_logger(data["game_id"]),
                 replay_recorder=create_replay_recorder(data["game_id"]),
+                bot_specs=restored_specs,
             )
             self._games[game.game_id] = game
             count += 1

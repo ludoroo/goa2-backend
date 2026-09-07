@@ -193,7 +193,10 @@ Create a new game. No authentication required.
   "red_heroes": ["arien"],
   "blue_heroes": ["knight"],
   "cheats_enabled": false,
-  "game_type": "LONG"
+  "game_type": "LONG",
+  "bots": {
+    "hero_knight": {"kind": "heuristic"}
+  }
 }
 ```
 
@@ -205,6 +208,33 @@ Create a new game. No authentication required.
 | `cheats_enabled` | boolean | `false` | Enable cheats for this game (unlocks gold cheat API) |
 | `game_type` | string | `"LONG"` | `"QUICK"` or `"LONG"`. Controls wave and life counter setup (see below) |
 | `time_control` | object/null | `null` | Optional timed-match configuration shown in the quick-start example above |
+| `bots` | object/null | `null` | Optional map of canonical hero ID to a classic bot specification (below) |
+
+**Classic bots:**
+
+`kind` is `"random"`, `"heuristic"`, or `"ismcts"`. ISMCTS may include a
+bounded `search` object with `iterations` (1–1000, default 200) and
+`decision_timeout_seconds` (0.05–5.0, default 2.0). `search` is rejected for
+random and heuristic bots. Every bot key must identify a hero in this game's
+roster. Bot configuration is supported only by direct `POST /games` creation,
+is persisted across server restarts, and is not exposed in player views.
+
+```json
+{
+  "bots": {
+    "hero_arien": {"kind": "random"},
+    "hero_knight": {
+      "kind": "ismcts",
+      "search": {"iterations": 300, "decision_timeout_seconds": 2.5}
+    }
+  }
+}
+```
+
+Bots use the same clock, replay, logging, persistence, and WebSocket state
+update paths as human decisions. In timed games bot seats ready themselves;
+human seats must still complete the normal ready check. Player tokens remain
+present for every seat for administrative/reconnect compatibility.
 
 **Game types:**
 

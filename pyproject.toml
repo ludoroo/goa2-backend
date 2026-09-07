@@ -18,7 +18,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/goa2"]
+packages = ["src/goa2", "src/automata"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -50,7 +50,7 @@ module = ["brotli.*", "jsonpatch.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
-source = ["src/goa2"]
+source = ["src/goa2", "src/automata"]
 branch = true
 
 [dependency-groups]

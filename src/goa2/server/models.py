@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from goa2.domain.time_control import TimeControlConfig
+from goa2.server.bot_models import SearchSettings
 from goa2.server.player_names import MAX_PLAYER_NAME_LENGTH
 
 # -- Requests --
+
+
+class CreateBotSpec(BaseModel):
+    """Public declaration of one bounded classic bot seat."""
+
+    kind: Literal["random", "heuristic", "ismcts"]
+    search: SearchSettings | None = None
+
+    @field_validator("search")
+    @classmethod
+    def _search_requires_ismcts(cls, value: SearchSettings | None, info):
+        if value is not None and info.data.get("kind") != "ismcts":
+            raise ValueError("search settings are only valid for kind='ismcts'")
+        return value
 
 
 def _normalize_lobby_name(v: str) -> str:
@@ -34,6 +49,8 @@ class CreateGameRequest(BaseModel):
     time_control: TimeControlConfig | None = None
     # Keyed by the same hero identifier used in red_heroes/blue_heroes.
     player_names: dict[str, str] = Field(default_factory=dict)
+    # Keys are canonical hero IDs (for example ``hero_arien``).
+    bots: dict[str, CreateBotSpec] | None = None
 
 
 class ReadyRequest(BaseModel):
