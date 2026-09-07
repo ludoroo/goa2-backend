@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from automata.decision import DecisionDescriptor as Decision
-from automata.models import DecisionObservation
+from automata.models.contracts import DecisionObservation
 from automata.models.shared_encoder.batching import (
     collate_decisions,
     masked_mean,

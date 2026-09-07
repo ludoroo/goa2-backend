@@ -73,7 +73,7 @@ class ISMCTSAgent:
         self._policy: Agent = environment_policy or HeuristicAgent(self._cfg.seed)
         self._continuation_policy = continuation_policy or self._policy
         # Leaf value estimate at the rollout cutoff. Swappable for a learned
-        # value model (Rung 2) without touching the search loop.
+        # value model without touching the search loop.
         self._leaf_evaluator: LeafEvaluator = leaf_evaluator or HeuristicLeafEvaluator()
         self._cutoff_observer = cutoff_observer
         # Expansion prior reuses the heuristic scorers so widening surfaces

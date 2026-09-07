@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-import automata.models as nn
+import automata.models.contracts as learned_contracts
 import automata.models.shared_encoder.schema as feature_schema_contracts
 from automata.decision import DecisionDescriptor as Decision
 from automata.observation import encode_decision
@@ -208,7 +208,7 @@ def _request(
     )
 
 
-def _encode(state: Any, decision: Decision) -> nn.DecisionObservation:
+def _encode(state: Any, decision: Decision) -> learned_contracts.DecisionObservation:
     return encode_decision(
         state,
         decision,
@@ -219,7 +219,7 @@ def _encode(state: Any, decision: Decision) -> nn.DecisionObservation:
 
 
 @pytest.fixture(scope="module")
-def observation() -> nn.DecisionObservation:
+def observation() -> learned_contracts.DecisionObservation:
     state = _state()
     return _encode(
         state,
@@ -256,10 +256,12 @@ def test_current_schema_is_frozen_versioned_and_canonically_artifact_pinnable(sc
     assert len(schema.digest) == 64
     assert schema == feature_schema_contracts.TensorFeatureSchema.current()
 
-    encoded = nn.canonical_json_bytes(schema)
-    restored = nn.from_canonical_json(feature_schema_contracts.TensorFeatureSchema, encoded)
+    encoded = learned_contracts.canonical_json_bytes(schema)
+    restored = learned_contracts.from_canonical_json(
+        feature_schema_contracts.TensorFeatureSchema, encoded
+    )
     assert restored == schema
-    assert nn.canonical_json_bytes(restored) == encoded
+    assert learned_contracts.canonical_json_bytes(restored) == encoded
     assert restored.digest == schema.digest
 
     with pytest.raises((ValidationError, TypeError)):
@@ -339,13 +341,13 @@ def test_raw_record_ids_are_not_categorical_model_features(schema: Any) -> None:
         for declaration in item.categorical
     }
     assert prohibited.isdisjoint(categorical)
-    artifact = nn.canonical_json_bytes(schema)
+    artifact = learned_contracts.canonical_json_bytes(schema)
     assert b"hero_razzle" not in artifact
     assert b"razzle_card_1" not in artifact
 
 
 def test_vectorization_is_order_invariant_per_local_record(
-    schema: Any, observation: nn.DecisionObservation
+    schema: Any, observation: learned_contracts.DecisionObservation
 ) -> None:
     original = schema.vectorize(observation, training=True)
     reordered_tokens = tuple(
@@ -380,7 +382,7 @@ def test_vectorization_is_order_invariant_per_local_record(
 
 
 def test_references_resolve_after_token_permutation_and_optional_missing_is_masked(
-    schema: Any, observation: nn.DecisionObservation
+    schema: Any, observation: learned_contracts.DecisionObservation
 ) -> None:
     permuted = observation.model_copy(
         update={
@@ -407,7 +409,7 @@ def test_references_resolve_after_token_permutation_and_optional_missing_is_mask
 
 
 def test_required_missing_reference_and_unexpected_training_field_fail_closed(
-    schema: Any, observation: nn.DecisionObservation
+    schema: Any, observation: learned_contracts.DecisionObservation
 ) -> None:
     unit_index = next(i for i, token in enumerate(observation.state.tokens) if token.kind == "UNIT")
     unit = observation.state.tokens[unit_index]
@@ -438,14 +440,14 @@ def test_required_missing_reference_and_unexpected_training_field_fail_closed(
 
 
 def test_bool_missing_unknown_and_malformed_numbers_have_explicit_behavior(
-    schema: Any, observation: nn.DecisionObservation
+    schema: Any, observation: learned_contracts.DecisionObservation
 ) -> None:
     global_index = next(
         i for i, token in enumerate(observation.state.tokens) if token.kind == "GLOBAL"
     )
     global_token = observation.state.tokens[global_index]
 
-    def changed(**features: Any) -> nn.DecisionObservation:
+    def changed(**features: Any) -> learned_contracts.DecisionObservation:
         tokens = list(observation.state.tokens)
         tokens[global_index] = global_token.model_copy(
             update={"features": {**global_token.features, **features}}
@@ -582,7 +584,7 @@ def test_all_current_candidate_kinds_vectorize_and_order_and_ids_stay_python_sid
 
 
 def test_empty_candidate_decision_fails_vectorization(
-    schema: Any, observation: nn.DecisionObservation
+    schema: Any, observation: learned_contracts.DecisionObservation
 ) -> None:
     with pytest.raises(ValueError, match="candidate"):
         schema.vectorize(observation.model_copy(update={"candidates": ()}), training=True)
