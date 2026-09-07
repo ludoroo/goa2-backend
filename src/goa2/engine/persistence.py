@@ -37,8 +37,13 @@ def save_game(
     hero_names: dict[str, str] | None = None,
     rollback_snapshot: dict[str, Any] | None = None,
     rollback_actor_id: str | None = None,
+    bot_specs: dict[str, Any] | None = None,
 ) -> Path:
     """Serialize game data to a JSON file with atomic write."""
+    serialized_specs = {
+        hero_id: spec.model_dump(mode="json") if hasattr(spec, "model_dump") else spec
+        for hero_id, spec in (bot_specs or {}).items()
+    }
     payload: dict[str, Any] = {
         "version": SAVE_VERSION,
         "game_id": game_id,
@@ -50,6 +55,7 @@ def save_game(
         "state": state.model_dump(mode="json"),
         "rollback_snapshot": rollback_snapshot,
         "rollback_actor_id": rollback_actor_id,
+        "bot_specs": serialized_specs,
     }
 
     os.makedirs(save_dir, exist_ok=True)
@@ -123,6 +129,7 @@ def load_game(file_path: str) -> dict[str, Any]:
         "hero_names": payload.get("hero_names", {}),
         "created_at": payload["created_at"],
         "last_result": last_result,
+        "bot_specs": payload.get("bot_specs", {}) or {},
     }
 
 

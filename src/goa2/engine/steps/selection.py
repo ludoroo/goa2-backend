@@ -1148,6 +1148,7 @@ class RevealAndResolveGuessStep(GameStep):
 
         actual_color = target_card.color.value if target_card.color else None
         is_correct = guessed_color == actual_color
+        state.record_public_revealed_card(victim.id, str(target_card.id))
 
         if is_correct:
             context[self.correct_output_key] = True

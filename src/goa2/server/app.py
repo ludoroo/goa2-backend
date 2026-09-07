@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from goa2.draft.errors import DraftError
+from goa2.server.bots import cancel_all_bot_tasks, start_bot_lifecycle
 from goa2.server.draft_registry import DraftRegistry
 from goa2.server.draft_ws import router as draft_ws_router
 from goa2.server.errors import (
@@ -91,6 +92,8 @@ async def lifespan(app: FastAPI):
     app.state.registry = registry
     app.state.draft_registry = DraftRegistry()
     await resume_timers(registry)
+    for game in registry.all_games():
+        await start_bot_lifecycle(game, registry)
 
     cleanup_task = asyncio.create_task(_cleanup_loop(registry))
     # Background, never awaited: a worker takes seconds to spawn, and blocking
@@ -104,15 +107,20 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        if warmup_task is not None:
-            warmup_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await warmup_task
-        shutdown_heavy_pool()
+        # Bot workers can own timed mutations and heavy-pool work. Drain them
+        # before tearing down either dependency.
+        await cancel_all_bot_tasks(registry)
         await stop_timers(registry)
         cleanup_task.cancel()
         with suppress(asyncio.CancelledError):
             await cleanup_task
+        if warmup_task is not None:
+            warmup_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await warmup_task
+        # Pool teardown stays last so neither bot draining nor worker prewarm
+        # can race a closed executor.
+        shutdown_heavy_pool()
 
 
 def _configure_logging() -> None:

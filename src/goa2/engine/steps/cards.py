@@ -205,6 +205,8 @@ class DiscardCardStep(GameStep):
             discard_source = "current_turn"
 
         hero.discard_card(target_card, from_hand=(actual_source == CardContainerType.HAND))
+        # Discard identities are public, including a formerly facedown commit.
+        state.record_public_revealed_card(owner_id, str(target_card.id))
 
         # Record in the turn-scoped discard log (cleared at end_turn); read by
         # "retrieve all cards discarded this turn" effects (Emmitt).
@@ -1693,6 +1695,7 @@ class RevealHandCardStep(GameStep):
         tier_value = tier_values[target_card.tier]
         context[self.tier_value_key] = tier_value
         context["rollback_reanchor_pending"] = True
+        state.record_public_revealed_card(owner.id, str(target_card.id))
 
         revealer_id = str(state.current_actor_id) if state.current_actor_id else None
         state.card_reveal = {

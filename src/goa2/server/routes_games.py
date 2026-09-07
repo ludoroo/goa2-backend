@@ -15,6 +15,8 @@ from goa2.domain.views import build_view
 from goa2.engine.session import GameSession, SessionResult
 from goa2.engine.setup import GameSetup
 from goa2.server.auth import PlayerDep, RegistryDep
+from goa2.server.bot_models import BotSpec
+from goa2.server.bots import start_bot_lifecycle
 from goa2.server.errors import (
     AlreadyCommittedError,
     CardNotInHandError,
@@ -138,7 +140,21 @@ async def create_game(body: CreateGameRequest, registry: RegistryDep) -> CreateG
     name_to_id = {h.name: h.id for team in state.teams.values() for h in team.heroes}
     hero_names = resolve_player_names(body.player_names, name_to_id)
 
-    game = registry.create_game(session, hero_ids, game_id=game_id, hero_names=hero_names)
+    bot_specs = (
+        {
+            hero_id: BotSpec(kind=spec.kind, search=spec.search)
+            for hero_id, spec in body.bots.items()
+        }
+        if body.bots
+        else None
+    )
+    game = registry.create_game(
+        session,
+        hero_ids,
+        game_id=game_id,
+        hero_names=hero_names,
+        bot_specs=bot_specs,
+    )
 
     if game.game_logger:
         game.game_logger.log_game_created(body.red_heroes, body.blue_heroes, body.map_name)
@@ -153,6 +169,8 @@ async def create_game(body: CreateGameRequest, registry: RegistryDep) -> CreateG
             time_control=body.time_control,
             player_names=hero_names,
         )
+
+    await start_bot_lifecycle(game, registry)
 
     return CreateGameResponse(
         game_id=game.game_id,

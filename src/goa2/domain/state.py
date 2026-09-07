@@ -28,6 +28,15 @@ from goa2.domain.types import BoardEntityID, HeroID, UnitID
 logger = logging.getLogger(__name__)
 
 
+class PublicRevealedCard(BaseModel):
+    """A permanently public card identity learned during play."""
+
+    model_config = ConfigDict(frozen=True)
+
+    hero_id: str
+    card_id: str
+
+
 class GameState(BaseModel):
     """
     The Mutable State of the World.
@@ -95,6 +104,10 @@ class GameState(BaseModel):
     pending_second_cards: dict[HeroID, Card] = Field(
         default_factory=dict
     )  # Planning Phase Buffer for heroes that may play two cards (Emmitt's ultimate)
+
+    # Append-only public information used when sampling hidden card loadouts.
+    # The default keeps saves created before this tracker valid.
+    public_revealed_cards: tuple[PublicRevealedCard, ...] = ()
 
     planning_done: list[HeroID] = Field(
         default_factory=list
@@ -170,6 +183,12 @@ class GameState(BaseModel):
 
     # Private field for cached validator (not serialized)
     _validator: Any | None = None
+
+    def record_public_revealed_card(self, hero_id: HeroID | str, card_id: str) -> None:
+        """Idempotently retain a card identity that every player has seen."""
+        record = PublicRevealedCard(hero_id=str(hero_id), card_id=str(card_id))
+        if record not in self.public_revealed_cards:
+            self.public_revealed_cards = (*self.public_revealed_cards, record)
 
     @property
     def coin_face(self) -> str:
