@@ -62,7 +62,7 @@ def test_learned_source_requires_one_pinned_artifact_but_hh_does_not() -> None:
 def test_hh_factory_does_not_touch_runtime_cache_or_torch(tmp_path: Path) -> None:
     class ExplodingCache:
         def get(self, *args, **kwargs):
-            raise AssertionError("H/H must not load a neural runtime")
+            raise AssertionError("H/H must not load a learned-model runtime")
 
     state = GameSetup.create_game(MAP, ["Razzle"], ["Arien"], game_type="QUICK", seed=3)
     agent = agent_for_spec(

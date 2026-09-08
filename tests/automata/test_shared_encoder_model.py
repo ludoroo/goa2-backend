@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from automata.decision import DecisionDescriptor as Decision
-from automata.models import DecisionObservation
+from automata.models.contracts import DecisionObservation
 from automata.models.shared_encoder.batching import DecisionBatch, collate_decisions, masked_softmax
 from automata.models.shared_encoder.model import JointModelConfig, JointPolicyValueModel
 from automata.models.shared_encoder.schema import TensorFeatureSchema

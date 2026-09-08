@@ -12,7 +12,6 @@ import sys
 blocked = (
     'automata.models', 'automata.observation', 'torch',
     'automata.evaluation.learned_value', 'automata.search.learned_policy',
-    'goa2.server.neural_rollout',
 )
 loaded = [name for name in sys.modules if any(name == root or name.startswith(root + '.') for root in blocked)]
 assert not loaded, loaded

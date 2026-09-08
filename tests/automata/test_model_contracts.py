@@ -1,4 +1,4 @@
-"""Public serialization and validation contracts for Phase 0 neural RL."""
+"""Public serialization and validation contracts for Phase 0 learned models."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import math
 import pytest
 from pydantic import BaseModel
 
-import automata.models as nn
-from automata.models import (
+import automata.models.contracts as learned_contracts
+from automata.models.contracts import (
     ActionCandidateID,
     CardCandidateID,
     DecisionObservation,
@@ -34,7 +34,7 @@ from automata.models.shared_encoder.artifacts.manifest import ModelArtifactManif
 
 
 def test_viewer_has_one_public_schema_v2_contract() -> None:
-    viewer = nn.Viewer(
+    viewer = learned_contracts.Viewer(
         schema_version=2,
         private_hero_id="hero_wasp",
         perspective_team="RED",
@@ -45,14 +45,14 @@ def test_viewer_has_one_public_schema_v2_contract() -> None:
         "private_hero_id": "hero_wasp",
         "perspective_team": "RED",
     }
-    assert [name for name in nn.__all__ if name.startswith("Viewer")] == ["Viewer"]
+    assert [name for name in learned_contracts.__all__ if name.startswith("Viewer")] == ["Viewer"]
     with pytest.raises(ValueError, match=r"unsupported.*version"):
         from_canonical_json(
-            nn.Viewer,
+            learned_contracts.Viewer,
             b'{"hero_id":"hero_wasp","schema_version":1,"scope":"HERO","team":"RED"}',
         )
     with pytest.raises(ValueError, match=r"extra|hero_id|scope|team"):
-        nn.Viewer.model_validate(
+        learned_contracts.Viewer.model_validate(
             {
                 "schema_version": 2,
                 "hero_id": "hero_wasp",

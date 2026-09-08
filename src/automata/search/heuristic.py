@@ -4,8 +4,7 @@ Progressive widening reveals children a few at a time; with a tight iteration
 budget the *order* in which legal actions are revealed is decisive. A policy
 ranks a decision's legal keys best-first so promising moves are searched before
 junk, and may additionally attach per-key *weights* (prior probabilities /
-scores) for a future PUCT-style selection term (Rung 1) or a learned policy
-(Rung 3).
+scores) for a future PUCT-style selection term or a learned policy.
 
 The default policy, :class:`HeuristicPrior`, reuses the ``HeuristicAgent`` static
 scorers (:meth:`score_card` / :meth:`score_option`), keeping search and the

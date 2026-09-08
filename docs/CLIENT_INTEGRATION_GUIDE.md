@@ -221,7 +221,7 @@ giving H/H, L/H, H/L, and L/L compositions. `leaf_mode` is `"immediate"`
 
 If either source is learned, `artifact` is required with a server-local
 relative `reference` and pinned lowercase SHA-256 `digest`. H/H rejects an
-artifact and does not load Torch. There is intentionally no separate neural bot
+artifact and does not load Torch. There is intentionally no separate learned-model bot
 kind or persisted model-family discriminator. `search` is rejected for
 random and heuristic bots. Every bot key must identify a hero in this game's
 roster. Bot configuration is supported only by direct `POST /games` creation,
