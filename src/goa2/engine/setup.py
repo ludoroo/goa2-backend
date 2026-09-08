@@ -24,13 +24,24 @@ from goa2.engine.map_loader import load_map
 logger = logging.getLogger(__name__)
 
 
+def _normalize_game_type(game_type: str | GameType) -> GameType:
+    if isinstance(game_type, GameType):
+        return game_type
+    try:
+        return GameType(game_type)
+    except ValueError as exc:
+        raise ValueError(f"Invalid game_type '{game_type}'. Must be QUICK or LONG.") from exc
+
+
 class GameSetup:
     """
     Orchestrates the initialization of a new game.
     """
 
     @staticmethod
-    def get_game_config(game_type: str, total_players: int, lane_count: int = 1) -> tuple[int, int]:
+    def get_game_config(
+        game_type: str | GameType, total_players: int, lane_count: int = 1
+    ) -> tuple[int, int]:
         """
         Returns (wave_counters_per_lane, life_counters) for the given game
         type, player count, and lane count. Uneven player counts use the next
@@ -43,10 +54,7 @@ class GameSetup:
           Two lanes (no QUICK/LONG split):
             2 x 7 waves, 6 LC (6-8p) / 7 LC (9-10p)
         """
-        try:
-            gt = GameType(game_type)
-        except ValueError as exc:
-            raise ValueError(f"Invalid game_type '{game_type}'. Must be QUICK or LONG.") from exc
+        gt = _normalize_game_type(game_type)
 
         if lane_count == 2:
             lc_lookup = {8: 6, 10: 7}
@@ -97,13 +105,15 @@ class GameSetup:
             draft lobby's, say). If omitted, the coin is flipped here from the seed.
         """
 
+        normalized_game_type = _normalize_game_type(game_type)
+
         # 1. Load Map
         board = load_map(map_path)
 
         # 2. Calculate Wave & Life Counters
         total_players = len(red_heroes) + len(blue_heroes)
         waves_per_lane, life_counters = GameSetup.get_game_config(
-            game_type, total_players, lane_count=len(board.lanes)
+            normalized_game_type, total_players, lane_count=len(board.lanes)
         )
 
         # 3. Initialize State
@@ -124,6 +134,7 @@ class GameSetup:
                 ),
             },
             phase=GamePhase.SETUP,
+            game_type=normalized_game_type,
             cheats_enabled=cheats_enabled,
             time_control=time_control,
         )

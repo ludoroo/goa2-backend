@@ -11,6 +11,7 @@ from goa2.domain.input import InputRequest, InputRequestType
 from goa2.domain.models import (
     Card,
     GamePhase,
+    GameType,
     Hero,
     ResolutionStep,
     StatType,
@@ -52,6 +53,7 @@ class GameState(BaseModel):
     battle_zones: dict[str, str] = Field(default_factory=dict)
 
     phase: GamePhase = GamePhase.SETUP
+    game_type: GameType = GameType.LONG
 
     resolution_step: ResolutionStep = ResolutionStep.NONE
     round: int = 1

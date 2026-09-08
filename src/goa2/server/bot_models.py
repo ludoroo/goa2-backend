@@ -24,9 +24,10 @@ persistence surface or the public request contract.
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from automata.search.config import (
     PROD_DEFAULT_DECISION_TIMEOUT_SECONDS,
@@ -40,6 +41,29 @@ from automata.search.config import (
 # Supported agent kinds. Random and Heuristic are the always-on cheap agents;
 # ISMCTS is opt-in with bounded execution.
 BotKind = Literal["random", "heuristic", "ismcts"]
+
+
+class ModelArtifactSpec(BaseModel):
+    """Server-local immutable model identity; the model family is not persisted."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    reference: str = Field(min_length=1)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("reference")
+    @classmethod
+    def _safe_relative_reference(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if (
+            value != value.strip()
+            or "\\" in value
+            or path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or (path.parts and ":" in path.parts[0])
+        ):
+            raise ValueError("artifact reference must be a safe relative path")
+        return value
 
 
 class SearchSettings(BaseModel):
@@ -67,6 +91,18 @@ class SearchSettings(BaseModel):
         ge=PROD_MIN_DECISION_TIMEOUT_SECONDS,
         le=PROD_MAX_DECISION_TIMEOUT_SECONDS,
     )
+    policy_source: Literal["heuristic", "learned"] = "heuristic"
+    value_source: Literal["heuristic", "learned"] = "heuristic"
+    leaf_mode: Literal["immediate", "bounded_continuation"] = "immediate"
+    horizon: int = Field(default=2, ge=0, le=10)
+    artifact: ModelArtifactSpec | None = None
+
+    @model_validator(mode="after")
+    def _learned_sources_require_artifact(self) -> SearchSettings:
+        learned = "learned" in {self.policy_source, self.value_source}
+        if learned != (self.artifact is not None):
+            raise ValueError("artifact is required exactly when a learned source is configured")
+        return self
 
 
 class BotSpec(BaseModel):
