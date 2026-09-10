@@ -15,8 +15,10 @@ Design:
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+
+from tqdm import tqdm
 
 from automata.harness.game_runner import DEFAULT_MAP, run_game
 
@@ -85,12 +87,21 @@ def evaluate(
     game_type: str = "QUICK",
     label_a: str = "A",
     label_b: str = "B",
+    show_progress: bool = False,
 ) -> MatchupResult:
     """Play ``games`` matches of A vs B and aggregate the outcome."""
     a_wins = b_wins = draws = 0
     total_rounds = 0
 
-    for i in range(games):
+    game_indexes: Iterable[int] = range(games)
+    if show_progress:
+        game_indexes = tqdm(
+            game_indexes,
+            desc="Matchup evaluation",
+            total=games,
+            unit="game",
+        )
+    for i in game_indexes:
         seed = base_seed + i
         # A plays Red on even games, Blue on odd games (when alternating).
         a_is_red = (i % 2 == 0) or not alternate_sides

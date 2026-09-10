@@ -304,6 +304,8 @@ def _completed_prefix_count(config: ArenaStageConfig) -> int:
 def _run_stage(
     config: ArenaStageConfig,
     run_case: Callable[[GameCase], EvaluationGameResult],
+    *,
+    show_progress: bool,
 ) -> ArenaStageResult:
     plan = config.sequential_plan
     if plan is None:
@@ -312,6 +314,8 @@ def _run_stage(
                 config.protocol,
                 checkpoint_path=config.checkpoint_path,
                 run_case=run_case,
+                show_progress=show_progress,
+                progress_description=f"Arena {config.stage.value.lower()}",
             )
         )
         return ArenaStageResult(
@@ -330,7 +334,13 @@ def _run_stage(
             continue
         prefix = _protocol_prefix(config.protocol, boundary.pair_count)
         observations = tuple(
-            run_protocol(prefix, checkpoint_path=config.checkpoint_path, run_case=run_case)
+            run_protocol(
+                prefix,
+                checkpoint_path=config.checkpoint_path,
+                run_case=run_case,
+                show_progress=show_progress,
+                progress_description=f"Arena {config.stage.value.lower()}",
+            )
         )
         result = evaluate_sequential(observations, plan)
         if result.decision is not SequentialDecision.CONTINUE:
@@ -373,6 +383,7 @@ def run_arena(
     *,
     run_cases: Mapping[ArenaStage, Callable[[GameCase], EvaluationGameResult]],
     operational_evidence: ArenaOperationalEvidence,
+    show_progress: bool = False,
 ) -> ArenaResult:
     """Run the configured arena, resuming each stage at complete seed pairs."""
 
@@ -382,7 +393,7 @@ def run_arena(
             runner = run_cases[stage_config.stage]
         except KeyError as exc:
             raise ValueError(f"missing runner for stage {stage_config.stage.value}") from exc
-        result = _run_stage(stage_config, runner)
+        result = _run_stage(stage_config, runner, show_progress=show_progress)
         stage_results.append(result)
         sequential = result.sequential
         if sequential is not None and sequential.decision is SequentialDecision.REJECT:

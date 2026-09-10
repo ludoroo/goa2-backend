@@ -37,9 +37,11 @@ algorithm family or operational surface.
 
 `JointDatasetRow` stores the exact `DecisionObservation`, ordered legal
 candidates, selected engine value, policy target, terminal value target, and
-complete source/game/search provenance. Files are canonical JSONL. A complete
-game is buffered and atomically published only after a normal terminal result.
-Decision and dataset identities are SHA-256 content identities.
+complete source/game/search provenance. Files are canonical JSONL. Decisions
+are immediately serialized to a temporary compressed disk spool; no game-sized
+observation buffer is retained. The final dataset is streamed and atomically
+published only after a normal terminal result. Decision and dataset identities
+are SHA-256 content identities.
 
 Policy loss is masked cross entropy over legal candidates. The bounded value
 score in `[-1, 1]` is converted explicitly to win probability with
@@ -82,13 +84,12 @@ PYTHONPATH=src uv run python -m automata.scripts.run_parallel joint-bootstrap \
 ```
 
 The parent process reports aggregate progress from the shard checkpoints; it
-never infers game completion from worker logs. Interactive terminals receive an
-in-place bar with throughput, ETA, active workers, and terminal outcome counts.
-Redirected output and CI receive stable plain-text updates without terminal
-control characters. Existing checkpoint records appear in the initial update
-when resuming. Use `--progress-interval SECONDS` before `--` to change the
-default two-second update cadence, or `--no-progress` to disable these updates.
-Arguments after `--` continue to be forwarded only to the generator workers.
+never infers game completion from worker logs. A tqdm-backed bar shows native
+throughput and ETA plus active workers and terminal outcome counts. Existing
+checkpoint records appear as the initial completed count when resuming. Use
+`--progress-interval SECONDS` before `--` to change the default two-second
+refresh cadence, or `--no-progress` to disable the bar. Arguments after `--`
+continue to be forwarded only to the generator workers.
 
 Self-play uses a content-addressed champion artifact and the same game and row
 contracts. Seeds belong to named, disjoint ranges. A retry must preserve world
@@ -118,7 +119,11 @@ Training datasets use transparent Zstandard compression when their path ends in
 `.jsonl.zst`; legacy `.jsonl` datasets remain readable and writable. Dataset
 digests are SHA-256 over canonical, uncompressed JSONL rows, so compression
 settings and container bytes do not change semantic dataset identity. Checkpoint
-and audit JSONL files remain uncompressed.
+and audit JSONL files remain uncompressed. `iter_joint_dataset` strictly validates
+rows and cross-row invariants incrementally; consumers must exhaust it because a
+truncation or end-of-stream invariant can be reported after earlier rows were
+yielded. The trainer intentionally still uses materialized, indexed datasets;
+indexed streaming training is deferred.
 
 ## Evaluation and promotion
 

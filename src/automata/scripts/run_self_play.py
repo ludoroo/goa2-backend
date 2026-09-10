@@ -11,9 +11,12 @@ import argparse
 import importlib
 import json
 import sys
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
+
+from tqdm import tqdm
 
 from automata.harness.game_runner import DEFAULT_MAP
 from automata.models.contracts import canonical_json_bytes
@@ -77,6 +80,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-seconds", required=True, type=_positive_float)
     parser.add_argument("--source-revision", help=argparse.SUPPRESS)
     parser.add_argument("--dirty-tree-hash", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--no-progress", dest="progress", action="store_false", help="disable progress output"
+    )
     return parser
 
 
@@ -209,15 +215,36 @@ def main(
 
     resolved_loader: RuntimeLoader = runtime_loader or artifact_loader
     resolved_strategy = strategy_factory or _resolve_strategy_factory(args.strategy_factory)
-    worker = SelfPlayWorker(
-        selected,
-        output_dir=output_dir / f"worker-{selected.worker_id}",
-        checkpoint_path=checkpoint_dir / f"worker-{selected.worker_id}.jsonl",
-        runtime_loader=resolved_loader,
-        strategy_factory=resolved_strategy,
-        telemetry=telemetry,
-    )
-    worker.run()
+    terminal_counts: Counter[str] = Counter()
+    with tqdm(
+        total=len(selected.games),
+        desc=f"Self-play worker {selected.worker_id}",
+        unit="game",
+        disable=not args.progress,
+    ) as progress:
+
+        def report(event: TelemetryEvent) -> None:
+            progress.clear()
+            telemetry(event)
+            if event.event == "game_complete":
+                terminal_counts["complete"] += 1
+            elif event.event == "timeout":
+                terminal_counts[event.reason or "timeout"] += 1
+            else:
+                progress.refresh()
+                return
+            progress.set_postfix(dict(terminal_counts))
+            progress.update()
+
+        worker = SelfPlayWorker(
+            selected,
+            output_dir=output_dir / f"worker-{selected.worker_id}",
+            checkpoint_path=checkpoint_dir / f"worker-{selected.worker_id}.jsonl",
+            runtime_loader=resolved_loader,
+            strategy_factory=resolved_strategy,
+            telemetry=report,
+        )
+        worker.run()
     return 0
 
 

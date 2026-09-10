@@ -10,12 +10,15 @@ import os
 import signal
 import tempfile
 import threading
+from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, StrictInt
+from tqdm import tqdm
 
 from automata.agents import HeuristicAgent, PlanningKind
 from automata.decision import DecisionDescriptor
@@ -27,7 +30,7 @@ from automata.runtime.driver import BotDecision, DecisionKind
 from automata.training.dataset import (
     JointDatasetRecorder,
     JointDatasetRow,
-    load_joint_dataset,
+    iter_joint_dataset,
     write_joint_dataset,
 )
 from automata.training.experiments.phase0 import PHASE0_EXPERIMENT
@@ -185,7 +188,52 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-seconds", required=True, type=_positive_float)
     parser.add_argument("--source-revision", help=argparse.SUPPRESS)
     parser.add_argument("--dirty-tree-hash", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--no-progress", dest="progress", action="store_false", help="disable progress output"
+    )
     return parser
+
+
+def parse_generator_args(argv: Sequence[str]) -> argparse.Namespace:
+    """Parse generator CLI options so parent and worker use identical defaults."""
+    return _parser().parse_args(argv)
+
+
+def generator_config(
+    args: argparse.Namespace, *, source_revision: str, dirty_tree_hash: str
+) -> dict[str, Any]:
+    """Build the exact identity-bearing configuration for a parsed generator run."""
+    scope = PHASE0_EXPERIMENT
+    return {
+        "scope": {
+            "map_id": scope.map_id,
+            "map_path": DEFAULT_MAP,
+            "game_type": scope.game_type,
+            "red_heroes": scope.red_heroes,
+            "blue_heroes": scope.blue_heroes,
+            "seed_purpose": "bootstrap",
+        },
+        "source_revision": source_revision,
+        "dirty_tree_hash": dirty_tree_hash,
+        "seed_derivation": SEED_DERIVATION,
+        "max_steps": args.max_steps,
+        "timeout_seconds": args.timeout_seconds,
+        "target_source": args.target_source,
+        "target_recipe": args.target_recipe,
+        "search_config": None,
+    }
+
+
+def generator_config_id(
+    args: argparse.Namespace, *, source_revision: str, dirty_tree_hash: str
+) -> str:
+    return _identity(
+        generator_config(
+            args,
+            source_revision=source_revision,
+            dirty_tree_hash=dirty_tree_hash,
+        )
+    )
 
 
 @contextmanager
@@ -265,41 +313,80 @@ def _fragment_path(directory: Path, game_id: str) -> Path:
     return directory / f"{game_id}.jsonl.zst"
 
 
-def _publish_output(out: Path, successful: Mapping[str, int]) -> None:
-    """Reconcile fragments and atomically publish world-seed ordered bytes."""
+def _publish_output(
+    out: Path,
+    successful: Mapping[str, int],
+    *,
+    publish: bool = True,
+) -> None:
+    """Reconcile fragments and optionally publish world-seed ordered bytes."""
     directory = _fragment_dir(out)
-    if out.exists() and out.stat().st_size:
-        try:
-            existing = load_joint_dataset(out)
-        except ValueError as exc:
-            if successful or str(exc) != "joint dataset is empty":
-                raise
-        else:
-            for game_id, rows in existing.rows_by_game.items():
-                if game_id not in successful:
-                    continue
-                fragment = _fragment_path(directory, game_id)
-                if not fragment.exists():
-                    write_joint_dataset(fragment, rows)
+
+    def fragment_for(game_id: str) -> Path | None:
+        compressed = _fragment_path(directory, game_id)
+        if compressed.exists():
+            return compressed
+        plain = directory / f"{game_id}.jsonl"
+        return plain if plain.exists() else None
+
+    missing_fragments = {game_id for game_id in successful if fragment_for(game_id) is None}
+    if missing_fragments:
+        if not out.exists() or not out.stat().st_size:
+            missing = min(missing_fragments)
+            raise RuntimeError(f"completed game {missing} has no recoverable dataset fragment")
+        # Validate the complete aggregate before recovering any fragments;
+        # iterator failures can occur after rows have already been yielded.
+        for _ in iter_joint_dataset(out):
+            pass
+        recovered_games: set[str] = set()
+        for game_id, rows in groupby(iter_joint_dataset(out), lambda row: row.game_id):
+            if game_id in recovered_games:
+                raise ValueError(f"aggregate game {game_id!r} is not stored contiguously")
+            recovered_games.add(game_id)
+            if game_id not in missing_fragments:
+                for _ in rows:
+                    pass
+                continue
+            write_joint_dataset(_fragment_path(directory, game_id), rows)
+        still_missing = missing_fragments - recovered_games
+        if still_missing:
+            missing = min(still_missing)
+            raise RuntimeError(f"completed game {missing} has no recoverable dataset fragment")
+
     if directory.exists():
         for path in (*directory.glob("*.jsonl"), *directory.glob("*.jsonl.zst")):
             game_id = path.name.removesuffix(".jsonl.zst").removesuffix(".jsonl")
             if game_id not in successful:
                 path.unlink()
-    fragments: list[tuple[int, tuple[JointDatasetRow, ...]]] = []
+    fragments: list[tuple[int, str, Path]] = []
     for game_id, seed in successful.items():
-        path = _fragment_path(directory, game_id)
-        if not path.exists():
-            path = directory / f"{game_id}.jsonl"
-        if not path.exists():
+        fragment_path = fragment_for(game_id)
+        if fragment_path is None:  # pragma: no cover - checked during reconciliation
             raise RuntimeError(f"completed game {game_id} has no recoverable dataset fragment")
-        dataset = load_joint_dataset(path)
-        if dataset.game_ids != (game_id,):
-            raise ValueError(f"fragment {path} does not contain its named game")
-        fragments.append((seed, dataset.rows))
-    rows = tuple(row for _, game_rows in sorted(fragments) for row in game_rows)
-    if rows:
-        write_joint_dataset(out, rows)
+        fragments.append((seed, game_id, fragment_path))
+
+    if not publish:
+        if not fragments:
+            out.unlink(missing_ok=True)
+        return
+
+    def ordered_rows() -> Iterator[JointDatasetRow]:
+        seed_games: dict[int, str] = {}
+        for seed, game_id, path in sorted(fragments):
+            previous_game = seed_games.setdefault(seed, game_id)
+            if previous_game != game_id:
+                raise ValueError(f"world seed {seed} belongs to multiple completed games")
+            count = 0
+            for row in iter_joint_dataset(path):
+                if row.game_id != game_id or row.world_seed != seed:
+                    raise ValueError(f"fragment {path} does not contain its named game and seed")
+                count += 1
+                yield row
+            if not count:  # iter_joint_dataset currently reports this first
+                raise ValueError(f"fragment {path} is empty")  # pragma: no cover
+
+    if fragments:
+        write_joint_dataset(out, ordered_rows())
     else:
         out.unlink(missing_ok=True)
 
@@ -342,25 +429,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         revision, dirty_hash = source_identity(exclude_paths=(out, checkpoint, _fragment_dir(out)))
     scope = PHASE0_EXPERIMENT
-    config = {
-        "scope": {
-            "map_id": scope.map_id,
-            "map_path": DEFAULT_MAP,
-            "game_type": scope.game_type,
-            "red_heroes": scope.red_heroes,
-            "blue_heroes": scope.blue_heroes,
-            "seed_purpose": "bootstrap",
-        },
-        "source_revision": revision,
-        "dirty_tree_hash": dirty_hash,
-        "seed_derivation": SEED_DERIVATION,
-        "max_steps": args.max_steps,
-        "timeout_seconds": args.timeout_seconds,
-        "target_source": args.target_source,
-        "target_recipe": args.target_recipe,
-        "search_config": None,
-    }
-    config_id = _identity(config)
+    config = generator_config(
+        args,
+        source_revision=revision,
+        dirty_tree_hash=dirty_hash,
+    )
+    config_id = generator_config_id(
+        args,
+        source_revision=revision,
+        dirty_tree_hash=dirty_hash,
+    )
     generation_id = _identity({"phase": "PHASE0_EXPERIMENT", "generator": config})
     search_config_id = _identity(
         {"target_source": "HEURISTIC", "recipe": TARGET_RECIPE, "search": None}
@@ -373,60 +451,86 @@ def main(argv: Sequence[str] | None = None) -> int:
         for row in rows
         if row.config_id == config_id and row.completed and row.reason == "game_over"
     }
-    _publish_output(out, successful)
+    # Per-game fragments and checkpoints are the durable resume state. Avoid
+    # rebuilding the growing aggregate here and after every game; doing so makes
+    # generation quadratic in the number of completed games.
+    _publish_output(out, successful, publish=False)
 
-    for world_seed in range(args.seed_start, args.seed_end):
-        game_id = _identity({"generator_config_id": config_id, "world_seed": world_seed})
-        if game_id in successful:
-            continue
-        fragment = _fragment_path(_fragment_dir(out), game_id)
-        fragment.unlink(missing_ok=True)
-        recorder = JointDatasetRecorder(
-            fragment,
-            game_id=game_id,
-            world_seed=world_seed,
-            map_id=scope.map_id,
-            game_type=scope.game_type,
-            red_composition=scope.red_heroes,
-            blue_composition=scope.blue_heroes,
-            generation_id=generation_id,
-            source_revision=revision,
-            dirty_tree_hash=dirty_hash,
-            source_model_digest=None,
-            search_config_id=search_config_id,
-            generator_config_id=config_id,
-        )
-        observer = HeuristicJointObserver(recorder)
-        result: RunResult | None = None
-        reason: Literal["wall_clock_timeout", "exception"] | str = "exception"
-        try:
-            with _source_game_timeout(args.timeout_seconds):
-                result = run_game(
-                    list(scope.red_heroes),
-                    list(scope.blue_heroes),
-                    build_agents(world_seed),
-                    map_path=DEFAULT_MAP,
-                    game_type=scope.game_type,
-                    seed=world_seed,
-                    max_steps=args.max_steps,
-                    decision_observer=observer,
-                )
-            reason = result.reason
-        except SourceGameTimeout:
-            reason = "wall_clock_timeout"
-        except BaseException:
-            recorder.close()
-            _append_checkpoint(
-                checkpoint, _checkpoint_row(config_id, game_id, world_seed, None, "exception")
+    requested_seeds = range(args.seed_start, args.seed_end)
+    resumed = sum(seed in requested_seeds for seed in successful.values())
+    outcomes = Counter(
+        row.winner or "draw"
+        for row in rows
+        if row.config_id == config_id
+        and row.completed
+        and row.reason == "game_over"
+        and row.world_seed in requested_seeds
+    )
+    with tqdm(
+        total=len(requested_seeds),
+        initial=resumed,
+        desc="Generating",
+        unit="game",
+        disable=not args.progress,
+    ) as progress:
+        progress.set_postfix(dict(outcomes))
+        for world_seed in requested_seeds:
+            game_id = _identity({"generator_config_id": config_id, "world_seed": world_seed})
+            if game_id in successful:
+                continue
+            fragment = _fragment_path(_fragment_dir(out), game_id)
+            fragment.unlink(missing_ok=True)
+            recorder = JointDatasetRecorder(
+                fragment,
+                game_id=game_id,
+                world_seed=world_seed,
+                map_id=scope.map_id,
+                game_type=scope.game_type,
+                red_composition=scope.red_heroes,
+                blue_composition=scope.blue_heroes,
+                generation_id=generation_id,
+                source_revision=revision,
+                dirty_tree_hash=dirty_hash,
+                source_model_digest=None,
+                search_config_id=search_config_id,
+                generator_config_id=config_id,
             )
-            raise
-        finally:
-            recorder.close()
-        row = _checkpoint_row(config_id, game_id, world_seed, result, reason)
-        _append_checkpoint(checkpoint, row)
-        if row.completed:
-            successful[game_id] = world_seed
-        _publish_output(out, successful)
+            observer = HeuristicJointObserver(recorder)
+            result: RunResult | None = None
+            reason: Literal["wall_clock_timeout", "exception"] | str = "exception"
+            try:
+                with _source_game_timeout(args.timeout_seconds):
+                    result = run_game(
+                        list(scope.red_heroes),
+                        list(scope.blue_heroes),
+                        build_agents(world_seed),
+                        map_path=DEFAULT_MAP,
+                        game_type=scope.game_type,
+                        seed=world_seed,
+                        max_steps=args.max_steps,
+                        decision_observer=observer,
+                    )
+                reason = result.reason
+            except SourceGameTimeout:
+                reason = "wall_clock_timeout"
+            except BaseException:
+                recorder.close()
+                _append_checkpoint(
+                    checkpoint, _checkpoint_row(config_id, game_id, world_seed, None, "exception")
+                )
+                raise
+            finally:
+                recorder.close()
+            row = _checkpoint_row(config_id, game_id, world_seed, result, reason)
+            _append_checkpoint(checkpoint, row)
+            if row.completed:
+                successful[game_id] = world_seed
+                outcomes[row.winner or "draw"] += 1
+            else:
+                outcomes[row.reason] += 1
+            progress.set_postfix(dict(outcomes))
+            progress.update()
+    _publish_output(out, successful)
     return 0
 
 

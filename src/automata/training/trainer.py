@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import torch
+from tqdm import tqdm
 
 from automata.models.contracts import ArtifactScope
 from automata.models.shared_encoder.artifacts import export_model_artifact
@@ -398,7 +399,10 @@ def _scope(rows: Sequence[JointDatasetRow]) -> ArtifactScope:
 
 
 def train_joint(
-    config: JointTrainingConfig, *, stop_after_steps: int | None = None
+    config: JointTrainingConfig,
+    *,
+    stop_after_steps: int | None = None,
+    show_progress: bool = True,
 ) -> JointTrainingResult:
     """Train or resume one exact run, exporting inference state only after success."""
     base_manifest: dict[str, Any] = {"schema_version": 1, "status": "RUNNING"}
@@ -460,58 +464,75 @@ def train_joint(
             l2_weight=config.l2_weight,
         )
         invocation_steps = 0
-        while epoch < config.epochs:
-            epoch_batches = _batches(
-                train_game_ids,
-                seed=config.seed,
-                epoch=epoch,
-                size=config.games_per_batch,
-            )
-            while batch_index < len(epoch_batches):
-                rows = _rows_for_games(dataset.rows_by_game, epoch_batches[batch_index])
-                batch = collate_decisions(
-                    [row.observation for row in rows], schema=schema, training=True
+        batch_count = math.ceil(len(train_game_ids) / config.games_per_batch)
+        with tqdm(
+            total=config.epochs * batch_count,
+            initial=step,
+            desc="Training",
+            unit="batch",
+            disable=not show_progress,
+        ) as progress:
+            while epoch < config.epochs:
+                epoch_batches = _batches(
+                    train_game_ids,
+                    seed=config.seed,
+                    epoch=epoch,
+                    size=config.games_per_batch,
                 )
-                policy_targets, value_targets = _targets(rows, batch.candidates.mask.shape[1])
-                model.train()
-                optimizer.zero_grad(set_to_none=True)
-                output = model(batch)
-                loss = joint_policy_value_loss(
-                    output,
-                    legal_mask=batch.candidates.mask,
-                    policy_targets=policy_targets,
-                    value_targets=value_targets,
-                    game_ids=[row.game_id for row in rows],
-                    decision_weights=batch_decision_weights(rows, dataset.rows, decision_weights),
-                    parameters=model.parameters(),
-                    config=loss_config,
-                )
-                loss.total.backward()
-                clip_gradients(model.parameters(), config.max_gradient_norm)
-                optimizer.step()
-                batch_index += 1
-                step += 1
-                invocation_steps += 1
-                next_epoch, next_batch = epoch, batch_index
-                if next_batch == len(epoch_batches):
-                    next_epoch, next_batch = epoch + 1, 0
-                _save_checkpoint(
-                    config.checkpoint_path,
-                    _checkpoint_payload(
-                        identity=identity,
-                        model=model,
-                        optimizer=optimizer,
-                        epoch=next_epoch,
-                        batch_index=next_batch,
-                        step=step,
-                    ),
-                )
-                if stop_after_steps is not None and invocation_steps >= stop_after_steps:
-                    interrupted = {**base_manifest, "status": "INTERRUPTED", "step": step}
-                    _atomic_bytes(config.run_manifest_path, _canonical(interrupted))
-                    return JointTrainingResult(status="INTERRUPTED", step=step)
-            epoch += 1
-            batch_index = 0
+                while batch_index < len(epoch_batches):
+                    rows = _rows_for_games(dataset.rows_by_game, epoch_batches[batch_index])
+                    batch = collate_decisions(
+                        [row.observation for row in rows], schema=schema, training=True
+                    )
+                    policy_targets, value_targets = _targets(rows, batch.candidates.mask.shape[1])
+                    model.train()
+                    optimizer.zero_grad(set_to_none=True)
+                    output = model(batch)
+                    loss = joint_policy_value_loss(
+                        output,
+                        legal_mask=batch.candidates.mask,
+                        policy_targets=policy_targets,
+                        value_targets=value_targets,
+                        game_ids=[row.game_id for row in rows],
+                        decision_weights=batch_decision_weights(
+                            rows, dataset.rows, decision_weights
+                        ),
+                        parameters=model.parameters(),
+                        config=loss_config,
+                    )
+                    loss.total.backward()
+                    clip_gradients(model.parameters(), config.max_gradient_norm)
+                    optimizer.step()
+                    batch_index += 1
+                    step += 1
+                    invocation_steps += 1
+                    next_epoch, next_batch = epoch, batch_index
+                    if next_batch == len(epoch_batches):
+                        next_epoch, next_batch = epoch + 1, 0
+                    _save_checkpoint(
+                        config.checkpoint_path,
+                        _checkpoint_payload(
+                            identity=identity,
+                            model=model,
+                            optimizer=optimizer,
+                            epoch=next_epoch,
+                            batch_index=next_batch,
+                            step=step,
+                        ),
+                    )
+                    progress.set_postfix(
+                        epoch=f"{epoch + 1}/{config.epochs}",
+                        loss=float(loss.total.detach()),
+                        policy=float(loss.policy.detach()),
+                        value=float(loss.value.detach()),
+                    )
+                    progress.update()
+                    if stop_after_steps is not None and invocation_steps >= stop_after_steps:
+                        interrupted = {**base_manifest, "status": "INTERRUPTED", "step": step}
+                        _atomic_bytes(config.run_manifest_path, _canonical(interrupted))
+                        return JointTrainingResult(status="INTERRUPTED", step=step)
+                epoch += 1
+                batch_index = 0
 
         metric_splits: tuple[SplitName, ...] = (
             "train",
@@ -557,6 +578,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--games-per-batch", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--dataset-seed-purpose", default="bootstrap")
+    parser.add_argument(
+        "--no-progress", dest="progress", action="store_false", help="disable progress output"
+    )
     return parser
 
 
@@ -574,7 +598,8 @@ def main(argv: list[str] | None = None) -> int:
             games_per_batch=args.games_per_batch,
             learning_rate=args.learning_rate,
             dataset_seed_purpose=args.dataset_seed_purpose,
-        )
+        ),
+        show_progress=args.progress,
     )
     return 0
 

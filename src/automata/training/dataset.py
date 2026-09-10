@@ -9,12 +9,11 @@ generation layer rather than this dataset contract.
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import math
 import os
 import tempfile
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, TracebackType
@@ -277,8 +276,12 @@ def write_joint_dataset(
             temporary.unlink(missing_ok=True)
 
 
-@dataclass(frozen=True, slots=True)
-class _PendingDecision:
+class _PendingDecision(BaseModel):
+    """Versioned serialized representation held between decision and outcome."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    schema_version: Literal[1] = 1
     observation: DecisionObservation
     policy_source: PolicySource
     policy_target: tuple[float, ...]
@@ -288,7 +291,7 @@ class _PendingDecision:
 
 
 class JointDatasetRecorder:
-    """Buffer one complete game and publish it to a new JSONL destination."""
+    """Spool one game to disk and publish it only after a terminal outcome."""
 
     def __init__(
         self,
@@ -310,6 +313,7 @@ class JointDatasetRecorder:
         self._path = Path(path)
         if self._path.exists():
             raise FileExistsError(f"joint dataset destination already exists: {self._path}")
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         self._identity: dict[str, Any] = {
             "game_id": game_id,
             "world_seed": world_seed,
@@ -324,7 +328,19 @@ class JointDatasetRecorder:
             "search_config_id": search_config_id,
             "generator_config_id": generator_config_id,
         }
-        self._buffer: list[_PendingDecision] = []
+        # Intentionally remains open for the recorder's multi-call lifetime.
+        spool = tempfile.NamedTemporaryFile(  # noqa: SIM115
+            mode="w+b",
+            dir=self._path.parent,
+            prefix=f".{self._path.name}.",
+            suffix=".pending.jsonl.zst",
+            delete=False,
+        )
+        self._spool_path = Path(spool.name)
+        self._spool_file: Any | None = spool
+        compressor = zstandard.ZstdCompressor(level=3, threads=0, write_checksum=True)
+        self._spool_writer: Any | None = compressor.stream_writer(spool, closefd=False)
+        self._decision_count = 0
         self._closed = False
 
     def record_decision(
@@ -337,42 +353,48 @@ class JointDatasetRecorder:
         selected_selection: JsonValue,
         action_stats: Sequence[SearchActionTarget] | None = None,
     ) -> None:
-        """Buffer an immutable pre-decision observation and aligned target."""
+        """Validate and immediately serialize one immutable pending decision."""
         if self._closed:
             raise RuntimeError("joint dataset recorder is closed")
         pending = _PendingDecision(
-            observation=observation.model_copy(deep=True),
+            schema_version=SCHEMA_VERSION,
+            observation=observation,
             policy_source=policy_source,
             policy_target=tuple(float(value) for value in policy_target),
             selected_candidate_id=selected_candidate_id,
             selected_selection=selected_selection,
-            action_stats=(
-                tuple(action.model_copy(deep=True) for action in action_stats)
-                if action_stats is not None
-                else None
-            ),
+            action_stats=tuple(action_stats) if action_stats is not None else None,
         )
         # Validate everything available before a terminal label without
         # weakening the completed-row contract.
-        self._build_row(pending, len(self._buffer), terminal_winner=None)
-        self._buffer.append(pending)
+        self._build_row(pending, self._decision_count, terminal_winner=None)
+        payload = canonical_json_bytes(pending) + b"\n"
+        writer = self._spool_writer
+        if writer is None:  # pragma: no cover - guarded by the closed check
+            raise RuntimeError("joint dataset recorder spool is closed")
+        writer.write(payload)
+        # Bound zstd's in-process buffering and make spool growth observable.
+        writer.flush(zstandard.FLUSH_BLOCK)
+        self._decision_count += 1
 
     def record_outcome(self, *, winner: str | None, rounds: int, reason: str) -> None:
         """Publish only a normal terminal game; all other outcomes are discarded."""
         del rounds
         if self._closed:
             raise RuntimeError("joint dataset recorder is closed")
-        pending, self._buffer = self._buffer, []
         self._closed = True
-        if reason != "game_over" or not pending:
-            return
-        if winner not in {None, "RED", "BLUE"}:
-            raise ValueError("terminal winner must be RED, BLUE, or None for a draw")
-        rows = tuple(
-            self._build_row(item, index, terminal_winner=winner)
-            for index, item in enumerate(pending)
-        )
-        self._publish(rows)
+        try:
+            self._close_spool_writer()
+            if reason != "game_over" or not self._decision_count:
+                return
+            if winner not in {None, "RED", "BLUE"}:
+                raise ValueError("terminal winner must be RED, BLUE, or None for a draw")
+            self._publish(
+                self._build_row(item, index, terminal_winner=winner)
+                for index, item in enumerate(self._iter_pending())
+            )
+        finally:
+            self._spool_path.unlink(missing_ok=True)
 
     def _build_row(
         self,
@@ -405,13 +427,42 @@ class JointDatasetRecorder:
             value_target=typed_value,
         )
 
-    def _publish(self, rows: tuple[JointDatasetRow, ...]) -> None:
+    def _iter_pending(self) -> Iterator[_PendingDecision]:
+        for line_number, raw_line in enumerate(_iter_canonical_lines(self._spool_path), 1):
+            try:
+                pending = _PendingDecision.model_validate_json(raw_line)
+            except ValueError as exc:
+                raise ValueError(f"invalid pending decision {line_number}: {exc}") from exc
+            if raw_line != canonical_json_bytes(pending):
+                raise ValueError(f"invalid pending decision {line_number}: non-canonical JSON")
+            yield pending
+
+    def _publish(self, rows: Iterable[JointDatasetRow]) -> None:
         write_joint_dataset(self._path, rows, overwrite=False)
 
+    def _close_spool_writer(self) -> None:
+        writer, self._spool_writer = self._spool_writer, None
+        spool, self._spool_file = self._spool_file, None
+        try:
+            if writer is not None:
+                writer.close()
+        finally:
+            if spool is not None:
+                try:
+                    spool.flush()
+                    os.fsync(spool.fileno())
+                finally:
+                    spool.close()
+
     def close(self) -> None:
-        """Discard an unfinished buffered game."""
-        self._buffer.clear()
+        """Discard an unfinished spooled game."""
+        if self._closed:
+            return
         self._closed = True
+        try:
+            self._close_spool_writer()
+        finally:
+            self._spool_path.unlink(missing_ok=True)
 
     def __enter__(self) -> JointDatasetRecorder:
         return self
@@ -426,30 +477,52 @@ class JointDatasetRecorder:
         self.close()
 
 
-def load_joint_dataset(path: str | Path) -> JointDataset:
-    """Load strict canonical JSONL, rejecting truncation and cross-row conflicts."""
-    source = Path(path)
-    payload = source.read_bytes()
-    if _is_compressed(source):
-        try:
-            with zstandard.ZstdDecompressor().stream_reader(
-                io.BytesIO(payload), read_across_frames=True
-            ) as reader:
-                payload = reader.read()
-        except zstandard.ZstdError as exc:
-            raise ValueError(f"invalid compressed joint dataset: {exc}") from exc
-    if payload and not payload.endswith(b"\n"):
-        raise ValueError("joint dataset has a truncated final line")
-    if not payload:
-        raise ValueError("joint dataset is empty")
+def _iter_canonical_lines(path: Path) -> Iterator[bytes]:
+    """Yield complete raw lines and close all file/decompression resources."""
+    try:
+        with path.open("rb") as source:
+            if _is_compressed(path):
+                decompressor = zstandard.ZstdDecompressor().decompressobj()
+                pending = b""
+                while chunk := source.read(128 * 1024):
+                    pending += decompressor.decompress(chunk)
+                    while b"\n" in pending:
+                        raw_line, pending = pending.split(b"\n", 1)
+                        yield raw_line
+                    if decompressor.unused_data:
+                        raise ValueError("invalid compressed joint dataset: trailing frame data")
+                pending += decompressor.flush()
+                while b"\n" in pending:
+                    raw_line, pending = pending.split(b"\n", 1)
+                    yield raw_line
+                if not decompressor.eof:
+                    raise ValueError("invalid compressed joint dataset: truncated zstd frame")
+                if pending:
+                    raise ValueError("joint dataset has a truncated final line")
+            else:
+                while raw_line := source.readline():
+                    if not raw_line.endswith(b"\n"):
+                        raise ValueError("joint dataset has a truncated final line")
+                    yield raw_line[:-1]
+    except zstandard.ZstdError as exc:
+        raise ValueError(f"invalid compressed joint dataset: {exc}") from exc
 
-    rows: list[JointDatasetRow] = []
+
+def iter_joint_dataset(path: str | Path) -> Iterator[JointDatasetRow]:
+    """Stream strict rows; cross-row/end-of-stream errors may follow yielded rows.
+
+    Consumers performing atomic publication must exhaust the iterator before
+    replacing their destination. The generator closes its input when exhausted,
+    explicitly closed, or garbage-collected.
+    """
+    source = Path(path)
     seen_decisions: set[str] = set()
     identities: dict[str, tuple[object, ...]] = {}
     terminals: dict[str, tuple[TerminalWinner, int]] = {}
     seeds: dict[int, str] = {}
-    grouped: dict[str, list[JointDatasetRow]] = {}
-    for line_number, raw_line in enumerate(payload.splitlines(), 1):
+    next_indexes: dict[str, int] = {}
+    row_count = 0
+    for line_number, raw_line in enumerate(_iter_canonical_lines(source), 1):
         if not raw_line:
             raise ValueError(f"invalid joint row {line_number}: blank rows are prohibited")
         try:
@@ -478,15 +551,26 @@ def load_joint_dataset(path: str | Path) -> JointDataset:
                 f"invalid joint row {line_number}: world seed belongs to multiple games"
             )
         seeds[row.world_seed] = row.game_id
-        rows.append(row)
+        expected_index = next_indexes.get(row.game_id, 0)
+        if row.decision_index != expected_index:
+            raise ValueError(f"game {row.game_id!r} decision indexes are not contiguous from zero")
+        next_indexes[row.game_id] = expected_index + 1
+        row_count += 1
+        yield row
+    if not row_count:
+        raise ValueError("joint dataset is empty")
+
+
+def load_joint_dataset(path: str | Path) -> JointDataset:
+    """Materialize the strict streaming validator for indexed training use."""
+    rows = list(iter_joint_dataset(path))
+    grouped: dict[str, list[JointDatasetRow]] = {}
+    digest_builder = hashlib.sha256()
+    for row in rows:
+        digest_builder.update(canonical_json_bytes(row) + b"\n")
         grouped.setdefault(row.game_id, []).append(row)
 
-    for game_id, game_rows in grouped.items():
-        if [row.decision_index for row in game_rows] != list(range(len(game_rows))):
-            raise ValueError(f"game {game_id!r} decision indexes are not contiguous from zero")
-
-    canonical = b"".join(canonical_json_bytes(row) + b"\n" for row in rows)
-    digest = hashlib.sha256(canonical).hexdigest()
+    digest = digest_builder.hexdigest()
     game_ids = tuple(grouped)
     immutable_groups = MappingProxyType(
         {game_id: tuple(game_rows) for game_id, game_rows in grouped.items()}
@@ -506,6 +590,7 @@ __all__ = [
     "JointDatasetMetadata",
     "JointDatasetRecorder",
     "JointDatasetRow",
+    "iter_joint_dataset",
     "joint_decision_id",
     "load_joint_dataset",
     "write_joint_dataset",

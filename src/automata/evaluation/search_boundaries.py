@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from tqdm import tqdm
+
 
 class SearchBoundary(StrEnum):
     """The four predeclared search horizons compared by evaluation."""
@@ -422,12 +424,26 @@ def run_boundary_benchmark(
     *,
     checkpoint_path: Path,
     run_case: Callable[[BoundaryCase], BoundaryMeasurement],
+    show_progress: bool = False,
 ) -> BoundaryBenchmarkResult:
     """Run missing cases in order, atomically checkpointing each measurement."""
 
     loaded = load_boundary_benchmark(config, checkpoint_path)
     observations = list(loaded.observations)
-    for case in config.cases()[len(observations) :]:
+    all_cases = config.cases()
+    missing_cases = all_cases[len(observations) :]
+    cases = (
+        tqdm(
+            missing_cases,
+            desc="Search boundaries",
+            initial=len(observations),
+            total=len(all_cases),
+            unit="case",
+        )
+        if show_progress
+        else missing_cases
+    )
+    for case in cases:
         measurement = run_case(case)
         if not isinstance(measurement, BoundaryMeasurement):
             raise ValueError("run_case must return BoundaryMeasurement")

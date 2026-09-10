@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import io
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from automata.harness.game_runner import RunResult
 from automata.models.contracts import (
     DecisionObservation,
     EncodedCandidate,
@@ -15,7 +15,7 @@ from automata.models.contracts import (
     Viewer,
     canonical_json_bytes,
 )
-from automata.scripts import run_parallel
+from automata.scripts import generate_joint_bootstrap, run_parallel
 from automata.scripts.generate_joint_bootstrap import CheckpointRow
 from automata.scripts.run_parallel import Shard
 from automata.training.dataset import (
@@ -178,7 +178,69 @@ def test_joint_bootstrap_builds_four_balanced_isolated_workers_by_default(
         assert Path(_option(command, "--checkpoint")).parent == Path(f"{checkpoint}.shards")
 
 
-def test_joint_bootstrap_can_disable_parent_progress_without_forwarding_option(
+def test_joint_bootstrap_parent_uses_the_workers_exact_generator_config_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(run_parallel, "source_identity", lambda **_kw: ("revision", "dirty"))
+
+    def run_workers(commands: list[tuple[Shard, list[str], Path]], **kwargs: object) -> None:
+        seen["command"] = commands[0][1]
+        seen.update(kwargs)
+
+    monkeypatch.setattr(run_parallel, "_run_joint_workers", run_workers)
+    monkeypatch.setattr(run_parallel, "merge_joint_bootstrap", lambda *_args, **_kwargs: 0)
+
+    assert (
+        run_parallel.main(
+            [
+                "joint-bootstrap",
+                "--out",
+                str(tmp_path / "out.jsonl.zst"),
+                "--checkpoint",
+                str(tmp_path / "checkpoint.jsonl"),
+                "--seed-start",
+                "10000",
+                "--seed-end",
+                "10001",
+                "--",
+                "--target-source",
+                "heuristic",
+                "--target-recipe",
+                "one-hot-exact-choice",
+                "--max-steps",
+                "321",
+                "--timeout-seconds",
+                "45.5",
+            ]
+        )
+        == 0
+    )
+
+    command = seen["command"]
+    assert isinstance(command, list)
+    generated: dict[str, object] = {}
+
+    class RecorderSpy:
+        def __init__(self, _path: Path, **kwargs: object) -> None:
+            generated.update(kwargs)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(generate_joint_bootstrap, "JointDatasetRecorder", RecorderSpy)
+    monkeypatch.setattr(generate_joint_bootstrap, "_publish_output", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        generate_joint_bootstrap,
+        "run_game",
+        lambda *_a, **_kw: RunResult("RED", 1, 1, 1, "game_over"),
+    )
+    module_index = command.index("automata.scripts.generate_joint_bootstrap")
+    assert generate_joint_bootstrap.main(command[module_index + 1 :]) == 0
+    assert seen["config_id"] == generated["generator_config_id"]
+
+
+def test_joint_bootstrap_disables_child_progress_and_can_disable_parent_progress(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: dict[str, object] = {}
@@ -186,7 +248,7 @@ def test_joint_bootstrap_can_disable_parent_progress_without_forwarding_option(
 
     def run_workers(commands: list[tuple[Shard, list[str], Path]], **kwargs: object) -> None:
         seen.update(kwargs)
-        assert all("--no-progress" not in command for _, command, _ in commands)
+        assert all("--no-progress" in command for _, command, _ in commands)
 
     monkeypatch.setattr(run_parallel, "_run_joint_workers", run_workers)
     monkeypatch.setattr(run_parallel, "merge_joint_bootstrap", lambda *_args, **_kwargs: 0)
@@ -208,58 +270,18 @@ def test_joint_bootstrap_can_disable_parent_progress_without_forwarding_option(
             "--",
             "--target-source",
             "heuristic",
+            "--target-recipe",
+            "one-hot-exact-choice",
+            "--max-steps",
+            "123",
+            "--timeout-seconds",
+            "30",
         ]
     )
 
     assert status == 0
     assert seen["show_progress"] is False
     assert seen["progress_interval"] == 7.5
-
-
-def test_progress_reporter_renders_tty_progress_in_place_and_finishes_with_newline() -> None:
-    stream = io.StringIO()
-    reporter = run_parallel.ProgressReporter(
-        total=8,
-        workers=4,
-        stream=stream,
-        clock=lambda: 10.0,
-        interactive=True,
-    )
-    reporter.report(run_parallel.ProgressCounts(success=2), active_workers=4)
-    reporter.clock = lambda: 14.0
-    reporter.report(run_parallel.ProgressCounts(success=5, failed=1), active_workers=2)
-    reporter.close(run_parallel.ProgressCounts(success=5, failed=1), active_workers=0)
-
-    text = stream.getvalue()
-    assert "\r\033[2K[" in text
-    assert "6/8" in text
-    assert "75.0%" in text
-    assert "workers 2/4" in text
-    assert "1.00 games/s" in text
-    assert "ETA 2s" in text
-    assert "ok 5" in text
-    assert "failed 1" in text
-    assert text.endswith("\n")
-
-
-def test_progress_reporter_emits_stable_plain_text_without_control_characters() -> None:
-    stream = io.StringIO()
-    reporter = run_parallel.ProgressReporter(
-        total=10,
-        workers=3,
-        stream=stream,
-        clock=lambda: 20.0,
-        interactive=False,
-    )
-
-    reporter.report(run_parallel.ProgressCounts(success=4, failed=1, timed_out=1), active_workers=3)
-
-    assert stream.getvalue() == (
-        "joint-bootstrap progress [############--------] 6/10 60.0% "
-        "workers 3/3 0.00 games/s ETA ? ok 4 failed 1 timeout 1\n"
-    )
-    assert "\033" not in stream.getvalue()
-    assert "\r" not in stream.getvalue()
 
 
 def test_checkpoint_progress_counts_resumed_and_latest_terminal_outcomes(tmp_path: Path) -> None:
@@ -309,63 +331,34 @@ def test_checkpoint_progress_counts_resumed_and_latest_terminal_outcomes(tmp_pat
             turns=5,
             steps=90,
         ),
+        CheckpointRow(
+            config_id="old-config",
+            game_id="old-success",
+            world_seed=1,
+            completed=False,
+            reason="wall_clock_timeout",
+            winner=None,
+            rounds=None,
+            turns=None,
+            steps=None,
+        ),
+        CheckpointRow(
+            config_id="old-config",
+            game_id="old-only",
+            world_seed=4,
+            completed=True,
+            reason="game_over",
+            winner="RED",
+            rounds=1,
+            turns=1,
+            steps=1,
+        ),
     )
     checkpoint.write_bytes(b"".join(canonical_json_bytes(row) + b"\n" for row in rows))
 
-    assert run_parallel.checkpoint_progress([checkpoint]) == run_parallel.ProgressCounts(
-        success=2, failed=1, timed_out=0
-    )
-
-
-def test_joint_worker_reporting_starts_from_resumed_records_and_keeps_failure_visible(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    checkpoint = tmp_path / "part.games.jsonl"
-    checkpoint.write_bytes(
-        canonical_json_bytes(
-            CheckpointRow(
-                config_id="config",
-                game_id="resumed",
-                world_seed=10,
-                completed=False,
-                reason="wall_clock_timeout",
-                winner=None,
-                rounds=None,
-                turns=None,
-                steps=None,
-            )
-        )
-        + b"\n"
-    )
-
-    class FailedProcess:
-        pid = 123
-
-        def poll(self) -> int:
-            return 7
-
-        def terminate(self) -> None:
-            pytest.fail("finished process must not be terminated")
-
-    monkeypatch.setattr(run_parallel.subprocess, "Popen", lambda *_args, **_kwargs: FailedProcess())
-    stream = io.StringIO()
-    command = (Shard(index=0, start=10, count=1), ["worker"], tmp_path / "worker.log")
-
-    with pytest.raises(RuntimeError, match=r"shard 0 exited 7; inspect .*worker\.log"):
-        run_parallel._run_joint_workers(
-            [command],
-            checkpoints=[checkpoint],
-            total=1,
-            workers=1,
-            stream=stream,
-            clock=lambda: 5.0,
-            sleep=lambda _seconds: None,
-        )
-
-    progress_lines = [line for line in stream.getvalue().splitlines() if " progress " in line]
-    assert len(progress_lines) == 2
-    assert all("1/1" in line and "timeout 1" in line for line in progress_lines)
-    assert stream.getvalue().endswith("\n")
+    assert run_parallel.checkpoint_progress(
+        [checkpoint], expected_seeds={1, 2, 3, 4}, config_id="config"
+    ) == run_parallel.ProgressCounts(success=2, failed=1, timed_out=0)
 
 
 def test_joint_merge_validates_checkpoints_deduplicates_and_sorts(tmp_path: Path) -> None:
@@ -429,6 +422,22 @@ def test_joint_merge_rejects_orphan_without_replacing_existing_output(tmp_path: 
     assert output.read_bytes() == b"previous\n"
 
 
+def test_joint_merge_late_source_corruption_does_not_replace_output(tmp_path: Path) -> None:
+    row = _row(10)
+    part, checkpoint = tmp_path / "part.jsonl", tmp_path / "games.jsonl"
+    part.write_bytes(canonical_json_bytes(row) + b"\n" + b'{"truncated":')
+    _checkpoint(checkpoint, row)
+    output = tmp_path / "merged.jsonl"
+    output.write_bytes(b"previous\n")
+
+    with pytest.raises(ValueError):
+        run_parallel.merge_joint_bootstrap(
+            [part], [checkpoint], output, expected_seeds=range(10, 11)
+        )
+
+    assert output.read_bytes() == b"previous\n"
+
+
 def test_joint_worker_failure_is_operational_and_preserves_resume_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -463,6 +472,12 @@ def test_joint_worker_failure_is_operational_and_preserves_resume_artifacts(
             "--",
             "--target-source",
             "heuristic",
+            "--target-recipe",
+            "one-hot-exact-choice",
+            "--max-steps",
+            "123",
+            "--timeout-seconds",
+            "30",
         ]
     )
 

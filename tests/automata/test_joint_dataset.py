@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from automata.models.contracts import (
 from automata.training.dataset import (
     JointDatasetRecorder,
     JointDatasetRow,
+    iter_joint_dataset,
     joint_decision_id,
     load_joint_dataset,
     write_joint_dataset,
@@ -236,11 +238,12 @@ def test_decision_id_is_stable_from_game_identity_and_decision_index() -> None:
 def test_recorder_publishes_complete_game_atomically_with_contiguous_indexes(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "joint.jsonl"
+    path = tmp_path / "joint.jsonl.zst"
     recorder = _recorder(path)
     _record_one(recorder, perspective="RED")
     _record_one(recorder, perspective="BLUE")
     assert not path.exists()
+    [spool] = list(tmp_path.glob(".*.pending.jsonl.zst"))
 
     recorder.record_outcome(winner="RED", rounds=4, reason="game_over")
 
@@ -250,6 +253,7 @@ def test_recorder_publishes_complete_game_atomically_with_contiguous_indexes(
     assert dataset.game_ids == ("game-7",)
     assert tuple(dataset.rows_by_game) == ("game-7",)
     assert dataset.metadata.dataset_digest == dataset.digest
+    assert not spool.exists()
     assert not list(tmp_path.glob("*.tmp"))
 
 
@@ -258,10 +262,12 @@ def test_recorder_discards_every_incomplete_game(tmp_path: Path, reason: str) ->
     path = tmp_path / f"{reason}.jsonl"
     recorder = _recorder(path)
     _record_one(recorder)
+    [spool] = list(tmp_path.glob(".*.pending.jsonl.zst"))
 
     recorder.record_outcome(winner=None, rounds=2, reason=reason)
 
     assert not path.exists()
+    assert not spool.exists()
 
 
 def test_recorder_context_exception_and_close_discard_without_publication(tmp_path: Path) -> None:
@@ -276,6 +282,7 @@ def test_recorder_context_exception_and_close_discard_without_publication(tmp_pa
     _record_one(recorder)
     recorder.close()
     assert not close_path.exists()
+    assert not list(tmp_path.glob(".*.pending.jsonl.zst"))
 
 
 def test_recorder_refuses_overwrite_and_equal_input_produces_equal_bytes(tmp_path: Path) -> None:
@@ -316,6 +323,32 @@ def test_dataset_digest_is_semantic_across_plain_and_compressed_files(tmp_path: 
     assert compressed_dataset.canonical_bytes() == plain.read_bytes()
     assert compressed_dataset.digest == plain_dataset.digest
     assert compressed.read_bytes() != plain.read_bytes()
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".jsonl.zst"])
+def test_streaming_iterator_matches_loader_and_semantic_digest(tmp_path: Path, suffix: str) -> None:
+    path = tmp_path / f"joint{suffix}"
+    rows = (_row(), _row(decision_index=1))
+    write_joint_dataset(path, rows)
+
+    streamed = tuple(iter_joint_dataset(path))
+    digest = hashlib.sha256(
+        b"".join(canonical_json_bytes(row) + b"\n" for row in streamed)
+    ).hexdigest()
+
+    assert streamed == load_joint_dataset(path).rows
+    assert digest == load_joint_dataset(path).digest
+
+
+def test_streaming_iterator_detects_truncation_after_first_yield(tmp_path: Path) -> None:
+    truncated = tmp_path / "truncated.jsonl"
+    truncated.write_bytes(
+        canonical_json_bytes(_row()) + b"\n" + canonical_json_bytes(_row(decision_index=1))
+    )
+    iterator = iter_joint_dataset(truncated)
+    assert next(iterator) == _row()
+    with pytest.raises(ValueError, match="truncated final line"):
+        tuple(iterator)
 
 
 def test_loader_rejects_malformed_compressed_input(tmp_path: Path) -> None:

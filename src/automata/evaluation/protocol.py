@@ -33,6 +33,8 @@ from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Any
 
+from tqdm import tqdm
+
 # Sides used by the schedule; the engine uses upper-case colour names.
 _SIDES: tuple[str, str] = ("RED", "BLUE")
 
@@ -599,6 +601,8 @@ def run_protocol(
     *,
     checkpoint_path: Path,
     run_case: Callable[[GameCase], EvaluationGameResult],
+    show_progress: bool = False,
+    progress_description: str = "Evaluation cases",
 ) -> list[EvaluationGameResult]:
     """Execute ``protocol`` with per-case JSONL checkpointing.
 
@@ -645,13 +649,20 @@ def run_protocol(
                 _atomic_rewrite(checkpoint_path, kept)
             cached = {obs.case_id: obs for obs in kept}
 
-        results: list[EvaluationGameResult] = []
+        missing_cases = [case for case in all_cases if case.case_id not in cached]
+        cases = (
+            tqdm(
+                missing_cases,
+                desc=progress_description,
+                initial=len(cached),
+                total=len(all_cases),
+                unit="case",
+            )
+            if show_progress
+            else missing_cases
+        )
         with checkpoint_path.open("a", encoding="utf-8") as fh:
-            for case in all_cases:
-                hit = cached.get(case.case_id)
-                if hit is not None:
-                    results.append(hit)
-                    continue
+            for case in cases:
                 if timeout_seconds is not None:
                     assert timeout_seconds is not None  # for mypy
                     # Timed cases run in a spawned one-shot child. On child
@@ -679,9 +690,8 @@ def run_protocol(
                 fh.flush()
                 os.fsync(fh.fileno())
                 cached[obs.case_id] = obs
-                results.append(obs)
 
-        return results
+        return [cached[case.case_id] for case in all_cases]
     finally:
         _release_writer_lock(lock_fd)
 
