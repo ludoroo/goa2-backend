@@ -20,24 +20,31 @@ from tqdm import tqdm
 
 from automata.models.contracts import ArtifactScope
 from automata.models.shared_encoder.artifacts import export_model_artifact
-from automata.models.shared_encoder.batching import collate_decisions
 from automata.models.shared_encoder.model import JointModelConfig, JointPolicyValueModel
 from automata.models.shared_encoder.schema import TensorFeatureSchema
-from automata.training.dataset import JointDataset, JointDatasetRow, load_joint_dataset
+from automata.training.dataset import JointDatasetRow
+from automata.training.indexed_dataset import (
+    IndexedJointDataset,
+    IndexedTrainingChunk,
+    open_indexed_dataset,
+)
+from automata.training.io import TQDM_BAR_FORMAT
 from automata.training.losses import (
     JointLossConfig,
     clip_gradients,
-    equal_game_weights,
     joint_policy_value_loss,
 )
-from automata.training.metrics import PolicyMetricInput, ValueMetricInput, joint_metrics
+from automata.training.metrics import (
+    JointMetricsAccumulator,
+    PolicyMetricInput,
+    ValueMetricInput,
+)
 from automata.training.splits import (
     JointSplitConfig,
     JointSplitManifest,
-    JointSplits,
     SplitName,
-    apply_joint_split_manifest,
-    split_joint_dataset,
+    apply_indexed_joint_split_manifest,
+    split_indexed_joint_dataset,
 )
 
 
@@ -69,10 +76,20 @@ class JointTrainingConfig:
     entropy_weight: float = 0.0
     l2_weight: float = 0.0
     decision_weights_path: Path | None = None
+    dataset_index_path: Path | None = None
+    decisions_per_chunk: int = 32
+    index_workers: int = 4
 
     def validate(self) -> None:
-        if self.epochs <= 0 or self.games_per_batch <= 0:
-            raise ValueError("epochs and games_per_batch must be positive")
+        if (
+            self.epochs <= 0
+            or self.games_per_batch <= 0
+            or self.decisions_per_chunk <= 0
+            or self.index_workers <= 0
+        ):
+            raise ValueError(
+                "epochs, games_per_batch, decisions_per_chunk, and index_workers must be positive"
+            )
         if self.seed < 0:
             raise ValueError("seed must be non-negative")
         if not self.dataset_seed_purpose:
@@ -124,6 +141,8 @@ def _config_identity(config: JointTrainingConfig) -> dict[str, Any]:
         "run_manifest_path",
         "artifact_path",
         "decision_weights_path",
+        "dataset_index_path",
+        "index_workers",
     }
     return {key: value for key, value in asdict(config).items() if key not in excluded}
 
@@ -132,7 +151,9 @@ def _identity_digest(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
 
 
-def _load_or_create_splits(config: JointTrainingConfig, dataset: JointDataset) -> JointSplits:
+def _load_or_create_splits(
+    config: JointTrainingConfig, dataset: IndexedJointDataset
+) -> JointSplitManifest:
     split_config = JointSplitConfig(
         seed=config.seed,
         validation_fraction=config.validation_fraction,
@@ -149,10 +170,14 @@ def _load_or_create_splits(config: JointTrainingConfig, dataset: JointDataset) -
             raise ValueError("split manifest is not canonical JSON")
         if manifest.config != split_config:
             raise ValueError("split manifest configuration mismatch")
-        return apply_joint_split_manifest(dataset, manifest)
-    splits = split_joint_dataset(dataset, config=split_config)
-    _atomic_bytes(path, splits.manifest.canonical_bytes())
-    return splits
+        return apply_indexed_joint_split_manifest(dataset, manifest)
+    manifest = split_indexed_joint_dataset(dataset, config=split_config)
+    _atomic_bytes(path, manifest.canonical_bytes())
+    return manifest
+
+
+def _split_game_ids(manifest: JointSplitManifest, split: SplitName) -> tuple[str, ...]:
+    return tuple(item.game_id for item in manifest.memberships if item.split == split)
 
 
 def _batches(game_ids: Sequence[str], *, seed: int, epoch: int, size: int) -> list[tuple[str, ...]]:
@@ -162,12 +187,6 @@ def _batches(game_ids: Sequence[str], *, seed: int, epoch: int, size: int) -> li
     game_list = list(game_ids)
     shuffled = [game_list[index] for index in order]
     return [tuple(shuffled[index : index + size]) for index in range(0, len(shuffled), size)]
-
-
-def _rows_for_games(
-    rows_by_game: Mapping[str, tuple[JointDatasetRow, ...]], ids: Sequence[str]
-) -> tuple[JointDatasetRow, ...]:
-    return tuple(row for game_id in ids for row in rows_by_game[game_id])
 
 
 def batch_decision_weights(
@@ -187,14 +206,28 @@ def batch_decision_weights(
         raise ValueError("batch row is absent from persisted decision weights") from exc
 
 
+@dataclass(frozen=True, slots=True)
+class _DecisionWeightStore:
+    dataset: IndexedJointDataset
+    persisted: tuple[float, ...] | None
+    digest: str
+
+    def for_chunk(self, game_id: str, offset: int, count: int) -> tuple[float, ...]:
+        game = self.dataset.game(game_id)
+        if offset < 0 or count <= 0 or offset + count > game.row_count:
+            raise ValueError("decision-weight chunk falls outside its indexed game")
+        if self.persisted is None:
+            weight = 1.0 / self.dataset.manifest.game_count / game.row_count
+            return (weight,) * count
+        start = game.global_row_start + offset
+        return self.persisted[start : start + count]
+
+
 def _global_decision_weights(
-    config: JointTrainingConfig, dataset: JointDataset
-) -> tuple[tuple[float, ...], str]:
+    config: JointTrainingConfig, dataset: IndexedJointDataset
+) -> _DecisionWeightStore:
     if config.decision_weights_path is None:
-        derived_weights = equal_game_weights(
-            [row.game_id for row in dataset.rows], like=torch.empty(len(dataset.rows))
-        ).tolist()
-        return tuple(float(value) for value in derived_weights), "derived-equal-game-weights"
+        return _DecisionWeightStore(dataset, None, "derived-equal-game-weights")
     payload = config.decision_weights_path.read_bytes()
     try:
         manifest = json.loads(payload)
@@ -203,51 +236,24 @@ def _global_decision_weights(
     if payload != _canonical(manifest) or manifest.get("dataset_digest") != dataset.digest:
         raise ValueError("decision weights manifest disagrees with the training dataset")
     raw = manifest.get("decision_weights")
-    if not isinstance(raw, list) or len(raw) != len(dataset.rows):
+    if not isinstance(raw, list) or len(raw) != dataset.manifest.row_count:
         raise ValueError("decision weights must align with the complete dataset")
     weights: tuple[float, ...] = tuple(float(value) for value in raw)
     if any(not math.isfinite(value) or value < 0 for value in weights):
         raise ValueError("decision weights must be finite and non-negative")
-    game_totals: dict[str, float] = {}
-    for row, weight in zip(dataset.rows, weights, strict=True):
-        game_totals[row.game_id] = game_totals.get(row.game_id, 0.0) + weight
-    if not game_totals or not all(
-        math.isclose(total, next(iter(game_totals.values())), rel_tol=1e-9, abs_tol=1e-9)
-        for total in game_totals.values()
+    game_totals = [
+        sum(weights[game.global_row_start : game.global_row_start + game.row_count])
+        for game in dataset.manifest.games
+    ]
+    if (
+        not game_totals
+        or game_totals[0] <= 0
+        or not all(
+            math.isclose(total, game_totals[0], rel_tol=1e-9, abs_tol=1e-9) for total in game_totals
+        )
     ):
         raise ValueError("decision weights must give every source game equal influence")
-    return weights, hashlib.sha256(payload).hexdigest()
-
-
-def _targets(rows: Sequence[JointDatasetRow], width: int) -> tuple[torch.Tensor, torch.Tensor]:
-    policy = torch.zeros((len(rows), width), dtype=torch.float32)
-    for index, row in enumerate(rows):
-        policy[index, : len(row.policy_target)] = torch.tensor(row.policy_target)
-    value = torch.tensor([row.value_target for row in rows], dtype=torch.float32)
-    return policy, value
-
-
-def _source_identities(rows: Sequence[JointDatasetRow]) -> list[dict[str, Any]]:
-    values = {
-        (
-            row.generation_id,
-            row.source_revision,
-            row.dirty_tree_hash,
-            row.source_model_digest,
-            row.search_config_id,
-            row.generator_config_id,
-        )
-        for row in rows
-    }
-    names = (
-        "generation_id",
-        "source_revision",
-        "dirty_tree_hash",
-        "source_model_digest",
-        "search_config_id",
-        "generator_config_id",
-    )
-    return [dict(zip(names, value, strict=True)) for value in sorted(values, key=repr)]
+    return _DecisionWeightStore(dataset, weights, hashlib.sha256(payload).hexdigest())
 
 
 def _checkpoint_payload(
@@ -309,90 +315,108 @@ def _restore_checkpoint(
     return epoch, batch_index, step
 
 
-def _metric_inputs(
-    model: JointPolicyValueModel,
-    schema: TensorFeatureSchema,
-    rows: Sequence[JointDatasetRow],
-) -> dict[str, Any]:
-    if not rows:
-        return joint_metrics((), ())
-    model.eval()
-    batch = collate_decisions([row.observation for row in rows], schema=schema, training=True)
-    with torch.no_grad():
-        output = model(batch)
+def _add_metric_inputs(
+    accumulator: JointMetricsAccumulator,
+    output: Any,
+    chunk: IndexedTrainingChunk,
+) -> None:
     policies: list[PolicyMetricInput] = []
     values: list[ValueMetricInput] = []
-    for index, row in enumerate(rows):
-        candidate_count = len(row.policy_target)
-        global_features = next(
-            token.features for token in row.observation.state.tokens if token.kind == "GLOBAL"
-        )
-        perspective_heroes = [
-            token
-            for token in row.observation.state.tokens
-            if token.kind == "HERO" and token.features.get("team_id") == row.perspective_team
-        ]
-        hero_token = next(
-            (
-                token
-                for token in perspective_heroes
-                if token.features.get("is_decision_owner") or token.features.get("is_current_actor")
-            ),
-            perspective_heroes[0] if perspective_heroes else None,
-        )
-        hero = str(hero_token.features["name"]) if hero_token is not None else None
-        candidate_kinds = sorted(
-            {candidate.candidate_id.kind for candidate in row.observation.candidates}
-        )
-        family = "+".join(candidate_kinds)
-        priors: tuple[float, ...] | None = None
-        variances: tuple[float, ...] | None = None
-        if row.action_stats is not None:
-            counts = tuple(float(item.sample_count) for item in row.action_stats)
-            total = sum(counts)
-            priors = tuple(value / total for value in counts) if total else None
-            variances = tuple(float(item.value_variance) for item in row.action_stats)
-        composition = f"{'/'.join(row.red_composition)} vs {'/'.join(row.blue_composition)}"
-        round_bucket = str(global_features["round"]) if "round" in global_features else None
+    for index, metadata in enumerate(chunk.metric_metadata):
+        candidate_count = metadata.candidate_count
         policies.append(
             PolicyMetricInput(
-                game_id=row.game_id,
-                candidate_family=family,
-                target_probabilities=row.policy_target,
+                game_id=chunk.game_ids[index],
+                candidate_family=metadata.candidate_family,
+                target_probabilities=metadata.target_probabilities,
                 predicted_logits=tuple(
                     float(item) for item in output.policy_logits[index, :candidate_count]
                 ),
-                prior_probabilities=priors,
-                q_variances=variances,
-                hero=hero,
-                map_id=row.map_id,
-                composition=composition,
-                round_bucket=round_bucket,
+                prior_probabilities=metadata.prior_probabilities,
+                q_variances=metadata.q_variances,
+                hero=metadata.hero,
+                map_id=metadata.map_id,
+                composition=metadata.composition,
+                round_bucket=metadata.round_bucket,
             )
         )
         values.append(
             ValueMetricInput(
-                game_id=row.game_id,
-                target_value=row.value_target,
+                game_id=chunk.game_ids[index],
+                target_value=int(chunk.value_targets[index]),
                 predicted_value=float(output.value[index]),
-                candidate_family=family,
-                hero=hero,
-                map_id=row.map_id,
-                composition=composition,
-                round_bucket=round_bucket,
+                candidate_family=metadata.candidate_family,
+                hero=metadata.hero,
+                map_id=metadata.map_id,
+                composition=metadata.composition,
+                round_bucket=metadata.round_bucket,
             )
         )
-    return joint_metrics(policies, values)
+    accumulator.update(policies, values)
 
 
-def _scope(rows: Sequence[JointDatasetRow]) -> ArtifactScope:
+def _evaluate_split(
+    model: JointPolicyValueModel,
+    dataset: IndexedJointDataset,
+    game_ids: Sequence[str],
+    *,
+    split: SplitName,
+    show_progress: bool,
+) -> dict[str, Any]:
+    accumulator = JointMetricsAccumulator()
+    model.eval()
+    games = tqdm(
+        game_ids,
+        desc=f"Metrics {split.replace('_', ' ')}",
+        unit="game",
+        bar_format=TQDM_BAR_FORMAT,
+        mininterval=2.0,
+        disable=not show_progress,
+    )
+    with torch.no_grad():
+        for game_id in games:
+            for chunk in dataset.iter_game_training_chunks(game_id):
+                _add_metric_inputs(accumulator, model(chunk.batch), chunk)
+    return accumulator.compute()
+
+
+def _source_identities(dataset: IndexedJointDataset) -> list[dict[str, Any]]:
+    values = {
+        (
+            game.generation_id,
+            game.source_revision,
+            game.dirty_tree_hash,
+            game.source_model_digest,
+            game.search_config_id,
+            game.generator_config_id,
+        )
+        for game in dataset.manifest.games
+    }
+    names = (
+        "generation_id",
+        "source_revision",
+        "dirty_tree_hash",
+        "source_model_digest",
+        "search_config_id",
+        "generator_config_id",
+    )
+    return [dict(zip(names, value, strict=True)) for value in sorted(values, key=repr)]
+
+
+def _scope(dataset: IndexedJointDataset) -> ArtifactScope:
     heroes = tuple(
-        sorted({hero for row in rows for hero in (*row.red_composition, *row.blue_composition)})
+        sorted(
+            {
+                hero
+                for game in dataset.manifest.games
+                for hero in (*game.red_composition, *game.blue_composition)
+            }
+        )
     )
     return ArtifactScope(
         supported_heroes=heroes,
-        supported_maps=tuple(sorted({row.map_id for row in rows})),
-        supported_game_types=tuple(sorted({row.game_type for row in rows})),
+        supported_maps=tuple(sorted({game.map_id for game in dataset.manifest.games})),
+        supported_game_types=tuple(sorted({game.game_type for game in dataset.manifest.games})),
         hero_adapter_versions={"generic": 1, **{hero: 1 for hero in heroes}},
         map_schema_version=1,
     )
@@ -412,11 +436,19 @@ def train_joint(
             raise ValueError("stop_after_steps must be positive")
         if config.artifact_path.exists():
             raise FileExistsError(f"artifact destination already exists: {config.artifact_path}")
-        dataset = load_joint_dataset(config.dataset_path)
-        decision_weights, decision_weights_digest = _global_decision_weights(config, dataset)
-        splits = _load_or_create_splits(config, dataset)
-        train_game_ids = splits.game_ids("train")
-        if not train_game_ids or not splits.rows("validation"):
+        index_path = config.dataset_index_path or Path(f"{config.dataset_path}.index")
+        dataset = open_indexed_dataset(
+            config.dataset_path,
+            index_path,
+            show_progress=show_progress,
+            training_chunk_size=config.decisions_per_chunk,
+            index_workers=config.index_workers,
+        )
+        decision_weights = _global_decision_weights(config, dataset)
+        split_manifest = _load_or_create_splits(config, dataset)
+        train_game_ids = _split_game_ids(split_manifest, "train")
+        validation_game_ids = _split_game_ids(split_manifest, "validation")
+        if not train_game_ids or not validation_game_ids:
             raise ValueError("joint training requires non-empty train and validation splits")
         schema = TensorFeatureSchema.current()
         architecture = JointModelConfig(
@@ -428,20 +460,20 @@ def train_joint(
             message_passing_layers=config.message_passing_layers,
             dropout=config.dropout,
         )
-        source_identities = _source_identities(dataset.rows)
+        source_identities = _source_identities(dataset)
         identity = {
             "dataset_digest": dataset.digest,
-            "split_digest": splits.digest,
-            "split_manifest": splits.manifest.model_dump(mode="json"),
+            "split_digest": split_manifest.digest,
+            "split_manifest": split_manifest.model_dump(mode="json"),
             "schema_digest": schema.digest,
             "config": _config_identity(config),
             "source_identities": source_identities,
-            "decision_weights_digest": decision_weights_digest,
+            "decision_weights_digest": decision_weights.digest,
         }
         provenance = {
             **identity,
-            "dataset_row_count": len(dataset.rows),
-            "dataset_game_count": len(dataset.game_ids),
+            "dataset_row_count": dataset.manifest.row_count,
+            "dataset_game_count": dataset.manifest.game_count,
         }
         base_manifest.update({"config": _config_identity(config), "provenance": provenance})
         _atomic_bytes(config.run_manifest_path, _canonical(base_manifest))
@@ -463,6 +495,11 @@ def train_joint(
             entropy_weight=config.entropy_weight,
             l2_weight=config.l2_weight,
         )
+        chunk_loss_config = JointLossConfig(
+            value_weight=config.value_weight,
+            entropy_weight=config.entropy_weight,
+            l2_weight=0.0,
+        )
         invocation_steps = 0
         batch_count = math.ceil(len(train_game_ids) / config.games_per_batch)
         with tqdm(
@@ -470,6 +507,8 @@ def train_joint(
             initial=step,
             desc="Training",
             unit="batch",
+            bar_format=TQDM_BAR_FORMAT,
+            mininterval=2.0,
             disable=not show_progress,
         ) as progress:
             while epoch < config.epochs:
@@ -480,27 +519,41 @@ def train_joint(
                     size=config.games_per_batch,
                 )
                 while batch_index < len(epoch_batches):
-                    rows = _rows_for_games(dataset.rows_by_game, epoch_batches[batch_index])
-                    batch = collate_decisions(
-                        [row.observation for row in rows], schema=schema, training=True
-                    )
-                    policy_targets, value_targets = _targets(rows, batch.candidates.mask.shape[1])
+                    game_batch = epoch_batches[batch_index]
                     model.train()
                     optimizer.zero_grad(set_to_none=True)
-                    output = model(batch)
-                    loss = joint_policy_value_loss(
-                        output,
-                        legal_mask=batch.candidates.mask,
-                        policy_targets=policy_targets,
-                        value_targets=value_targets,
-                        game_ids=[row.game_id for row in rows],
-                        decision_weights=batch_decision_weights(
-                            rows, dataset.rows, decision_weights
-                        ),
-                        parameters=model.parameters(),
-                        config=loss_config,
-                    )
-                    loss.total.backward()
+                    total_loss = policy_loss = value_loss = 0.0
+                    for game_id in game_batch:
+                        game = dataset.game(game_id)
+                        for chunk in dataset.iter_game_training_chunks(game_id):
+                            game_offset = chunk.global_row_offsets[0] - game.global_row_start
+                            chunk_weights = decision_weights.for_chunk(
+                                game_id, game_offset, chunk.row_count
+                            )
+                            if not any(chunk_weights):
+                                continue
+                            output = model(chunk.batch)
+                            loss = joint_policy_value_loss(
+                                output,
+                                legal_mask=chunk.batch.candidates.mask,
+                                policy_targets=chunk.policy_targets,
+                                value_targets=chunk.value_targets,
+                                game_ids=chunk.game_ids,
+                                decision_weights=chunk_weights,
+                                config=chunk_loss_config,
+                            )
+                            loss.total.backward()
+                            total_loss += float(loss.total.detach())
+                            policy_loss += float(loss.policy.detach())
+                            value_loss += float(loss.value.detach())
+                    if loss_config.l2_weight:
+                        l2 = sum(
+                            (parameter.square().sum() for parameter in model.parameters()),
+                            start=torch.zeros(()),
+                        )
+                        regularization = loss_config.l2_weight * l2
+                        regularization.backward()
+                        total_loss += float(regularization.detach())
                     clip_gradients(model.parameters(), config.max_gradient_norm)
                     optimizer.step()
                     batch_index += 1
@@ -522,9 +575,9 @@ def train_joint(
                     )
                     progress.set_postfix(
                         epoch=f"{epoch + 1}/{config.epochs}",
-                        loss=float(loss.total.detach()),
-                        policy=float(loss.policy.detach()),
-                        value=float(loss.value.detach()),
+                        loss=total_loss,
+                        policy=policy_loss,
+                        value=value_loss,
                     )
                     progress.update()
                     if stop_after_steps is not None and invocation_steps >= stop_after_steps:
@@ -541,13 +594,22 @@ def train_joint(
             "composition_holdout",
             "game_mode_holdout",
         )
-        metrics = {name: _metric_inputs(model, schema, splits.rows(name)) for name in metric_splits}
+        metrics = {
+            name: _evaluate_split(
+                model,
+                dataset,
+                _split_game_ids(split_manifest, name),
+                split=name,
+                show_progress=show_progress,
+            )
+            for name in metric_splits
+        }
         final_provenance = {**provenance, "metrics": metrics, "step": step}
         artifact_manifest = export_model_artifact(
             config.artifact_path,
             model=model,
             schema=schema,
-            scope=_scope(dataset.rows),
+            scope=_scope(dataset),
             runtime_compatibility_version=1,
             provenance=final_provenance,
         )
@@ -576,6 +638,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--games-per-batch", type=int, default=8)
+    parser.add_argument("--decisions-per-chunk", type=int, default=32)
+    parser.add_argument("--dataset-index", type=Path)
+    parser.add_argument("--index-workers", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--dataset-seed-purpose", default="bootstrap")
     parser.add_argument(
@@ -596,6 +661,9 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             epochs=args.epochs,
             games_per_batch=args.games_per_batch,
+            decisions_per_chunk=args.decisions_per_chunk,
+            dataset_index_path=args.dataset_index,
+            index_workers=args.index_workers,
             learning_rate=args.learning_rate,
             dataset_seed_purpose=args.dataset_seed_purpose,
         ),

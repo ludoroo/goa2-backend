@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import zstandard
 from pydantic import ValidationError
 
 from automata.models.contracts import (
@@ -310,7 +311,7 @@ def test_compressed_recorder_round_trip_is_deterministic_and_atomic(tmp_path: Pa
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_dataset_digest_is_semantic_across_plain_and_compressed_files(tmp_path: Path) -> None:
+def test_dataset_digest_matches_validated_rows_across_compression(tmp_path: Path) -> None:
     plain = tmp_path / "joint.jsonl"
     compressed = tmp_path / "joint.jsonl.zst"
     row = _row()
@@ -326,7 +327,9 @@ def test_dataset_digest_is_semantic_across_plain_and_compressed_files(tmp_path: 
 
 
 @pytest.mark.parametrize("suffix", [".jsonl", ".jsonl.zst"])
-def test_streaming_iterator_matches_loader_and_semantic_digest(tmp_path: Path, suffix: str) -> None:
+def test_streaming_iterator_matches_loader_and_validated_row_digest(
+    tmp_path: Path, suffix: str
+) -> None:
     path = tmp_path / f"joint{suffix}"
     rows = (_row(), _row(decision_index=1))
     write_joint_dataset(path, rows)
@@ -338,6 +341,37 @@ def test_streaming_iterator_matches_loader_and_semantic_digest(tmp_path: Path, s
 
     assert streamed == load_joint_dataset(path).rows
     assert digest == load_joint_dataset(path).digest
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".jsonl.zst"])
+def test_strict_loader_accepts_noncanonical_json_and_hashes_exact_validated_bytes(
+    tmp_path: Path, suffix: str
+) -> None:
+    path = tmp_path / f"noncanonical{suffix}"
+    row = _row()
+    raw_line = json.dumps(row.model_dump(mode="json"), ensure_ascii=False).encode()
+    assert raw_line != canonical_json_bytes(row)
+    payload = raw_line + b"\n"
+    path.write_bytes(
+        zstandard.ZstdCompressor().compress(payload) if suffix.endswith(".zst") else payload
+    )
+
+    loaded = load_joint_dataset(path)
+
+    assert loaded.rows == (row,)
+    assert loaded.digest == hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".jsonl.zst"])
+def test_strict_loader_rejects_surrounding_row_whitespace(tmp_path: Path, suffix: str) -> None:
+    path = tmp_path / f"whitespace{suffix}"
+    payload = canonical_json_bytes(_row()) + b"\r\n"
+    path.write_bytes(
+        zstandard.ZstdCompressor().compress(payload) if suffix.endswith(".zst") else payload
+    )
+
+    with pytest.raises(ValueError, match="surrounding whitespace"):
+        load_joint_dataset(path)
 
 
 def test_streaming_iterator_detects_truncation_after_first_yield(tmp_path: Path) -> None:

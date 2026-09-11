@@ -8,12 +8,25 @@ import math
 import pytest
 
 from automata.training.metrics import (
+    JointMetricsAccumulator,
     PolicyMetricInput,
     ValueMetricInput,
     joint_metrics,
     policy_metrics,
     value_metrics,
 )
+
+
+def _assert_metrics_equal(actual: object, expected: object) -> None:
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict)
+        assert actual.keys() == expected.keys()
+        for key, value in expected.items():
+            _assert_metrics_equal(actual[key], value)
+    elif isinstance(expected, float):
+        assert actual == pytest.approx(expected)
+    else:
+        assert actual == expected
 
 
 def test_policy_metrics_are_game_equal_and_grouped_by_candidate_family() -> None:
@@ -120,6 +133,113 @@ def test_policy_metrics_include_optional_search_diagnostics_and_supplied_buckets
     assert list(result["by_map"]) == ["island"]
     assert list(result["by_composition"]) == ["Arien+Wasp|Bain+Misa"]
     assert list(result["by_round"]) == ["4-6"]
+
+
+def test_joint_metrics_accumulator_matches_batch_metrics_incrementally() -> None:
+    policies = [
+        PolicyMetricInput(
+            game_id="long",
+            candidate_family="CARD",
+            target_probabilities=(0.8, 0.2),
+            predicted_logits=(1.0, -0.5),
+            prior_probabilities=(0.1, 0.9),
+            q_variances=(0.2, 0.6),
+            hero="Arien",
+            map_id="island",
+            composition="Arien+Wasp|Bain+Misa",
+            round_bucket="1-3",
+        ),
+        PolicyMetricInput(
+            game_id="short",
+            candidate_family="HEX",
+            target_probabilities=(0.0, 0.5, 0.5),
+            predicted_logits=(-1.0, 0.5, 0.5),
+            hero="Wasp",
+            map_id="island",
+            composition="Arien+Wasp|Bain+Misa",
+            round_bucket="4-6",
+        ),
+        PolicyMetricInput(
+            game_id="long",
+            candidate_family="CARD",
+            target_probabilities=(0.3, 0.7),
+            predicted_logits=(0.4, 0.6),
+            prior_probabilities=(0.3, 0.7),
+            hero="Arien",
+            map_id="cove",
+        ),
+    ]
+    values = [
+        ValueMetricInput(
+            game_id="short",
+            target_value=-1,
+            predicted_value=0.8,
+            candidate_family="HEX",
+            hero="Wasp",
+            map_id="island",
+            composition="Arien+Wasp|Bain+Misa",
+            round_bucket="4-6",
+        ),
+        ValueMetricInput(
+            game_id="long",
+            target_value=1,
+            predicted_value=0.8,
+            candidate_family="CARD",
+            hero="Arien",
+            map_id="island",
+            composition="Arien+Wasp|Bain+Misa",
+            round_bucket="1-3",
+        ),
+        ValueMetricInput(
+            game_id="long",
+            target_value=0,
+            predicted_value=0.0,
+            candidate_family="CARD",
+            hero="Arien",
+            map_id="cove",
+        ),
+    ]
+    accumulator = JointMetricsAccumulator(top_k=2, ece_bins=5, saturation_threshold=0.75)
+
+    # Deliberately add heads and games in different orders; no complete collection is supplied.
+    accumulator.add_policy(policies[0])
+    accumulator.add_value(values[0])
+    accumulator.add_policy(policies[1])
+    accumulator.add_value(values[1])
+    accumulator.add_value(values[2])
+    accumulator.add_policy(policies[2])
+
+    expected = joint_metrics(
+        policies,
+        values,
+        top_k=2,
+        ece_bins=5,
+        saturation_threshold=0.75,
+    )
+    _assert_metrics_equal(accumulator.compute(), expected)
+    _assert_metrics_equal(accumulator.compute()["policy"], policy_metrics(policies, top_k=2))
+    _assert_metrics_equal(
+        accumulator.compute()["value"],
+        value_metrics(values, ece_bins=5, saturation_threshold=0.75),
+    )
+
+
+def test_joint_metrics_accumulator_matches_empty_batch_then_accepts_examples() -> None:
+    accumulator = JointMetricsAccumulator(top_k=1)
+
+    assert accumulator.compute() == joint_metrics([], [], top_k=1)
+
+    policy = PolicyMetricInput(
+        game_id="g1",
+        candidate_family="UNIT",
+        target_probabilities=(1.0, 0.0),
+        predicted_logits=(2.0, 0.0),
+    )
+    value = ValueMetricInput(game_id="g1", target_value=1, predicted_value=0.5)
+    accumulator.add_policy(policy)
+    accumulator.add_value(value)
+
+    _assert_metrics_equal(accumulator.compute(), joint_metrics([policy], [value], top_k=1))
 
 
 def test_value_metrics_are_game_equal_calibrated_and_stratified() -> None:

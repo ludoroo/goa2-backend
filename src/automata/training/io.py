@@ -15,6 +15,11 @@ from typing import Any
 
 from pydantic import BaseModel
 
+TQDM_BAR_FORMAT = (
+    "{desc:<24} {percentage:6.2f}% |{bar:24}| {n_fmt:>8}/{total_fmt:<8} | "
+    "elapsed {elapsed:>8} | remaining {remaining:>8} | {rate_fmt:>14}"
+)
+
 
 def json_value(value: Any) -> Any:
     """Convert supported immutable/configuration objects to JSON values."""

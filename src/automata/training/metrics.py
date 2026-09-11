@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from operator import attrgetter
 from typing import Any, cast
 
@@ -339,7 +339,271 @@ def _probability_distribution(values: Sequence[float], name: str) -> None:
         raise ValueError(f"{name} must be a probability distribution")
 
 
+@dataclass(slots=True)
+class _RunningMean:
+    total: float = 0.0
+    count: int = 0
+
+    def add(self, value: float | None) -> None:
+        if value is not None:
+            self.total += value
+            self.count += 1
+
+    def compute(self) -> float | None:
+        return self.total / self.count if self.count else None
+
+
+@dataclass(slots=True)
+class _PolicyGameMetrics:
+    cross_entropy: _RunningMean = field(default_factory=_RunningMean)
+    top1_accuracy: _RunningMean = field(default_factory=_RunningMean)
+    topk_recall: _RunningMean = field(default_factory=_RunningMean)
+    pairwise_accuracy: _RunningMean = field(default_factory=_RunningMean)
+    entropy: _RunningMean = field(default_factory=_RunningMean)
+    search_overturn: _RunningMean = field(default_factory=_RunningMean)
+    q_variance: _RunningMean = field(default_factory=_RunningMean)
+
+    def add(self, decision: _PolicyDecision) -> None:
+        self.cross_entropy.add(decision.cross_entropy)
+        self.top1_accuracy.add(decision.top1_accuracy)
+        self.topk_recall.add(decision.topk_recall)
+        self.pairwise_accuracy.add(decision.pairwise_accuracy)
+        self.entropy.add(decision.entropy)
+        self.search_overturn.add(decision.search_overturn)
+        self.q_variance.add(decision.q_variance)
+
+
+@dataclass(slots=True)
+class _PolicyAggregate:
+    count: int = 0
+    games: dict[str, _PolicyGameMetrics] = field(default_factory=dict)
+
+    def add(self, game_id: str, decision: _PolicyDecision) -> None:
+        self.count += 1
+        game = self.games.get(game_id)
+        if game is None:
+            game = self.games[game_id] = _PolicyGameMetrics()
+        game.add(decision)
+
+    def compute(self, top_k: int) -> dict[str, Any]:
+        def game_equal_average(name: str) -> float | None:
+            means = [
+                value
+                for game in self.games.values()
+                if (value := getattr(game, name).compute()) is not None
+            ]
+            return sum(means) / len(means) if means else None
+
+        return {
+            "count": self.count,
+            "game_count": len(self.games),
+            "cross_entropy": game_equal_average("cross_entropy"),
+            "top1_accuracy": game_equal_average("top1_accuracy"),
+            f"top{top_k}_recall": game_equal_average("topk_recall"),
+            "pairwise_accuracy": game_equal_average("pairwise_accuracy"),
+            "entropy": game_equal_average("entropy"),
+            "search_overturn_rate": game_equal_average("search_overturn"),
+            "q_variance": game_equal_average("q_variance"),
+        }
+
+
+@dataclass(slots=True)
+class _ValueGameMetrics:
+    count: int
+    log_loss: float
+    brier_score: float
+    accuracy: float
+    saturation_rate: float
+    calibration_differences: list[float]
+
+    @classmethod
+    def empty(cls, ece_bins: int) -> _ValueGameMetrics:
+        return cls(0, 0.0, 0.0, 0.0, 0.0, [0.0] * ece_bins)
+
+
+@dataclass(slots=True)
+class _ValueAggregate:
+    ece_bins: int
+    saturation_threshold: float
+    count: int = 0
+    games: dict[str, _ValueGameMetrics] = field(default_factory=dict)
+
+    def add(self, row: ValueMetricInput) -> None:
+        probability = (row.predicted_value + 1.0) / 2.0
+        target = (row.target_value + 1.0) / 2.0
+        clipped = min(max(probability, 1e-15), 1.0 - 1e-15)
+        game = self.games.get(row.game_id)
+        if game is None:
+            game = self.games[row.game_id] = _ValueGameMetrics.empty(self.ece_bins)
+
+        self.count += 1
+        game.count += 1
+        game.log_loss += -(target * math.log(clipped) + (1.0 - target) * math.log1p(-clipped))
+        game.brier_score += (probability - target) ** 2
+        game.accuracy += float(_sign(row.predicted_value) == row.target_value)
+        game.saturation_rate += float(abs(row.predicted_value) >= self.saturation_threshold)
+        bin_index = min(int(probability * self.ece_bins), self.ece_bins - 1)
+        game.calibration_differences[bin_index] += probability - target
+
+    def compute(self) -> dict[str, Any]:
+        if not self.games:
+            return {
+                "count": 0,
+                "game_count": 0,
+                "log_loss": None,
+                "brier_score": None,
+                "expected_calibration_error": None,
+                "accuracy": None,
+                "saturation_rate": None,
+            }
+
+        game_count = len(self.games)
+
+        def game_equal_average(name: str) -> float:
+            return (
+                sum(getattr(game, name) / game.count for game in self.games.values()) / game_count
+            )
+
+        calibration = sum(
+            abs(
+                sum(
+                    game.calibration_differences[bin_index] / game.count
+                    for game in self.games.values()
+                )
+                / game_count
+            )
+            for bin_index in range(self.ece_bins)
+        )
+        return {
+            "count": self.count,
+            "game_count": game_count,
+            "log_loss": game_equal_average("log_loss"),
+            "brier_score": game_equal_average("brier_score"),
+            "expected_calibration_error": calibration,
+            "accuracy": game_equal_average("accuracy"),
+            "saturation_rate": game_equal_average("saturation_rate"),
+        }
+
+
+_METRIC_DIMENSIONS = (
+    ("by_candidate_family", "candidate_family"),
+    ("by_hero", "hero"),
+    ("by_map", "map_id"),
+    ("by_composition", "composition"),
+    ("by_round", "round_bucket"),
+)
+
+
+class _PolicyMetricsAccumulator:
+    def __init__(self, top_k: int) -> None:
+        self.top_k = top_k
+        self.overall = _PolicyAggregate()
+        self.buckets: dict[str, dict[str, _PolicyAggregate]] = {
+            output_name: {} for output_name, _ in _METRIC_DIMENSIONS
+        }
+
+    def add(self, row: PolicyMetricInput) -> None:
+        decision = _measure_policy(row, self.top_k)
+        self.overall.add(row.game_id, decision)
+        for output_name, attribute in _METRIC_DIMENSIONS:
+            bucket = getattr(row, attribute)
+            if bucket is not None:
+                groups = self.buckets[output_name]
+                aggregate = groups.get(bucket)
+                if aggregate is None:
+                    aggregate = groups[bucket] = _PolicyAggregate()
+                aggregate.add(row.game_id, decision)
+
+    def compute(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"overall": self.overall.compute(self.top_k)}
+        for output_name, _ in _METRIC_DIMENSIONS:
+            groups = self.buckets[output_name]
+            result[output_name] = {
+                bucket: groups[bucket].compute(self.top_k) for bucket in sorted(groups)
+            }
+        return result
+
+
+class _ValueMetricsAccumulator:
+    def __init__(self, ece_bins: int, saturation_threshold: float) -> None:
+        self.ece_bins = ece_bins
+        self.saturation_threshold = saturation_threshold
+        self.overall = self._new_aggregate()
+        self.buckets: dict[str, dict[str, _ValueAggregate]] = {
+            output_name: {} for output_name, _ in _METRIC_DIMENSIONS
+        }
+
+    def _new_aggregate(self) -> _ValueAggregate:
+        return _ValueAggregate(self.ece_bins, self.saturation_threshold)
+
+    def add(self, row: ValueMetricInput) -> None:
+        self.overall.add(row)
+        for output_name, attribute in _METRIC_DIMENSIONS:
+            bucket = getattr(row, attribute)
+            if bucket is not None:
+                groups = self.buckets[output_name]
+                aggregate = groups.get(bucket)
+                if aggregate is None:
+                    aggregate = groups[bucket] = self._new_aggregate()
+                aggregate.add(row)
+
+    def compute(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"overall": self.overall.compute()}
+        for output_name, _ in _METRIC_DIMENSIONS:
+            groups = self.buckets[output_name]
+            result[output_name] = {bucket: groups[bucket].compute() for bucket in sorted(groups)}
+        return result
+
+
+class JointMetricsAccumulator:
+    """Incrementally compute exact game-equal joint metrics without retaining examples.
+
+    The accumulator keeps only per-game summaries for the overall result and populated
+    buckets. Candidate arrays, logits, and individual examples are discarded after each add.
+    """
+
+    def __init__(
+        self,
+        *,
+        top_k: int = 3,
+        ece_bins: int = 10,
+        saturation_threshold: float = 0.95,
+    ) -> None:
+        if top_k <= 0:
+            raise ValueError("top_k must be positive")
+        if ece_bins <= 0:
+            raise ValueError("ece_bins must be positive")
+        if not math.isfinite(saturation_threshold) or not 0.0 <= saturation_threshold <= 1.0:
+            raise ValueError("saturation_threshold must be in [0, 1]")
+        self._policy = _PolicyMetricsAccumulator(top_k)
+        self._value = _ValueMetricsAccumulator(ece_bins, saturation_threshold)
+
+    def add_policy(self, example: PolicyMetricInput) -> None:
+        """Add one policy decision."""
+        self._policy.add(example)
+
+    def add_value(self, example: ValueMetricInput) -> None:
+        """Add one value target and prediction."""
+        self._value.add(example)
+
+    def update(
+        self,
+        policy_examples: Iterable[PolicyMetricInput] = (),
+        value_examples: Iterable[ValueMetricInput] = (),
+    ) -> None:
+        """Add zero or more policy and value examples."""
+        for policy_example in policy_examples:
+            self.add_policy(policy_example)
+        for value_example in value_examples:
+            self.add_value(value_example)
+
+    def compute(self) -> dict[str, Any]:
+        """Return a JSON-safe metrics snapshot; more examples may be added afterward."""
+        return {"policy": self._policy.compute(), "value": self._value.compute()}
+
+
 __all__ = [
+    "JointMetricsAccumulator",
     "PolicyMetricInput",
     "ValueMetricInput",
     "joint_metrics",

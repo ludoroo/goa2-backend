@@ -117,13 +117,48 @@ must not publish an artifact.
 
 Training datasets use transparent Zstandard compression when their path ends in
 `.jsonl.zst`; legacy `.jsonl` datasets remain readable and writable. Dataset
-digests are SHA-256 over canonical, uncompressed JSONL rows, so compression
-settings and container bytes do not change semantic dataset identity. Checkpoint
-and audit JSONL files remain uncompressed. `iter_joint_dataset` strictly validates
+digests are SHA-256 over the exact validated, uncompressed JSONL rows, so
+compression settings and container bytes do not change dataset identity. JSON
+internal whitespace and key ordering are accepted but remain part of that exact
+identity; surrounding row whitespace and CRLF are rejected. The source SHA-256
+and typed validation make a costly canonical round-trip unnecessary. These
+training files are trusted generator output: external producers should use
+`write_joint_dataset`, because duplicate JSON object keys otherwise follow
+pydantic-core's last-key-wins parsing. Checkpoint and audit JSONL files remain uncompressed. `iter_joint_dataset` strictly validates
 rows and cross-row invariants incrementally; consumers must exhaust it because a
 truncation or end-of-stream invariant can be reported after earlier rows were
-yielded. The trainer intentionally still uses materialized, indexed datasets;
-indexed streaming training is deferred.
+yielded.
+
+The trainer builds a disposable per-game index at `<dataset>.index` on first use.
+The index is atomically published, bound to the exact source bytes and tensor
+schema, and retains compressed audit fragments, safe pre-collated tensor chunks,
+and compact split, scope, provenance, row-offset, metric, and digest metadata.
+Schema vectorization and tensor collation happen once during indexing; training
+and metric evaluation load validated tensor-only files with
+`torch.load(..., weights_only=True)`. `--dataset-index` selects another cache location,
+`--index-workers` parallelizes independent per-game tensorization after the
+strict source scan, and `--decisions-per-chunk` controls the memory/throughput
+tradeoff. Each index worker may use roughly 0.75 GiB on the phase-0 dataset. The chunk size
+is part of checkpoint identity and can change bit-exact floating-point results,
+so resumed runs must keep it unchanged. Index paths and compression do not affect
+dataset or split identity.
+
+The source scan remains all-or-nothing. After that scan is complete, the builder
+durably checkpoints each tensorized game in `.<index>.staging`. An interrupted
+or failed retry validates the source, schema, fragments, checkpoint, and chunk
+hashes, then schedules only unfinished games. The final index remains invisible
+until atomic publication, and any previously published index remains untouched.
+
+Budget space for compressed audit fragments and tensor chunks in addition to the
+source dataset (about 6 GiB for the phase-0 bootstrap at chunk size 32).
+Rebuilding an existing index temporarily requires space for both the old and
+replacement indexes. Do not remove `.<index>.staging` while an index builder is
+running; it contains resumable phase-two work and is discarded automatically
+when stale or after successful publication. A persistent `.<index>.lock` file
+serializes builders for the same destination; the file itself is harmless when
+no process holds its advisory lock. The index destination must be a real
+directory path rather than a symlink; select storage elsewhere with an explicit
+`--dataset-index` path.
 
 ## Evaluation and promotion
 

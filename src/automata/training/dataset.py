@@ -13,7 +13,7 @@ import json
 import math
 import os
 import tempfile
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, TracebackType
@@ -428,7 +428,7 @@ class JointDatasetRecorder:
         )
 
     def _iter_pending(self) -> Iterator[_PendingDecision]:
-        for line_number, raw_line in enumerate(_iter_canonical_lines(self._spool_path), 1):
+        for line_number, raw_line in enumerate(_iter_json_lines(self._spool_path), 1):
             try:
                 pending = _PendingDecision.model_validate_json(raw_line)
             except ValueError as exc:
@@ -477,14 +477,22 @@ class JointDatasetRecorder:
         self.close()
 
 
-def _iter_canonical_lines(path: Path) -> Iterator[bytes]:
+def _iter_json_lines(
+    path: Path, *, on_bytes_read: Callable[[int], None] | None = None
+) -> Iterator[bytes]:
     """Yield complete raw lines and close all file/decompression resources."""
     try:
         with path.open("rb") as source:
             if _is_compressed(path):
                 decompressor = zstandard.ZstdDecompressor().decompressobj()
                 pending = b""
-                while chunk := source.read(128 * 1024):
+                # Highly repetitive observations can expand by more than 500x.
+                # Keep compressed reads small so one decompression call cannot
+                # create a game-sized pending buffer before line boundaries are
+                # consumed.
+                while chunk := source.read(8 * 1024):
+                    if on_bytes_read is not None:
+                        on_bytes_read(len(chunk))
                     pending += decompressor.decompress(chunk)
                     while b"\n" in pending:
                         raw_line, pending = pending.split(b"\n", 1)
@@ -501,6 +509,8 @@ def _iter_canonical_lines(path: Path) -> Iterator[bytes]:
                     raise ValueError("joint dataset has a truncated final line")
             else:
                 while raw_line := source.readline():
+                    if on_bytes_read is not None:
+                        on_bytes_read(len(raw_line))
                     if not raw_line.endswith(b"\n"):
                         raise ValueError("joint dataset has a truncated final line")
                     yield raw_line[:-1]
@@ -508,8 +518,43 @@ def _iter_canonical_lines(path: Path) -> Iterator[bytes]:
         raise ValueError(f"invalid compressed joint dataset: {exc}") from exc
 
 
-def iter_joint_dataset(path: str | Path) -> Iterator[JointDatasetRow]:
-    """Stream strict rows; cross-row/end-of-stream errors may follow yielded rows.
+def iter_joint_row_records(
+    path: str | Path, *, on_bytes_read: Callable[[int], None] | None = None
+) -> Iterator[tuple[JointDatasetRow, bytes]]:
+    """Stream schema-valid rows with their exact JSON bytes."""
+    source = Path(path)
+    for line_number, raw_line in enumerate(
+        _iter_json_lines(source, on_bytes_read=on_bytes_read), 1
+    ):
+        if not raw_line:
+            raise ValueError(f"invalid joint row {line_number}: blank rows are prohibited")
+        if raw_line != raw_line.strip():
+            raise ValueError(
+                f"invalid joint row {line_number}: surrounding whitespace is prohibited"
+            )
+        try:
+            yield JointDatasetRow.model_validate_json(raw_line), raw_line
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError(f"invalid joint row {line_number}: {exc}") from exc
+
+
+def iter_joint_rows(
+    path: str | Path, *, on_bytes_read: Callable[[int], None] | None = None
+) -> Iterator[JointDatasetRow]:
+    """Stream schema-valid rows without repeating dataset-wide integrity checks.
+
+    This is intended for immutable fragments whose exact bytes were already
+    bound by a strict index. General consumers should use
+    :func:`iter_joint_dataset` instead.
+    """
+    for row, _ in iter_joint_row_records(path, on_bytes_read=on_bytes_read):
+        yield row
+
+
+def iter_joint_dataset_records(
+    path: str | Path, *, on_bytes_read: Callable[[int], None] | None = None
+) -> Iterator[tuple[JointDatasetRow, bytes]]:
+    """Stream strict rows with exact source bytes for hashing and indexing.
 
     Consumers performing atomic publication must exhaust the iterator before
     replacing their destination. The generator closes its input when exhausted,
@@ -522,15 +567,9 @@ def iter_joint_dataset(path: str | Path) -> Iterator[JointDatasetRow]:
     seeds: dict[int, str] = {}
     next_indexes: dict[str, int] = {}
     row_count = 0
-    for line_number, raw_line in enumerate(_iter_canonical_lines(source), 1):
-        if not raw_line:
-            raise ValueError(f"invalid joint row {line_number}: blank rows are prohibited")
-        try:
-            row = JointDatasetRow.model_validate_json(raw_line)
-        except (ValueError, UnicodeDecodeError) as exc:
-            raise ValueError(f"invalid joint row {line_number}: {exc}") from exc
-        if raw_line != canonical_json_bytes(row):
-            raise ValueError(f"invalid joint row {line_number}: row is not canonical JSON")
+    for line_number, (row, raw_line) in enumerate(
+        iter_joint_row_records(source, on_bytes_read=on_bytes_read), 1
+    ):
         if row.decision_id in seen_decisions:
             raise ValueError(f"invalid joint row {line_number}: duplicate decision_id")
         seen_decisions.add(row.decision_id)
@@ -556,18 +595,27 @@ def iter_joint_dataset(path: str | Path) -> Iterator[JointDatasetRow]:
             raise ValueError(f"game {row.game_id!r} decision indexes are not contiguous from zero")
         next_indexes[row.game_id] = expected_index + 1
         row_count += 1
-        yield row
+        yield row, raw_line
     if not row_count:
         raise ValueError("joint dataset is empty")
 
 
+def iter_joint_dataset(
+    path: str | Path, *, on_bytes_read: Callable[[int], None] | None = None
+) -> Iterator[JointDatasetRow]:
+    """Stream strict validated rows while ignoring their original encoding."""
+    for row, _ in iter_joint_dataset_records(path, on_bytes_read=on_bytes_read):
+        yield row
+
+
 def load_joint_dataset(path: str | Path) -> JointDataset:
     """Materialize the strict streaming validator for indexed training use."""
-    rows = list(iter_joint_dataset(path))
+    rows: list[JointDatasetRow] = []
     grouped: dict[str, list[JointDatasetRow]] = {}
     digest_builder = hashlib.sha256()
-    for row in rows:
-        digest_builder.update(canonical_json_bytes(row) + b"\n")
+    for row, raw_line in iter_joint_dataset_records(path):
+        rows.append(row)
+        digest_builder.update(raw_line + b"\n")
         grouped.setdefault(row.game_id, []).append(row)
 
     digest = digest_builder.hexdigest()
@@ -591,6 +639,9 @@ __all__ = [
     "JointDatasetRecorder",
     "JointDatasetRow",
     "iter_joint_dataset",
+    "iter_joint_dataset_records",
+    "iter_joint_row_records",
+    "iter_joint_rows",
     "joint_decision_id",
     "load_joint_dataset",
     "write_joint_dataset",

@@ -19,7 +19,7 @@ from automata.models.contracts import (
     canonical_json_bytes,
 )
 from automata.models.shared_encoder.runtime import SharedEncoderRuntime
-from automata.training.dataset import JointDatasetRow, joint_decision_id
+from automata.training.dataset import JointDatasetRow, joint_decision_id, load_joint_dataset
 from automata.training.trainer import JointTrainingConfig, batch_decision_weights, train_joint
 
 
@@ -103,8 +103,24 @@ def _row(game: int, decision: int = 0) -> JointDatasetRow:
     )
 
 
-def _dataset(path: Path) -> None:
-    path.write_bytes(b"".join(canonical_json_bytes(_row(game)) + b"\n" for game in range(1, 5)))
+def _dataset(
+    path: Path,
+    *,
+    decisions_per_game: int = 1,
+    policy_target: tuple[float, float] | None = None,
+) -> None:
+    rows = (_row(game, decision) for game in range(1, 5) for decision in range(decisions_per_game))
+    path.write_bytes(
+        b"".join(
+            canonical_json_bytes(
+                row
+                if policy_target is None
+                else row.model_copy(update={"policy_target": policy_target})
+            )
+            + b"\n"
+            for row in rows
+        )
+    )
 
 
 def _paths(root: Path) -> dict[str, Path]:
@@ -129,9 +145,20 @@ def _config(paths: dict[str, Path], **changes: object) -> JointTrainingConfig:
         "candidate_width": 4,
         "message_passing_layers": 1,
         "dataset_seed_purpose": "training",
+        "index_workers": 1,
     }
     values.update(changes)
     return JointTrainingConfig(**values)
+
+
+def test_non_dyadic_policy_targets_survive_tensorized_metric_evaluation(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _dataset(paths["dataset_path"], policy_target=(1.0 / 3.0, 2.0 / 3.0))
+
+    result = train_joint(_config(paths, epochs=1), show_progress=False)
+
+    assert result.status == "SUCCEEDED"
+    assert paths["artifact_path"].is_dir()
 
 
 def test_success_writes_canonical_manifest_and_immutable_inference_artifact(tmp_path: Path) -> None:
@@ -197,6 +224,83 @@ def test_resume_is_bit_exact_and_configuration_mismatch_fails_closed(tmp_path: P
         train_joint(_config(mismatch_paths, learning_rate=0.02))
     assert not mismatch_paths["artifact_path"].exists()
     assert json.loads(mismatch_paths["run_manifest_path"].read_bytes())["status"] == "FAILED"
+
+
+def test_training_and_metrics_use_only_pretensorized_index_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from automata.training.indexed_dataset import IndexedJointDataset, open_indexed_dataset
+
+    paths = _paths(tmp_path)
+    _dataset(paths["dataset_path"], decisions_per_game=3)
+    index_path = Path(f"{paths['dataset_path']}.index")
+    open_indexed_dataset(paths["dataset_path"], index_path, training_chunk_size=1)
+
+    def forbid_raw_rows(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("trainer must consume pre-tensorized chunks")
+
+    monkeypatch.setattr(IndexedJointDataset, "iter_game_chunks", forbid_raw_rows)
+    monkeypatch.setattr(IndexedJointDataset, "iter_game_rows", forbid_raw_rows)
+
+    result = train_joint(
+        _config(
+            paths,
+            epochs=1,
+            games_per_batch=2,
+            decisions_per_chunk=1,
+        )
+    )
+
+    assert result.status == "SUCCEEDED"
+    assert index_path.is_dir()
+
+
+def test_indexed_training_skips_zero_weight_chunks_but_rejects_zero_weight_games(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path / "weighted")
+    paths["dataset_path"].parent.mkdir()
+    _dataset(paths["dataset_path"], decisions_per_game=3)
+    digest = load_joint_dataset(paths["dataset_path"]).digest
+    weights_path = tmp_path / "weights.json"
+    weights_path.write_bytes(
+        json.dumps(
+            {
+                "dataset_digest": digest,
+                "decision_weights": [value for _ in range(4) for value in (0.0, 0.5, 0.5)],
+            },
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    )
+
+    result = train_joint(
+        _config(
+            paths,
+            epochs=1,
+            decisions_per_chunk=1,
+            decision_weights_path=weights_path,
+        )
+    )
+    assert result.status == "SUCCEEDED"
+
+    zero_paths = _paths(tmp_path / "zero")
+    zero_paths["dataset_path"].parent.mkdir()
+    _dataset(zero_paths["dataset_path"], decisions_per_game=3)
+    zero_weights = tmp_path / "zero-weights.json"
+    zero_weights.write_bytes(
+        json.dumps(
+            {"dataset_digest": digest, "decision_weights": [0.0] * 12},
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    )
+    with pytest.raises(ValueError, match="equal influence"):
+        train_joint(_config(zero_paths, decision_weights_path=zero_weights, decisions_per_chunk=1))
 
 
 def test_persisted_global_decision_weights_survive_uneven_mini_batches() -> None:

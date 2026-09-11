@@ -26,6 +26,7 @@ from automata.scripts.generate_joint_bootstrap import (
 )
 from automata.training.dataset import JointDatasetRow, iter_joint_dataset, write_joint_dataset
 from automata.training.io import (
+    TQDM_BAR_FORMAT,
     atomic_write_bytes,
     canonical_json_bytes,
 )
@@ -160,6 +161,7 @@ def merge_joint_bootstrap(
             total=len(expected_seeds),
             desc="Merging bootstrap",
             unit="game",
+            bar_format=TQDM_BAR_FORMAT,
             disable=not show_progress,
         ) as progress:
             while heap:
@@ -343,6 +345,7 @@ def _run_joint_workers(
             total=total,
             initial=initial_counts.completed,
             unit="game",
+            bar_format=TQDM_BAR_FORMAT,
             disable=not show_progress,
             file=output_stream,
             mininterval=progress_interval,
