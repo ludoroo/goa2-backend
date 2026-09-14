@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from types import SimpleNamespace
 from typing import cast
 
@@ -176,3 +177,56 @@ def test_compute_exception_records_search_time_and_error_reason(
         "fallback=error" in record.getMessage() and "hero_wasp" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_late_search_exception_is_retrieved_after_timeout() -> None:
+    bounded_compute.reset_bounded_compute_metrics()
+    fallback_decision = cast(BotDecision, object())
+    release_search = threading.Event()
+    calls = 0
+
+    def inspect(*_args: object) -> BotDecision:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            release_search.wait(timeout=1.0)
+            raise ValueError("late search failure")
+        return fallback_decision
+
+    async def scenario() -> tuple[BotDecision | None, list[dict[str, object]]]:
+        loop = asyncio.get_running_loop()
+        unhandled: list[dict[str, object]] = []
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        game = cast(
+            ManagedGame,
+            cast(
+                object,
+                SimpleNamespace(
+                    game_id="late-exception",
+                    bot_specs={},
+                    _bot_search_futures=set(),
+                    _bot_fallback_agents=None,
+                ),
+            ),
+        )
+        result = await bounded_compute.bounded_inspect_next_decision(
+            game,
+            cast(GameState, object()),
+            {"hero_wasp": cast(Agent, object())},
+            None,
+            agent_predicate=lambda _agent: True,
+            timeout_resolver=lambda *_args: 0.01,
+            inspect_fn=inspect,
+            owner_resolver=lambda *_args: "hero_wasp",
+        )
+        release_search.set()
+        while game._bot_search_futures:
+            await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return result, unhandled
+
+    result, unhandled = asyncio.run(scenario())
+
+    assert result is fallback_decision
+    assert unhandled == []
+    assert bounded_compute.bounded_compute_metrics.late_completions == 1

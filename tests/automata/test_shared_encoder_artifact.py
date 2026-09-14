@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -275,6 +276,31 @@ def test_executable_manifest_mutation_fails_closed(
     _write_manifest(path, manifest)
 
     with pytest.raises(ValueError, match=message):
+        load_model_artifact(path, requirements=_requirements())
+
+
+def test_incompatible_tensor_artifact_is_rejected_instead_of_reinterpreted(
+    tmp_path: Path, schema: TensorFeatureSchema
+) -> None:
+    path = tmp_path / "incompatible-schema"
+    _export(path, schema)
+    schema_data = json.loads((path / "schema.json").read_bytes())
+    schema_data.update(schema_version=999, schema_id="incompatible-tensor-schema")
+    schema_payload = json.dumps(schema_data, sort_keys=True, separators=(",", ":")).encode()
+    (path / "schema.json").write_bytes(schema_payload)
+
+    manifest = _manifest_data(path)
+    manifest.update(
+        tensor_schema_id="incompatible-tensor-schema",
+        tensor_schema_version=999,
+    )
+    manifest["files"]["schema.json"] = {
+        "length": len(schema_payload),
+        "sha256": hashlib.sha256(schema_payload).hexdigest(),
+    }
+    _write_manifest(path, manifest)
+
+    with pytest.raises(ValueError, match="invalid tensor schema"):
         load_model_artifact(path, requirements=_requirements())
 
 

@@ -359,33 +359,45 @@ def resolve_next_action(state: GameState):
     Dynamically identifies the next actor based on current initiatives.
     Follows Rule: "After each action... re-identify the player with Highest Initiative".
     """
-    if not state.unresolved_hero_ids:
-        logger.info("All cards resolved. Turn complete.")
-        end_turn(state)
-        return
-
-    # 1. Calculate current initiatives for all candidates
+    # 1. Calculate current initiatives and drop stale unresolved IDs. A card
+    # can leave its unresolved slot before selection (for example, on defeat),
+    # and persisted/overridden states can retain an ID with no hero.
     from goa2.domain.models import StatType
     from goa2.engine.stats import get_computed_stat
 
     candidates: list[tuple[HeroID, int]] = []
+    stale_reasons: list[str] = []
     for h_id in state.unresolved_hero_ids:
         hero = state.get_hero(h_id)
-        if hero and hero.current_turn_card:
-            # Safety Check: Cards must be revealed to have effective initiative > 0
-            if hero.current_turn_card.is_facedown:
-                logger.warning(
-                    "Initiative calculated for facedown card of %s.",
-                    h_id,
-                )
+        if hero is None:
+            stale_reasons.append(f"{h_id} (hero not found)")
+            continue
+        if hero.current_turn_card is None:
+            stale_reasons.append(f"{h_id} (no current card)")
+            continue
 
-            # Use Computed Stat (Card Base + Items + Modifiers)
-            base_init = hero.current_turn_card.get_base_stat_value(StatType.INITIATIVE)
-            total_init = get_computed_stat(state, h_id, StatType.INITIATIVE, base_init)
+        # Safety Check: Cards must be revealed to have effective initiative > 0
+        if hero.current_turn_card.is_facedown:
+            logger.warning(
+                "Initiative calculated for facedown card of %s.",
+                h_id,
+            )
 
-            candidates.append((h_id, total_init))
+        # Use Computed Stat (Card Base + Items + Modifiers)
+        base_init = hero.current_turn_card.get_base_stat_value(StatType.INITIATIVE)
+        total_init = get_computed_stat(state, h_id, StatType.INITIATIVE, base_init)
+        candidates.append((h_id, total_init))
+
+    if stale_reasons:
+        state.unresolved_hero_ids = [h_id for h_id, _ in candidates]
+        logger.warning(
+            "Skipping stale unresolved hero IDs: %s",
+            ", ".join(stale_reasons),
+        )
 
     if not candidates:
+        logger.info("All cards resolved. Turn complete.")
+        end_turn(state)
         return
 
     # 2. Sort Descending — unless Reverse Time inverts the order. Same

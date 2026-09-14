@@ -101,7 +101,7 @@ def test_ll_factory_loads_one_shared_runtime_for_both_components(tmp_path: Path)
         ),
     )
 
-    agent_for_spec(
+    agent = agent_for_spec(
         spec,
         state=state,
         artifact_root=tmp_path,
@@ -110,3 +110,38 @@ def test_ll_factory_loads_one_shared_runtime_for_both_components(tmp_path: Path)
 
     assert len(cache.calls) == 1
     assert cache.calls[0][1]["expected_digest"] == "a" * 64
+    assert isinstance(agent, ISMCTSAgent)
+    assert agent._cfg.root_puct_c is not None and agent._cfg.root_puct_c > 0.0
+    assert agent._cfg.root_widening_c is not None
+    assert agent._cfg.root_widening_c < agent._cfg.widening_c
+    assert agent._cfg.root_widening_alpha == agent._cfg.widening_alpha
+
+
+def test_learned_value_with_heuristic_policy_keeps_classic_root_defaults(tmp_path: Path) -> None:
+    artifact = tmp_path / "champions" / "joint-v1"
+    artifact.mkdir(parents=True)
+
+    class Cache:
+        def get(self, *args, **kwargs):
+            return object()
+
+    state = GameSetup.create_game(MAP, ["Razzle"], ["Arien"], game_type="QUICK", seed=3)
+    agent = agent_for_spec(
+        BotSpec(
+            kind="ismcts",
+            search=SearchSettings(
+                iterations=1,
+                policy_source="heuristic",
+                value_source="learned",
+                artifact=_artifact(),
+            ),
+        ),
+        state=state,
+        artifact_root=tmp_path,
+        runtime_cache=Cache(),
+    )
+
+    assert isinstance(agent, ISMCTSAgent)
+    assert agent._cfg.root_puct_c is None
+    assert agent._cfg.root_widening_c is None
+    assert agent._cfg.root_widening_alpha is None

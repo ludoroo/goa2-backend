@@ -26,7 +26,11 @@ from automata.models.contracts import CandidateID, DecisionObservation, canonica
 from automata.training.search_targets import SearchActionTarget, SearchPolicyTarget
 
 SCHEMA_VERSION: Literal[1] = 1
-PolicySource = Literal["HEURISTIC", "ISMCTS_VISITS"]
+PolicySource = Literal[
+    "HEURISTIC",
+    "ISMCTS_VISITS",
+    "UNIFORM_PLANNING_SOFT_HEURISTIC",
+]
 TerminalWinner = Literal["RED", "BLUE"] | None
 
 _IDENTITY_FIELDS = (
@@ -91,7 +95,13 @@ def joint_decision_id(
 
 
 class JointDatasetRow(BaseModel):
-    """One immutable, fully reconciled policy/value training decision."""
+    """One immutable, fully reconciled policy/value training decision.
+
+    ``policy_source`` describes both behavior and target when they differ. The
+    diverse pilot's planning rows therefore use
+    ``UNIFORM_PLANNING_SOFT_HEURISTIC``: the surfaced card was sampled uniformly,
+    while its training distribution comes from softened heuristic card scores.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 

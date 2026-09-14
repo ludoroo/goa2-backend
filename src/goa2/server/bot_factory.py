@@ -12,7 +12,12 @@ from automata.agents.contracts import Agent
 from automata.agents.heuristic_agent import HeuristicAgent
 from automata.agents.ismcts_agent import ISMCTSAgent
 from automata.agents.random_agent import RandomAgent
-from automata.search.config import SearchConfig
+from automata.search.config import (
+    LEARNED_ROOT_PUCT_C,
+    LEARNED_ROOT_WIDENING_ALPHA,
+    LEARNED_ROOT_WIDENING_C,
+    SearchConfig,
+)
 from automata.search.contracts import (
     ComponentUnavailableError,
     LeafEvaluator,
@@ -137,6 +142,7 @@ def agent_for_spec(
                 prior = FallbackSearchPolicy(LearnedSearchPolicy(runtime), prior)
             if settings.value_source == "learned":
                 leaf = FallbackLeafEvaluator(LearnedLeafEvaluator(runtime), leaf)
+        learned_root = settings.policy_source == "learned"
         config = SearchConfig(
             iterations=settings.iterations,
             seed=seed,
@@ -146,6 +152,9 @@ def agent_for_spec(
                 if settings.leaf_mode == "immediate"
                 else LeafMode.BOUNDED_CONTINUATION
             ),
+            root_puct_c=LEARNED_ROOT_PUCT_C if learned_root else None,
+            root_widening_c=LEARNED_ROOT_WIDENING_C if learned_root else None,
+            root_widening_alpha=LEARNED_ROOT_WIDENING_ALPHA if learned_root else None,
         )
         return ISMCTSAgent(
             config,

@@ -3,14 +3,34 @@
 import pytest
 
 from goa2.domain.board import Board, Zone
+from goa2.domain.events import GameEventType
 from goa2.domain.hex import Hex
 from goa2.domain.input import InputRequestType, InputResponse
-from goa2.domain.models import Card, Hero, Minion, MinionType, Team, TeamColor
+from goa2.domain.models import Card, GamePhase, Hero, Minion, MinionType, Team, TeamColor
+from goa2.domain.models.effect import (
+    ActiveEffect,
+    AffectsFilter,
+    DisplacementType,
+    DurationType,
+    EffectScope,
+    EffectType,
+    Shape,
+)
 from goa2.domain.state import GameState
 from goa2.domain.tile import Tile
 from goa2.domain.types import UnitID
 from goa2.engine.handler import process_stack, push_steps, submit_input
-from goa2.engine.steps import FinalizeHeroTurnStep, ReturnMinionToZoneStep
+from goa2.engine.session import GameSession, SessionResultType
+from goa2.engine.steps import (
+    AdvanceTurnStep,
+    CheckLanePushStep,
+    EndPhaseCleanupStep,
+    EndPhaseStep,
+    FinalizeHeroTurnStep,
+    FindNextActorStep,
+    PlaceUnitStep,
+    ReturnMinionToZoneStep,
+)
 
 
 def create_minion(id_str, team, m_type=MinionType.MELEE):
@@ -234,24 +254,197 @@ def test_return_minion_respects_obstacles(zone_state):
 
 
 def test_return_minion_respects_obstacles_fallback(zone_state):
-    """If the direct path to the zone is completely blocked (no traversable path), the minion is Placed instead (ignores path obstacles)."""
+    """If no traversable path exists, the minion is placed instead."""
     m_red = create_minion("r1", TeamColor.RED)
     zone_state.teams[TeamColor.RED].minions.append(m_red)
 
-    # Place red minion outside
     zone_state.move_unit(m_red.id, Hex(q=2, r=-2, s=0))
 
-    # Place an obstacle blocking the only possible route to the zone at Hex(1,-1,0)
     blocking_minion = create_minion("blocker", TeamColor.BLUE)
     zone_state.teams[TeamColor.BLUE].minions.append(blocking_minion)
     zone_state.move_unit(blocking_minion.id, Hex(q=1, r=-1, s=0))
 
-    # No alternative path is added, so it is completely blocked.
-    # When ReturnMinionToZoneStep runs, it should fail to find a traversable path (since q=1, r=-1, s=0 is blocked),
-    # but then fall back to placement (ignoring obstacles for path propagation) and return m_red to the empty space (q=0, r=0, s=0).
-    step = ReturnMinionToZoneStep()
-    push_steps(zone_state, [step])
-    _ = process_stack(zone_state).input_request
+    push_steps(zone_state, [ReturnMinionToZoneStep()])
+    result = process_stack(zone_state)
 
-    # m_red should be Placed at Hex(0,0,0) (via the fallback placement rule)
     assert zone_state.unit_locations.get(m_red.id) == Hex(q=0, r=0, s=0)
+    assert [event.event_type for event in result.events] == [GameEventType.UNIT_PLACED]
+
+
+def _add_magnetic_dagger(state: GameState, wasp_id: str = "hero_wasp") -> None:
+    state.active_effects.append(
+        ActiveEffect(
+            id="magnetic_dagger",
+            source_id=wasp_id,
+            effect_type=EffectType.PLACEMENT_PREVENTION,
+            scope=EffectScope(
+                shape=Shape.RADIUS,
+                range=3,
+                origin_id=wasp_id,
+                affects=AffectsFilter.ENEMY_UNITS,
+            ),
+            duration=DurationType.THIS_TURN,
+            is_active=True,
+            created_at_turn=state.turn,
+            created_at_round=state.round,
+            displacement_blocks=[DisplacementType.PLACE, DisplacementType.SWAP],
+            blocks_enemy_actors=True,
+            blocks_friendly_actors=False,
+            blocks_self=False,
+        )
+    )
+
+
+def _add_hero(state: GameState, hero_id: str, team: TeamColor) -> Hero:
+    hero = Hero(id=hero_id, name=hero_id, team=team, deck=[])
+    state.teams[team].heroes.append(hero)
+    return hero
+
+
+def test_normal_zone_return_is_movement_despite_placement_prevention(zone_state):
+    minion = create_minion("b1", TeamColor.BLUE)
+    zone_state.teams[TeamColor.BLUE].minions.append(minion)
+    zone_state.move_unit(minion.id, Hex(q=2, r=-2, s=0))
+
+    wasp = _add_hero(zone_state, "hero_wasp", TeamColor.RED)
+    zone_state.move_unit(wasp.id, Hex(q=0, r=0, s=0))
+    _add_magnetic_dagger(zone_state)
+
+    # The other zone hex has a traversable one-step path from the minion.
+    push_steps(zone_state, [ReturnMinionToZoneStep()])
+    result = process_stack(zone_state)
+
+    assert zone_state.get_position(str(minion.id)) == Hex(q=1, r=-1, s=0)
+    assert [event.event_type for event in result.events] == [GameEventType.UNIT_MOVED]
+
+
+def test_blocked_fallback_preserves_lane_check_and_next_actor(zone_state):
+    """The Wasp reproduction must not strand an empty RESOLUTION stack."""
+    wasp = _add_hero(zone_state, "hero_wasp", TeamColor.RED)
+    next_hero = _add_hero(zone_state, "hero_arien", TeamColor.BLUE)
+    next_hero.current_turn_card = Card(
+        id="next_card",
+        name="Next Card",
+        tier="I",
+        color="BLUE",
+        primary_action="SKILL",
+        initiative=5,
+        effect_id="none",
+        effect_text="",
+    )
+
+    minion = create_minion("b1", TeamColor.BLUE)
+    zone_state.teams[TeamColor.BLUE].minions.append(minion)
+    outside = Hex(q=2, r=-2, s=0)
+    zone_state.move_unit(minion.id, outside)
+    zone_state.move_unit(wasp.id, Hex(q=1, r=-1, s=0))
+    _add_magnetic_dagger(zone_state)
+
+    zone_state.phase = GamePhase.RESOLUTION
+    zone_state.unresolved_hero_ids = [str(next_hero.id)]
+    push_steps(
+        zone_state,
+        [ReturnMinionToZoneStep(), CheckLanePushStep(), FindNextActorStep()],
+    )
+
+    result = GameSession(zone_state).advance()
+
+    assert result.result_type == SessionResultType.INPUT_NEEDED
+    assert result.input_request is not None
+    assert result.input_request.player_id == str(next_hero.id)
+    assert zone_state.get_position(str(minion.id)) == outside
+    assert zone_state.current_actor_id == str(next_hero.id)
+
+
+def test_blocked_first_minion_does_not_prevent_later_legal_return(zone_state):
+    blocked = create_minion("a_blocked", TeamColor.BLUE)
+    legal = create_minion("b_legal", TeamColor.BLUE)
+    zone_state.teams[TeamColor.BLUE].minions.extend([blocked, legal])
+    blocked_start = Hex(q=2, r=-2, s=0)
+    legal_start = Hex(q=-1, r=1, s=0)
+    zone_state.board.tiles[legal_start] = Tile(hex=legal_start)
+    zone_state.move_unit(blocked.id, blocked_start)
+    zone_state.move_unit(legal.id, legal_start)
+
+    wasp = _add_hero(zone_state, "hero_wasp", TeamColor.RED)
+    zone_state.move_unit(wasp.id, Hex(q=1, r=-1, s=0))
+    _add_magnetic_dagger(zone_state)
+
+    push_steps(zone_state, [ReturnMinionToZoneStep()])
+    result = process_stack(zone_state)
+
+    assert result.input_request is None
+    assert zone_state.get_position(str(blocked.id)) == blocked_start
+    assert zone_state.get_position(str(legal.id)) == Hex(q=0, r=0, s=0)
+    assert [event.event_type for event in result.events] == [GameEventType.UNIT_MOVED]
+
+
+def test_mandatory_abort_does_not_discard_next_actor_control(zone_state):
+    wasp = _add_hero(zone_state, "hero_wasp", TeamColor.RED)
+    next_hero = _add_hero(zone_state, "hero_arien", TeamColor.BLUE)
+    next_hero.current_turn_card = Card(
+        id="next_card",
+        name="Next Card",
+        tier="I",
+        color="BLUE",
+        primary_action="SKILL",
+        initiative=5,
+        effect_id="none",
+        effect_text="",
+    )
+    minion = create_minion("b1", TeamColor.BLUE)
+    zone_state.teams[TeamColor.BLUE].minions.append(minion)
+    zone_state.move_unit(minion.id, Hex(q=2, r=-2, s=0))
+    zone_state.move_unit(wasp.id, Hex(q=1, r=-1, s=0))
+    _add_magnetic_dagger(zone_state)
+    zone_state.phase = GamePhase.RESOLUTION
+    zone_state.unresolved_hero_ids = [str(next_hero.id)]
+
+    push_steps(
+        zone_state,
+        [
+            PlaceUnitStep(unit_id=str(minion.id), target_hex_arg=Hex(q=0, r=0, s=0)),
+            FindNextActorStep(),
+        ],
+    )
+    result = process_stack(zone_state)
+
+    assert result.input_request is not None
+    assert result.input_request.player_id == str(next_hero.id)
+    assert zone_state.current_actor_id == str(next_hero.id)
+
+
+@pytest.mark.parametrize(
+    ("continuation", "phase"),
+    [
+        (AdvanceTurnStep(), GamePhase.RESOLUTION),
+        (EndPhaseStep(), GamePhase.CLEANUP),
+        (EndPhaseCleanupStep(), GamePhase.CLEANUP),
+    ],
+)
+def test_mandatory_abort_preserves_phase_control_continuations(zone_state, continuation, phase):
+    wasp = _add_hero(zone_state, "hero_wasp", TeamColor.RED)
+    minion = create_minion("b1", TeamColor.BLUE)
+    zone_state.teams[TeamColor.BLUE].minions.append(minion)
+    zone_state.move_unit(minion.id, Hex(q=2, r=-2, s=0))
+    zone_state.move_unit(wasp.id, Hex(q=1, r=-1, s=0))
+    _add_magnetic_dagger(zone_state)
+    zone_state.phase = phase
+
+    push_steps(
+        zone_state,
+        [
+            PlaceUnitStep(unit_id=str(minion.id), target_hex_arg=Hex(q=0, r=0, s=0)),
+            continuation,
+        ],
+    )
+    process_stack(zone_state)
+
+    assert zone_state.phase == GamePhase.PLANNING
+
+
+def test_session_rejects_drained_resolution_state(zone_state):
+    zone_state.phase = GamePhase.RESOLUTION
+
+    with pytest.raises(RuntimeError, match=r"RESOLUTION.*stack"):
+        GameSession(zone_state).advance()

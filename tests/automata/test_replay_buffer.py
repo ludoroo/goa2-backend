@@ -8,6 +8,7 @@ from types import MappingProxyType, SimpleNamespace
 import pytest
 
 from automata.models.shared_encoder.artifacts import ModelArtifactManifest
+from automata.models.shared_encoder.schema import TENSOR_SCHEMA_ID
 from automata.training.contracts.experiment import SeedRange, SeedRegistry
 from automata.training.dataset import (
     JointDataset,
@@ -28,7 +29,7 @@ def _manifest(digest: str, *, tensor_digest: str = "f" * 64) -> ModelArtifactMan
         supported_heroes=("Wasp", "Arien"),
         supported_maps=("forgotten_island",),
         supported_game_types=("QUICK",),
-        tensor_schema_id="joint-v1",
+        tensor_schema_id=TENSOR_SCHEMA_ID,
         tensor_schema_version=1,
         tensor_schema_digest=tensor_digest,
         architecture_config={},

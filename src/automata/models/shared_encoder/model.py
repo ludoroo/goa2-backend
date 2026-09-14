@@ -13,7 +13,15 @@ import torch
 from torch import Tensor, nn
 
 from .batching import DecisionBatch, FeatureTable, RelationshipTable, masked_mean, safe_gather
-from .schema import RecordFeatureSchema, TensorFeatureSchema
+from .schema import (
+    TENSOR_SCHEMA_ID,
+    TENSOR_SCHEMA_VERSION,
+    RecordFeatureSchema,
+    TensorFeatureSchema,
+    TensorSchemaID,
+    TensorSchemaVersion,
+    expanded_numeric_width,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,13 +35,13 @@ class JointModelConfig:
     candidate_width: int
     message_passing_layers: int
     dropout: float = 0.0
-    schema_id: str = "goa2-tensor-features-v1"
-    schema_version: int = 1
+    schema_id: TensorSchemaID = TENSOR_SCHEMA_ID
+    schema_version: TensorSchemaVersion = TENSOR_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         if self.model_version != 1:
             raise ValueError("unsupported model version")
-        if self.schema_version != 1 or not self.schema_id:
+        if self.schema_version != TENSOR_SCHEMA_VERSION or self.schema_id != TENSOR_SCHEMA_ID:
             raise ValueError("invalid tensor schema identity")
         if len(self.schema_digest) != 64 or any(
             character not in "0123456789abcdef" for character in self.schema_digest
@@ -55,11 +63,11 @@ class JointModelOutput:
 
 
 class _RecordEncoder(nn.Module):
-    """Encode one schema kind without ever embedding reference or public IDs."""
+    """Encode one kind's declared numeric, hashed-identity, and categorical columns."""
 
     def __init__(self, schema: RecordFeatureSchema, width: int, dropout: float) -> None:
         super().__init__()
-        self.numeric_width = len(schema.numeric)
+        self.numeric_width = expanded_numeric_width(schema)
         self.categorical_width = len(schema.categorical)
         embedding_widths = [min(8, max(2, width // 4)) for _ in schema.categorical]
         self.embeddings = nn.ModuleList(

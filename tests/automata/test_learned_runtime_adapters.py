@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from automata.agents.heuristic_agent import HeuristicAgent
+from automata.decision import DecisionDescriptor
 from automata.models.contracts.inference import LearnedModelOutput
 from automata.search.contracts import (
     PolicyScores,
@@ -83,6 +84,92 @@ def test_learned_leaf_uses_same_runtime_and_rejects_out_of_contract_value() -> N
     runtime.value = 1.5
     with pytest.raises(ValueError, match=r"\[-1, 1\]"):
         LearnedLeafEvaluator(runtime).evaluate(context, state)
+
+
+def test_input_policy_encodes_canonical_order_then_realigns_noncanonical_caller_order() -> None:
+    state = _state()
+    request = InputRequest(
+        id="noncanonical-input",
+        request_type=InputRequestType.SELECT_OPTION,
+        player_id="hero_razzle",
+        options=[InputOption.from_value("a"), InputOption.from_value("b")],
+    )
+    state.input_stack.append(request)
+    runtime = RecordingRuntime((1.0, 3.0))
+    context = SearchContext(
+        "hero_razzle",
+        TeamColor.RED,
+        "hero_razzle",
+        current_decision=DecisionDescriptor("INPUT", request=request),
+    )
+
+    scores = LearnedSearchPolicy(runtime).score(context, state, ("b", "a"))
+
+    assert tuple(candidate.selection for candidate in runtime.observations[0].candidates) == (
+        "a",
+        "b",
+    )
+    assert scores.actions == ("b", "a")
+    assert scores.scores == (3.0, 1.0)
+
+
+def test_policy_scores_the_exact_descendant_decision_instead_of_stale_input_stack() -> None:
+    state = _state()
+    state.input_stack.append(
+        InputRequest(
+            id="stale-root",
+            request_type=InputRequestType.SELECT_OPTION,
+            player_id="hero_razzle",
+            options=[InputOption.from_value("root_a"), InputOption.from_value("root_b")],
+        )
+    )
+    descendant = InputRequest(
+        id="descendant",
+        request_type=InputRequestType.SELECT_OPTION,
+        player_id="team:BLUE",
+        options=[InputOption.from_value("descendant_a"), InputOption.from_value("descendant_b")],
+    )
+    legal = ("descendant_a", "descendant_b")
+    runtime = RecordingRuntime((1.0, 0.0))
+    context = SearchContext(
+        "hero_arien",
+        TeamColor.BLUE,
+        "hero_arien",
+        current_decision=DecisionDescriptor("INPUT", request=descendant),
+    )
+
+    scores = LearnedSearchPolicy(runtime).score(context, state, legal)
+
+    assert scores.actions == legal
+    assert runtime.observations[0].decision_kind == "INPUT"
+    assert tuple(candidate.selection for candidate in runtime.observations[0].candidates) == legal
+
+
+def test_leaf_encodes_explicit_team_scoped_decision_without_state_input_stack() -> None:
+    state = _state()
+    request = InputRequest(
+        id="team-descendant",
+        request_type=InputRequestType.SELECT_OPTION,
+        player_id="team:BLUE",
+        options=[InputOption.from_value("a"), InputOption.from_value("b")],
+    )
+    runtime = RecordingRuntime((0.0, 0.0), value=-0.2)
+    context = SearchContext(
+        "hero_arien",
+        TeamColor.BLUE,
+        "hero_arien",
+        current_decision=DecisionDescriptor("INPUT", request=request),
+    )
+
+    assert LearnedLeafEvaluator(runtime).evaluate(context, state).value == -0.2
+    observation = runtime.observations[0]
+    assert observation.decision_kind == "INPUT"
+    owner = next(
+        token
+        for token in observation.state.tokens
+        if token.kind == "HERO" and token.features["hero_id"] == "hero_arien"
+    )
+    assert owner.features["is_decision_owner"] is True
 
 
 def test_changed_card_owner_keeps_root_viewer_and_candidate_alignment() -> None:

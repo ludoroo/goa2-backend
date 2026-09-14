@@ -30,11 +30,16 @@ Validation rejects stale, mismatched, and terminal roots with
 
 from __future__ import annotations
 
+import contextvars
+import hashlib
+import logging
 import math
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Protocol
+from functools import wraps
+from typing import Any, ParamSpec, Protocol, TypeVar, cast
 
 from automata.agents.contracts import Agent, PlanningKind
 from automata.decision import DecisionDescriptor
@@ -54,6 +59,8 @@ from ..contracts import (
     CutoffUnit,
     LeafEvaluator,
     LeafMode,
+    PolicyScores,
+    PolicyScoreSource,
     ScoreSemantics,
     SearchContext,
     SearchPolicy,
@@ -67,6 +74,57 @@ from ..root import RootTarget, ValidatedRoot, validate_root, validate_root_decis
 # --------------------------------------------------------------------------- #
 # Decision representation: what the engine is asking *us* for right now.
 # --------------------------------------------------------------------------- #
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+_IN_HYPOTHETICAL_SEARCH: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "automata_in_hypothetical_search", default=False
+)
+
+
+class _HypotheticalEngineInfoFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (
+            _IN_HYPOTHETICAL_SEARCH.get()
+            and record.levelno == logging.INFO
+            and record.name.startswith("goa2.engine")
+        )
+
+
+_HYPOTHETICAL_ENGINE_INFO_FILTER = _HypotheticalEngineInfoFilter()
+
+
+@contextmanager
+def _suppress_hypothetical_engine_info() -> Iterator[None]:
+    """Suppress engine INFO records emitted while this context drives a clone.
+
+    The filter is installed permanently on existing handlers and activated by
+    a context variable. That keeps concurrent real-game logs in other threads
+    visible, while warnings and errors from the hypothetical engine still pass.
+    """
+    handlers = set(logging.getLogger().handlers)
+    for candidate in list(logging.Logger.manager.loggerDict.values()):
+        if isinstance(candidate, logging.Logger):
+            handlers.update(candidate.handlers)
+    for handler in handlers:
+        if _HYPOTHETICAL_ENGINE_INFO_FILTER not in handler.filters:
+            handler.addFilter(_HYPOTHETICAL_ENGINE_INFO_FILTER)
+
+    token = _IN_HYPOTHETICAL_SEARCH.set(True)
+    try:
+        yield
+    finally:
+        _IN_HYPOTHETICAL_SEARCH.reset(token)
+
+
+def _without_hypothetical_engine_info(func: Callable[_P, _R]) -> Callable[_P, _R]:
+    @wraps(func)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with _suppress_hypothetical_engine_info():
+            return func(*args, **kwargs)
+
+    return wrapped
 
 
 class CutoffObserver(Protocol):
@@ -122,9 +180,15 @@ def _branchable(request: InputRequest) -> bool:
 
 
 def _decision_owner_id(decision: DecisionDescriptor, fallback: str) -> str:
+    """Return a concrete hero owner for observation/value context.
+
+    Team-scoped requests identify who may answer, not a hero entity. Keep the
+    previous concrete owner chosen by the coordinator/search root for those
+    requests so learned observations can mark a real decision-owning hero.
+    """
     if decision.hero is not None:
         return str(decision.hero.id)
-    if decision.request is not None:
+    if decision.request is not None and not decision.request.player_id.startswith("team:"):
         return decision.request.player_id
     return fallback
 
@@ -142,6 +206,59 @@ def legal_keys(decision: DecisionDescriptor) -> list[Key]:
         assert decision.request is not None
         return list(_input_raw_map(decision.request).keys())
     return []
+
+
+@dataclass(frozen=True, slots=True)
+class SearchProgressionDiagnostics:
+    """Compact engine position and transition counters at a search stall."""
+
+    phase: str
+    round: int
+    actor: str | None
+    pending_request: str | None
+    stack_depth: int
+    top_step: str | None
+    transition_counts: tuple[tuple[str, int], ...]
+
+
+class SearchProgressionError(RuntimeError):
+    """Hypothetical progression failed to make bounded deterministic progress."""
+
+    def __init__(self, reason: str, diagnostics: SearchProgressionDiagnostics) -> None:
+        self.reason = reason
+        self.diagnostics = diagnostics
+        self.phase = diagnostics.phase
+        self.round = diagnostics.round
+        self.actor = diagnostics.actor
+        self.pending_request = diagnostics.pending_request
+        self.stack_depth = diagnostics.stack_depth
+        self.top_step = diagnostics.top_step
+        self.transition_counts = dict(diagnostics.transition_counts)
+        counts = ",".join(f"{name}={value}" for name, value in diagnostics.transition_counts)
+        super().__init__(
+            f"ISMCTS hypothetical progression failed: {reason} "
+            f"(phase={self.phase}, round={self.round}, actor={self.actor}, "
+            f"request={self.pending_request}, stack={self.stack_depth}:{self.top_step}, "
+            f"transitions={counts})"
+        )
+
+
+def _state_fingerprint(state: GameState) -> bytes:
+    """Stable progression fingerprint without the immutable/derived board."""
+    payload = state.model_dump_json(exclude={"board"}).encode("utf-8")
+    return hashlib.blake2b(payload, digest_size=16).digest()
+
+
+def _decision_fingerprint(state: GameState, decision: DecisionDescriptor) -> tuple[object, ...]:
+    request = decision.request
+    return (
+        _state_fingerprint(state),
+        decision.kind,
+        str(decision.hero.id) if decision.hero is not None else None,
+        request.id if request is not None else None,
+        request.player_id if request is not None else None,
+        tuple(legal_keys(decision)),
+    )
 
 
 class _Simulator:
@@ -171,12 +288,87 @@ class _Simulator:
         environment_policy: Agent,
         *,
         owned_hero_ids: frozenset[str],
+        cfg: SearchConfig | None = None,
     ) -> None:
         self.state = state
         self.session = GameSession(state)
         self.our_team = our_team
         self.environment_policy = environment_policy
         self.owned_hero_ids = owned_hero_ids
+        self.cfg = cfg or SearchConfig()
+        self._advance_calls = 0
+        self._advance_transitions = 0
+        self._session_advances = 0
+        self._environment_planning = 0
+        self._environment_inputs = 0
+        self._current_advance_transitions = 0
+
+    def _progression_diagnostics(
+        self,
+        decision: DecisionDescriptor | None = None,
+        *,
+        forced_decisions: int = 0,
+    ) -> SearchProgressionDiagnostics:
+        request = decision.request if decision is not None else None
+        if request is None and self.state.input_stack:
+            request = self.state.input_stack[-1]
+        top = self.state.execution_stack[-1] if self.state.execution_stack else None
+        top_type = getattr(top, "type", None)
+        top_step = (
+            str(getattr(top_type, "value", top_type))
+            if top_type is not None
+            else type(top).__name__ if top is not None else None
+        )
+        actor = str(self.state.current_actor_id) if self.state.current_actor_id else None
+        if actor is None and decision is not None:
+            if decision.hero is not None:
+                actor = str(decision.hero.id)
+            elif request is not None:
+                actor = request.player_id
+        return SearchProgressionDiagnostics(
+            phase=self.state.phase.value,
+            round=self.state.round,
+            actor=actor,
+            pending_request=request.id if request is not None else None,
+            stack_depth=len(self.state.execution_stack),
+            top_step=top_step,
+            transition_counts=(
+                ("advance_calls", self._advance_calls),
+                ("advance_transitions", self._advance_transitions),
+                ("current_advance_transitions", self._current_advance_transitions),
+                ("session_advances", self._session_advances),
+                ("environment_planning", self._environment_planning),
+                ("environment_inputs", self._environment_inputs),
+                ("forced_decisions", forced_decisions),
+            ),
+        )
+
+    def progression_error(
+        self,
+        reason: str,
+        decision: DecisionDescriptor | None = None,
+        *,
+        forced_decisions: int = 0,
+    ) -> SearchProgressionError:
+        return SearchProgressionError(
+            reason,
+            self._progression_diagnostics(decision, forced_decisions=forced_decisions),
+        )
+
+    def _record_transition(self, kind: str, decision: DecisionDescriptor | None = None) -> None:
+        self._current_advance_transitions += 1
+        self._advance_transitions += 1
+        if kind == "session":
+            self._session_advances += 1
+        elif kind == "planning":
+            self._environment_planning += 1
+        else:
+            self._environment_inputs += 1
+        if self._current_advance_transitions > self.cfg.max_advance_transitions:
+            raise self.progression_error(
+                f"advance transition limit exceeded ({self.cfg.max_advance_transitions})",
+                decision,
+            )
 
     # -- opponent-as-environment advance ----------------------------------- #
     def _next_uncommitted(self) -> Hero | None:
@@ -216,7 +408,11 @@ class _Simulator:
 
     def advance(self, pending: InputResponse | None = None) -> DecisionDescriptor:
         """Advance until the engine needs one of *our* decisions, or ends."""
+        self._advance_calls += 1
+        self._current_advance_transitions = 0
         resp = pending
+        seen_planning: set[tuple[object, ...]] = set()
+        seen_environment_inputs: set[tuple[object, ...]] = set()
         while True:
             if self.state.phase == GamePhase.PLANNING:
                 hero = self._next_uncommitted()
@@ -228,6 +424,22 @@ class _Simulator:
                         )
                     # Non-owned commit (teammate or opponent) = hidden sample
                     # via the default policy so it never becomes a root.
+                    planning_fingerprint = (
+                        _state_fingerprint(self.state),
+                        str(hero.id),
+                        second_card_window,
+                    )
+                    self._record_transition("planning")
+                    if planning_fingerprint in seen_planning:
+                        raise self.progression_error(
+                            "repeated environment planning decision",
+                            DecisionDescriptor(
+                                "CARD",
+                                hero=hero,
+                                can_finish_planning=second_card_window,
+                            ),
+                        )
+                    seen_planning.add(planning_fingerprint)
                     planning = self.environment_policy.choose_planning(self.state, hero)
                     if planning.kind is PlanningKind.FINISH:
                         self.session.finish_planning(HeroID(hero.id))
@@ -239,6 +451,8 @@ class _Simulator:
                     continue
                 # All committed: fall through to advance the resolution stack.
 
+            before = _state_fingerprint(self.state)
+            self._record_transition("session")
             result = self.session.advance(resp)
             resp = None
 
@@ -251,9 +465,20 @@ class _Simulator:
                     return DecisionDescriptor("INPUT", request=request)
                 # Non-owned input, or a non-branchable request (e.g. UPGRADE_PHASE):
                 # resolve with the default policy and keep advancing.
+                decision = DecisionDescriptor("INPUT", request=request)
+                input_fingerprint = _decision_fingerprint(self.state, decision)
+                self._record_transition("input", decision)
+                if input_fingerprint in seen_environment_inputs:
+                    raise self.progression_error("repeated environment input decision", decision)
+                seen_environment_inputs.add(input_fingerprint)
                 selection = self.environment_policy.choose_input(self.state, request)
                 resp = InputResponse(request_id=request.id, selection=selection)
                 continue
+            if (
+                result.result_type == SessionResultType.ACTION_COMPLETE
+                and before == _state_fingerprint(self.state)
+            ):
+                raise self.progression_error("unchanged ACTION_COMPLETE")
             # ACTION_COMPLETE / PHASE_CHANGED: keep advancing.
 
     # -- root anchoring ---------------------------------------------------- #
@@ -359,6 +584,8 @@ def _rollout(
     """Continuation-policy playout until the configured cutoff."""
     start_round = sim.state.round
     decisions = 0
+    forced_decisions = 0
+    seen_forced_decisions: set[tuple[object, ...]] = set()
 
     def within_cutoff() -> bool:
         if cfg.cutoff_unit is CutoffUnit.ROUNDS:
@@ -370,6 +597,29 @@ def _rollout(
         and not decision.is_terminal
         and within_cutoff()
     ):
+        context = context.for_decision(
+            decision,
+            owner_id=_decision_owner_id(decision, context.current_owner_id),
+        )
+        if not legal_keys(decision):
+            fingerprint = _decision_fingerprint(sim.state, decision)
+            if fingerprint in seen_forced_decisions:
+                raise sim.progression_error(
+                    "repeated forced decision",
+                    decision,
+                    forced_decisions=forced_decisions,
+                )
+            if forced_decisions >= cfg.max_forced_decisions:
+                raise sim.progression_error(
+                    f"forced decision limit exceeded ({cfg.max_forced_decisions})",
+                    decision,
+                    forced_decisions=forced_decisions,
+                )
+            seen_forced_decisions.add(fingerprint)
+            forced_decisions += 1
+            decision = sim.apply_ours(decision, None)
+            decisions += 1
+            continue
         if decision.kind == "CARD":
             hero = decision.hero
             assert hero is not None
@@ -390,7 +640,10 @@ def _rollout(
         decisions += 1
     if decision.is_terminal:
         return terminal_reward(decision.winner, sim.our_team)
-    leaf_context = context.for_owner(_decision_owner_id(decision, context.current_owner_id))
+    leaf_context = context.for_decision(
+        decision,
+        owner_id=_decision_owner_id(decision, context.current_owner_id),
+    )
     active_value = leaf_evaluator.evaluate(leaf_context, sim.state).value
     reward = _value_to_reward(active_value)
     if cutoff_observer is not None:
@@ -407,6 +660,10 @@ def _simulate(
     root: Node,
     root_state: GameState,
     root_target: RootTarget,
+    root_legal: tuple[Key, ...],
+    root_policy: PolicyScores | None,
+    root_priors: dict[Key, float] | None,
+    root_coverage_target: int | None,
     our_team: TeamColor,
     environment_policy: Agent,
     cfg: SearchConfig,
@@ -424,7 +681,13 @@ def _simulate(
     silently descends from a mismatched root.
     """
     world = determinize(root_state, root_target.decision_owner_hero_id, rng)
-    sim = _Simulator(world, our_team, environment_policy, owned_hero_ids=root_target.owned_hero_ids)
+    sim = _Simulator(
+        world,
+        our_team,
+        environment_policy,
+        owned_hero_ids=root_target.owned_hero_ids,
+        cfg=cfg,
+    )
     # Strict root validation: surface EXACTLY the requested root or raise.
     decision = sim.advance_to_root(root_target)
     context = SearchContext(
@@ -436,27 +699,100 @@ def _simulate(
     node = root
     path = [root]
     value: float | None = None
+    forced_decisions = 0
+    seen_forced_decisions: set[tuple[object, ...]] = set()
 
     while not decision.is_terminal:
-        legal = legal_keys(decision)
+        is_root = node is root
+        context = context.for_decision(
+            decision,
+            owner_id=_decision_owner_id(decision, context.current_owner_id),
+        )
+        legal = list(root_legal) if is_root else legal_keys(decision)
         if not legal:
             # Forced move (empty hand / no options): no branch, just advance.
+            fingerprint = _decision_fingerprint(sim.state, decision)
+            if fingerprint in seen_forced_decisions:
+                raise sim.progression_error(
+                    "repeated forced decision",
+                    decision,
+                    forced_decisions=forced_decisions,
+                )
+            if forced_decisions >= cfg.max_forced_decisions:
+                raise sim.progression_error(
+                    f"forced decision limit exceeded ({cfg.max_forced_decisions})",
+                    decision,
+                    forced_decisions=forced_decisions,
+                )
+            seen_forced_decisions.add(fingerprint)
+            forced_decisions += 1
             decision = sim.apply_ours(decision, None)
             continue
 
-        # One policy call per node visit: its ordering drives expansion, its
-        # (normalized) weights drive PUCT selection.
-        owner_id = _decision_owner_id(decision, context.current_owner_id)
-        current_context = context.for_owner(owner_id)
-        pol = score_policy(prior, current_context, sim.state, legal) if prior is not None else None
-        weights = dict(zip(legal, pol.scores, strict=True)) if pol is not None else None
-
-        if node.should_expand(legal, cfg.widening_c, cfg.widening_alpha):
-            order = (
-                sorted(legal, key=lambda key: weights[key], reverse=True)
-                if weights is not None
+        # The exact root policy is evaluated, aligned, and normalized once by
+        # ``search``. Descendant policies remain tied to each determinized
+        # state and exact descendant decision.
+        current_context = context
+        pol = (
+            root_policy
+            if is_root
+            else (
+                score_policy(prior, current_context, sim.state, legal)
+                if prior is not None
                 else None
             )
+        )
+        weights = dict(zip(legal, pol.scores, strict=True)) if pol is not None else None
+        use_root_schedule = is_root and (
+            root_policy is None or root_policy.source is not PolicyScoreSource.FALLBACK
+        )
+        widen_c = (
+            cfg.root_widening_c
+            if use_root_schedule and cfg.root_widening_c is not None
+            else cfg.widening_c
+        )
+        widen_alpha = (
+            cfg.root_widening_alpha
+            if use_root_schedule and cfg.root_widening_alpha is not None
+            else cfg.widening_alpha
+        )
+        order = (
+            sorted(legal, key=lambda key: weights[key], reverse=True)
+            if weights is not None
+            else None
+        )
+
+        # Adaptive broad-HEX roots deterministically cover the best-prior
+        # actions before returning to the configured PUCT/widening policy. A
+        # stable sort preserves caller order for equal priors; with no prior,
+        # caller order itself is the deterministic expansion order.
+        if is_root and root_coverage_target is not None:
+            visited = sum(child.visits > 0 for child in node.children.values())
+            if visited < root_coverage_target:
+                coverage_order = order if order is not None else legal
+                key = next(
+                    key
+                    for key in coverage_order
+                    if key not in node.children or node.children[key].visits == 0
+                )
+                if key not in node.children:
+                    node.expand(legal, rng, coverage_order)
+                child = node.children[key]
+                node = child
+                path.append(child)
+                decision = sim.apply_ours(decision, key)
+                value = _rollout(
+                    sim,
+                    decision,
+                    cfg,
+                    continuation_policy,
+                    leaf_evaluator,
+                    current_context,
+                    cutoff_observer=cutoff_observer,
+                )
+                break
+
+        if node.should_expand(legal, widen_c, widen_alpha):
             key = node.expand(legal, rng, order)
             child = node.children[key]
             node = child
@@ -473,14 +809,17 @@ def _simulate(
             )  # evaluate freshly expanded leaf
             break
 
-        priors = None
-        if pol is not None:
+        priors = root_priors if is_root else None
+        if not is_root and pol is not None:
             priors = (
                 weights
                 if pol.semantics is ScoreSemantics.PROBABILITIES
                 else _normalize_weights(weights, legal)
             )
-        key = node.select(legal, cfg.uct_c, rng, priors, cfg.puct_c)
+        puct_c = (
+            cfg.root_puct_c if use_root_schedule and cfg.root_puct_c is not None else cfg.puct_c
+        )
+        key = node.select(legal, cfg.uct_c, rng, priors, puct_c)
         child = node.children[key]
         node = child
         path.append(child)
@@ -493,10 +832,106 @@ def _simulate(
         n.update(value)
 
 
+@dataclass(frozen=True, slots=True)
+class RootActionDiagnostic:
+    """Root statistics aligned to one caller-supplied legal action.
+
+    ``mean_value`` and ``value_variance`` are in the search reward space
+    ``[0, 1]`` (not the leaf evaluator's ``[-1, 1]`` space). An action with
+    zero visits reports zero for both fields as an explicit unvisited sentinel,
+    not as an estimated neutral value. ``prior_probability`` is the normalized
+    probability returned by the policy actually used at the root (including a
+    fallback policy); it is ``None`` when no policy was scored. The prior always
+    orders expansion and participates in selection only when the effective
+    root PUCT constant is positive.
+    """
+
+    action: Key
+    prior_probability: float | None
+    visits: int
+    mean_value: float
+    value_variance: float
+
+
 @dataclass
 class SearchResult:
     root: Node
     best_key: Key | None  # None => no real choice (forced move)
+    root_action_diagnostics: tuple[RootActionDiagnostic, ...] = ()
+    requested_iterations: int | None = None
+    effective_iterations: int | None = None
+    root_coverage_target: int | None = None
+
+
+def _adaptive_hex_root_schedule(cfg: SearchConfig, legal: Sequence[Key]) -> tuple[int, int | None]:
+    """Return the effective iteration budget and optional root coverage target.
+
+    Version 1 applies only when every legal action is a canonical HEX key,
+    except for an optional ``SKIP`` sentinel, and the root has more than eight
+    actions. It retains all actions; the target controls visitation only.
+    """
+    count = len(legal)
+    is_hex_or_skip = all(
+        key == "SKIP" or (isinstance(key, tuple) and len(key) == 4 and key[0] == "hex")
+        for key in legal
+    )
+    has_hex = any(isinstance(key, tuple) and len(key) == 4 and key[0] == "hex" for key in legal)
+    if (
+        cfg.adaptive_hex_root_schedule_version != 1
+        or count <= 8
+        or not is_hex_or_skip
+        or not has_hex
+    ):
+        return cfg.iterations, None
+
+    coverage_target = min(count, 12, max(4, math.ceil(math.sqrt(count))))
+    return max(cfg.iterations, 2 * coverage_target), coverage_target
+
+
+def _root_action_diagnostics(
+    root: Node,
+    legal: Sequence[Key],
+    priors: dict[Key, float] | None,
+) -> tuple[RootActionDiagnostic, ...]:
+    return tuple(
+        RootActionDiagnostic(
+            action=key,
+            prior_probability=priors.get(key, 0.0) if priors is not None else None,
+            visits=child.visits if child is not None else 0,
+            mean_value=child.q if child is not None else 0.0,
+            value_variance=child.value_variance if child is not None else 0.0,
+        )
+        for key in legal
+        for child in (root.children.get(key),)
+    )
+
+
+def _validated_search_root_and_state(
+    state: GameState,
+    perspective_team: TeamColor,
+    root_target: RootTarget,
+    legal_candidates: Sequence[Key],
+    environment_policy: Agent,
+    cfg: SearchConfig | None = None,
+) -> tuple[ValidatedRoot, GameState]:
+    validation_clone = clone_state(state)
+    validation_sim = _Simulator(
+        validation_clone,
+        perspective_team,
+        environment_policy,
+        owned_hero_ids=root_target.owned_hero_ids,
+        cfg=cfg,
+    )
+    surfaced = validation_sim.advance()
+    validated = validate_root(
+        validation_clone,
+        perspective_team,
+        root_target,
+        surfaced,
+        legal_candidates=legal_candidates,
+        canonical_legal=legal_keys(surfaced),
+    )
+    return validated, validation_clone
 
 
 def validate_search_root(
@@ -505,26 +940,17 @@ def validate_search_root(
     root_target: RootTarget,
     legal_candidates: Sequence[Key],
     environment_policy: Agent,
+    *,
+    cfg: SearchConfig | None = None,
 ) -> ValidatedRoot:
     """Surface and validate one cloned classic-search root."""
-    validation_clone = clone_state(state)
-    validation_sim = _Simulator(
-        validation_clone,
-        perspective_team,
-        environment_policy,
-        owned_hero_ids=root_target.owned_hero_ids,
+    validated, _ = _validated_search_root_and_state(
+        state, perspective_team, root_target, legal_candidates, environment_policy, cfg
     )
-    surfaced = validation_sim.advance()
-    return validate_root(
-        validation_clone,
-        perspective_team,
-        root_target,
-        surfaced,
-        legal_candidates=legal_candidates,
-        canonical_legal=legal_keys(surfaced),
-    )
+    return validated
 
 
+@_without_hypothetical_engine_info
 def search(
     state: GameState,
     our_team: TeamColor,
@@ -564,25 +990,58 @@ def search(
     that's a property of the caller's arguments, not the determinization.
     """
     # One shared validation clone for BOTH paths: surface the root, compare
-    # ``root_legal`` against the canonical legal set. The clone is discarded
-    # after — the multi-key path builds fresh determinized worlds per
-    # iteration inside ``_simulate``.
-    validated = validate_search_root(state, our_team, root_target, root_legal, environment_policy)
+    # ``root_legal`` against the canonical legal set, and score the exact
+    # surfaced root once. Iterations still build independent determinized
+    # worlds inside ``_simulate``.
+    validated, validated_root_state = _validated_search_root_and_state(
+        state, our_team, root_target, root_legal, environment_policy, cfg
+    )
     root_legal = validated.legal_candidates
 
     root = Node()
     if len(root_legal) == 1:
-        # Singleton root: legal set already validated above; no branching.
-        return SearchResult(root, root_legal[0])
+        # Singleton root: legal set already validated above; no policy/model
+        # evaluation or branching, preserving the fast forced-choice path.
+        diagnostics = _root_action_diagnostics(root, root_legal, None)
+        return SearchResult(
+            root,
+            root_legal[0],
+            diagnostics,
+            requested_iterations=cfg.iterations,
+            effective_iterations=0,
+        )
+
+    root_policy: PolicyScores | None = None
+    root_priors: dict[Key, float] | None = None
+    if prior is not None:
+        root_decision = cast(DecisionDescriptor, validated.decision)
+        root_context = SearchContext(
+            root_viewer_id=root_target.decision_owner_hero_id,
+            perspective_team=our_team,
+            current_owner_id=root_target.decision_owner_hero_id,
+            current_decision=root_decision,
+        )
+        root_policy = score_policy(prior, root_context, validated_root_state, root_legal)
+        root_weights = dict(zip(root_legal, root_policy.scores, strict=True))
+        root_priors = (
+            root_weights
+            if root_policy.semantics is ScoreSemantics.PROBABILITIES
+            else _normalize_weights(root_weights, list(root_legal))
+        )
 
     evaluator = leaf_evaluator or HeuristicLeafEvaluator()
     continuation = continuation_policy or environment_policy
+    effective_iterations, root_coverage_target = _adaptive_hex_root_schedule(cfg, root_legal)
     rng = random.Random(cfg.seed)
-    for _ in range(cfg.iterations):
+    for _ in range(effective_iterations):
         _simulate(
             root,
             state,
             root_target,
+            root_legal,
+            root_policy,
+            root_priors,
+            root_coverage_target,
             our_team,
             environment_policy,
             cfg,
@@ -601,13 +1060,24 @@ def search(
         return (child.visits, child.q) if child else (0, 0.0)
 
     best = max(root_legal, key=rank)
-    return SearchResult(root, best)
+    diagnostics = _root_action_diagnostics(root, root_legal, root_priors)
+    return SearchResult(
+        root,
+        best,
+        diagnostics,
+        requested_iterations=cfg.iterations,
+        effective_iterations=effective_iterations,
+        root_coverage_target=root_coverage_target,
+    )
 
 
 __all__ = [
     "CutoffObserver",
+    "RootActionDiagnostic",
     "RootMismatchError",
     "RootTarget",
+    "SearchProgressionDiagnostics",
+    "SearchProgressionError",
     "SearchResult",
     "legal_keys",
     "search",

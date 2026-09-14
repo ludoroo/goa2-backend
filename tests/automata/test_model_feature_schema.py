@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import struct
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -243,6 +245,7 @@ def schema():
 def _record_schema_fields(record_schema: Any) -> set[str]:
     declarations = (
         tuple(record_schema.numeric)
+        + tuple(record_schema.hashed)
         + tuple(record_schema.categorical)
         + tuple(record_schema.references)
         + tuple(record_schema.ignored)
@@ -251,8 +254,9 @@ def _record_schema_fields(record_schema: Any) -> set[str]:
 
 
 def test_current_schema_is_frozen_versioned_and_canonically_artifact_pinnable(schema: Any) -> None:
-    assert schema.schema_version >= 1
-    assert schema.schema_id
+    assert schema.schema_version == feature_schema_contracts.TENSOR_SCHEMA_VERSION == 1
+    assert schema.schema_id == feature_schema_contracts.TENSOR_SCHEMA_ID
+    assert schema.schema_id == "goa2-tensor-features-v1"
     assert len(schema.digest) == 64
     assert schema == feature_schema_contracts.TensorFeatureSchema.current()
 
@@ -266,6 +270,46 @@ def test_current_schema_is_frozen_versioned_and_canonically_artifact_pinnable(sc
 
     with pytest.raises((ValidationError, TypeError)):
         schema.schema_id = "mutable"
+
+
+def test_incompatible_tensor_schema_identity_is_rejected_instead_of_reinterpreted(
+    schema: Any,
+) -> None:
+    payload = schema.model_dump(mode="json")
+    payload.update(schema_version=999, schema_id="incompatible-tensor-schema")
+
+    with pytest.raises(ValidationError, match="schema_version"):
+        feature_schema_contracts.TensorFeatureSchema.model_validate(payload)
+
+
+def test_candidate_hash_semantics_are_bound_into_tensor_schema_digest(schema: Any) -> None:
+    payload = schema.model_dump(mode="json")
+    option = next(item for item in payload["candidates"] if item["kind"] == "OPTION")
+    option["hashed"][0]["dimension"] += 1
+
+    with pytest.raises(ValidationError, match="digest"):
+        feature_schema_contracts.TensorFeatureSchema.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"dimension": 4097}, "dimension"),
+        ({"max_n": 17}, "max_n"),
+    ],
+)
+def test_hashed_feature_resource_bounds_fail_closed(change: dict[str, int], message: str) -> None:
+    values = {
+        "source": "option_id",
+        "namespace": "OPTION",
+        "dimension": 64,
+        "min_n": 1,
+        "max_n": 4,
+        **change,
+    }
+
+    with pytest.raises(ValidationError, match=message):
+        feature_schema_contracts.HashedStringFeature(**values)
 
 
 def test_schema_explicitly_accounts_for_every_current_encoder_field(schema: Any) -> None:
@@ -284,6 +328,14 @@ def test_schema_explicitly_accounts_for_every_current_encoder_field(schema: Any)
             assert feature.dtype in {"BOOLEAN", "INTEGER", "FLOAT"}
             assert feature.default is not None
             assert feature.normalization in {"NONE", "STANDARD", "MIN_MAX", "SIGNED_LOG"}
+        for feature in item.hashed:
+            assert feature.algorithm == "BLAKE2B_SIGNED_CHARACTER_NGRAM"
+            assert feature.algorithm_version == 1
+            assert feature.dimension > 0
+            assert 1 <= feature.min_n <= feature.max_n
+            assert feature.boundary_markers is True
+            assert feature.normalization == "L2"
+            assert feature.namespace in {"ACTION", "OPTION"}
         for feature in item.categorical:
             assert feature.policy == "DIRECT"
             assert tuple(feature.vocabulary[:3]) == ("PAD", "UNK", "MISSING")
@@ -581,6 +633,68 @@ def test_all_current_candidate_kinds_vectorize_and_order_and_ids_stay_python_sid
                 assert any(record.reference_valid)
         seen.update(record.kind for record in result.candidates)
     assert seen == CANDIDATE_KINDS
+
+
+def test_action_and_option_candidate_ids_have_deterministic_open_world_identity_vectors(
+    schema: Any,
+) -> None:
+    state = _state()
+
+    def identity_vector(kind: InputRequestType, candidate_id: str) -> tuple[float, ...]:
+        encoded = _encode(state, Decision("INPUT", request=_request(kind, [candidate_id])))
+        vectorized = schema.vectorize(encoded, training=True)
+        assert vectorized.candidate_ids == tuple(
+            candidate.candidate_id for candidate in encoded.candidates
+        )
+        return vectorized.candidates[0].numeric
+
+    golden_vectors = (
+        (
+            InputRequestType.SELECT_OPTION,
+            "hold",
+            "753f7539259e35a35cc4311d42202a3aaf64374174b2761870691bbfeeb36f8e",
+        ),
+        (
+            InputRequestType.CHOOSE_ACTION,
+            "advance",
+            "157e113f2c20038d51882f7c9fbcdae63f2b1c7094a1a15c0a46b28e08a7fde7",
+        ),
+        (
+            InputRequestType.SELECT_OPTION,
+            "café-東京",
+            "233d34cbb71d577ca7d14ea91e576d427ca4cb41056fe927e8a32d341ae28026",
+        ),
+        (
+            InputRequestType.CHOOSE_ACTION,
+            "teleport-😀",
+            "2c9dd5ba3ac5a25757952b6b24c52282e9fdb6174cfc8c1401a70d7039a0734a",
+        ),
+    )
+    vectors: dict[tuple[InputRequestType, str], tuple[float, ...]] = {}
+    for request_type, candidate_id, expected_digest in golden_vectors:
+        vector = identity_vector(request_type, candidate_id)
+        vectors[(request_type, candidate_id)] = vector
+        assert vector == identity_vector(request_type, candidate_id)
+        assert hashlib.sha256(struct.pack(f">{len(vector)}d", *vector)).hexdigest() == (
+            expected_digest
+        )
+
+    assert vectors[(InputRequestType.SELECT_OPTION, "hold")] != identity_vector(
+        InputRequestType.SELECT_OPTION, "advance"
+    )
+    assert vectors[(InputRequestType.SELECT_OPTION, "hold")] != identity_vector(
+        InputRequestType.SELECT_OPTION, "future-extension:teleport"
+    )
+    assert (
+        identity_vector(InputRequestType.CHOOSE_ACTION, "hold")
+        != vectors[(InputRequestType.SELECT_OPTION, "hold")]
+    )
+
+    option_schema = next(item for item in schema.candidates if item.kind == "OPTION")
+    action_schema = next(item for item in schema.candidates if item.kind == "ACTION")
+    assert option_schema.hashed[0].source == "option_id"
+    assert action_schema.hashed[0].source == "action_id"
+    assert option_schema.hashed[0].namespace != action_schema.hashed[0].namespace
 
 
 def test_empty_candidate_decision_fails_vectorization(

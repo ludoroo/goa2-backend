@@ -36,7 +36,13 @@ from automata.models.shared_encoder.batching import (
     RelationshipTable,
     collate_decisions,
 )
-from automata.models.shared_encoder.schema import RecordFeatureSchema, TensorFeatureSchema
+from automata.models.shared_encoder.schema import (
+    RecordFeatureSchema,
+    TensorFeatureSchema,
+    TensorSchemaID,
+    TensorSchemaVersion,
+    expanded_numeric_width,
+)
 from automata.training.dataset import (
     JointDatasetRow,
     TerminalWinner,
@@ -103,6 +109,8 @@ class IndexedDatasetManifest(BaseModel):
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_size: StrictInt = Field(ge=0)
     dataset_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    tensor_schema_id: TensorSchemaID
+    tensor_schema_version: TensorSchemaVersion
     tensor_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     training_chunk_format_version: Literal[1] = _TRAINING_CHUNK_FORMAT_VERSION
     training_chunk_size: StrictInt = Field(gt=0)
@@ -162,6 +170,8 @@ class _TensorizationCheckpoint(BaseModel):
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_size: StrictInt = Field(ge=0)
     dataset_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    tensor_schema_id: TensorSchemaID
+    tensor_schema_version: TensorSchemaVersion
     tensor_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     training_chunk_format: Literal["torch-save-zstd"] = _TRAINING_CHUNK_FORMAT
     training_chunk_format_version: Literal[1] = _TRAINING_CHUNK_FORMAT_VERSION
@@ -340,7 +350,11 @@ class IndexedJointDataset:
         """Yield one game's pre-collated chunks after validating each exact file."""
         game = self.game(game_id)
         schema = TensorFeatureSchema.current()
-        if schema.digest != self.manifest.tensor_schema_digest:
+        if (
+            schema.schema_id != self.manifest.tensor_schema_id
+            or schema.schema_version != self.manifest.tensor_schema_version
+            or schema.digest != self.manifest.tensor_schema_digest
+        ):
             raise ValueError("current tensor schema does not match the indexed training cache")
         for metadata in game.training_chunks:
             path = _safe_cache_file(self.cache_dir, metadata.path, kind="training chunk")
@@ -783,7 +797,7 @@ def _load_feature_table(
         raise ValueError("exactly one feature schema or explicit width tuple is required")
     if record_schema is not None:
         widths = (
-            len(record_schema.numeric),
+            expanded_numeric_width(record_schema),
             len(record_schema.categorical),
             len(record_schema.references),
         )
@@ -861,7 +875,7 @@ def _load_batch(value: Any, *, schema: TensorFeatureSchema, row_count: int) -> D
 
     # Candidate columns are padded to the widest candidate schema declaration.
     candidate_widths = (
-        max(len(item.numeric) for item in schema.candidates),
+        max(expanded_numeric_width(item) for item in schema.candidates),
         max(len(item.categorical) for item in schema.candidates),
         max(len(item.references) for item in schema.candidates),
     )
@@ -1217,6 +1231,8 @@ def _open_compatible_published_index(
     if (
         manifest.source_sha256 != source_digest
         or manifest.source_size != source_size
+        or manifest.tensor_schema_id != schema.schema_id
+        or manifest.tensor_schema_version != schema.schema_version
         or manifest.tensor_schema_digest != schema.digest
         or manifest.training_chunk_format_version != _TRAINING_CHUNK_FORMAT_VERSION
         or manifest.training_chunk_size != training_chunk_size
@@ -1369,6 +1385,8 @@ def _build_indexed_dataset_locked(
                 source_sha256=source_digest,
                 source_size=source_size,
                 dataset_digest=dataset_digest.hexdigest(),
+                tensor_schema_id=schema.schema_id,
+                tensor_schema_version=schema.schema_version,
                 tensor_schema_digest=schema.digest,
                 training_chunk_size=training_chunk_size,
                 row_count=row_count,
@@ -1470,6 +1488,8 @@ def _build_indexed_dataset_locked(
             source_sha256=checkpoint.source_sha256,
             source_size=checkpoint.source_size,
             dataset_digest=checkpoint.dataset_digest,
+            tensor_schema_id=checkpoint.tensor_schema_id,
+            tensor_schema_version=checkpoint.tensor_schema_version,
             tensor_schema_digest=checkpoint.tensor_schema_digest,
             training_chunk_format_version=checkpoint.training_chunk_format_version,
             training_chunk_size=checkpoint.training_chunk_size,

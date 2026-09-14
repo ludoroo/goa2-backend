@@ -589,11 +589,23 @@ class _GraphBuilder:
         for lane_id, zones in _items(lanes):
             for zone_id in zones:
                 self.edge(self.zone_refs[str(zone_id)], self.lane_refs[lane_id], "ZONE_IN_LANE")
-        tile_keys = sorted(self.tile_refs)
-        for source in tile_keys:
-            for target in tile_keys:
-                if source != target and max(abs(source[i] - target[i]) for i in range(3)) == 1:
-                    self.edge(self.tile_refs[source], self.tile_refs[target], "HEX_ADJACENT")
+        # A cube-coordinate hex has exactly six possible neighbors. Looking each one up avoids an O(tile_count²)
+        # all-pairs scan, which would dominate learned policy/value observation on full maps.
+        neighbor_deltas = (
+            (1, -1, 0),
+            (1, 0, -1),
+            (0, 1, -1),
+            (-1, 1, 0),
+            (-1, 0, 1),
+            (0, -1, 1),
+        )
+        for source in sorted(self.tile_refs):
+            source_ref = self.tile_refs[source]
+            for dq, dr, ds in neighbor_deltas:
+                target = (source[0] + dq, source[1] + dr, source[2] + ds)
+                target_ref = self.tile_refs.get(target)
+                if target_ref is not None:
+                    self.edge(source_ref, target_ref, "HEX_ADJACENT")
         for zone_id, raw_zone in _items(board.get("zones")):
             for neighbor in sorted(raw_zone.get("neighbors", [])):
                 if str(neighbor) in self.zone_refs:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from goa2.domain.events import GameEvent, GameEventType, _hex_dict
 from goa2.domain.models import ActionType, GamePhase, StepType
@@ -66,6 +66,7 @@ class FindNextActorStep(GameStep):
     """
 
     type: StepType = StepType.FIND_NEXT_ACTOR
+    survives_action_abort: ClassVar[bool] = True
 
     def resolve(self, state: GameState, context: dict[str, Any]) -> StepResult:
         # Import internally to avoid circular dependency (steps <-> phases)
@@ -147,6 +148,7 @@ class EndPhaseCleanupStep(GameStep):
     """
 
     type: StepType = StepType.END_PHASE_CLEANUP
+    survives_action_abort: ClassVar[bool] = True
 
     def resolve(self, state: GameState, context: dict[str, Any]) -> StepResult:
         from goa2.engine.phases import record_position_snapshot
@@ -304,6 +306,7 @@ class EndPhaseStep(GameStep):
     """
 
     type: StepType = StepType.END_PHASE
+    survives_action_abort: ClassVar[bool] = True
 
     def resolve(self, state: GameState, context: dict[str, Any]) -> StepResult:
         from goa2.engine.steps.combat import CheckLanePushStep, MinionBattleStep
@@ -342,6 +345,7 @@ class AdvanceTurnStep(GameStep):
     """
 
     type: StepType = StepType.ADVANCE_TURN
+    survives_action_abort: ClassVar[bool] = True
 
     def resolve(self, state: GameState, context: dict[str, Any]) -> StepResult:
         from goa2.engine.phases import (

@@ -297,8 +297,15 @@ def _record_replay(
         else:  # PASS
             rec.record_pass(hero_id_str, rec_round, rec_turn)
         return
-    # INPUT: use the decision maker, not request.player_id.
-    rec.record_input(hero_id_str, decision.selection, rec_round, rec_turn)
+    # INPUT: use the decision maker, not request.player_id. Mark it automatic
+    # because bot resolution answers freeze rollback before they are applied.
+    rec.record_input(
+        hero_id_str,
+        decision.selection,
+        rec_round,
+        rec_turn,
+        automatic=True,
+    )
 
 
 def _log_action_specific(game: ManagedGame, decision: BotDecision) -> None:

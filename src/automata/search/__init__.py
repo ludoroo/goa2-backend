@@ -9,7 +9,12 @@ from .contracts import (
     SearchContext,
     SearchPolicy,
 )
-from .ismcts.strategy import ISMCTSStrategy, SearchStrategy, StrategyResult
+from .ismcts.strategy import (
+    ISMCTSStrategy,
+    SearchStrategy,
+    StrategyResult,
+    VisitSamplingStrategy,
+)
 
 __all__ = [
     "CutoffUnit",
@@ -22,4 +27,5 @@ __all__ = [
     "SearchPolicy",
     "SearchStrategy",
     "StrategyResult",
+    "VisitSamplingStrategy",
 ]

@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 import torch
 import zstandard
+from pydantic import ValidationError
 
 from automata.models.contracts import (
     DecisionObservation,
@@ -348,6 +349,32 @@ def test_tensor_cache_manifest_is_bound_to_schema_and_chunk_size(tmp_path: Path)
     assert second.manifest.training_chunk_size == 1
     assert len(second.game("game-7").training_chunks) == 3
     assert (cache / second.game("game-7").training_chunks[0].path).stat().st_ino != first_inode
+
+
+def test_index_without_complete_tensor_identity_is_rejected_and_rebuilt(tmp_path: Path) -> None:
+    source = tmp_path / "joint.jsonl"
+    cache = tmp_path / "index"
+    write_joint_dataset(source, (_row(7, 0),))
+    current = open_indexed_dataset(source, cache)
+    chunk_path = cache / current.game("game-7").training_chunks[0].path
+    original_inode = chunk_path.stat().st_ino
+
+    stale = current.manifest.model_dump(mode="json")
+    stale["schema_version"] = 2
+    stale.pop("tensor_schema_id")
+    stale.pop("tensor_schema_version")
+    with pytest.raises(ValidationError, match=r"schema_version|tensor_schema"):
+        IndexedDatasetManifest.model_validate(stale)
+    (cache / "manifest.json").write_text(json.dumps(stale, sort_keys=True, separators=(",", ":")))
+
+    rebuilt = open_indexed_dataset(source, cache)
+
+    schema = TensorFeatureSchema.current()
+    assert rebuilt.manifest.schema_version == 2
+    assert rebuilt.manifest.tensor_schema_id == schema.schema_id
+    assert rebuilt.manifest.tensor_schema_version == schema.schema_version
+    assert rebuilt.manifest.tensor_schema_digest == schema.digest
+    assert (cache / rebuilt.game("game-7").training_chunks[0].path).stat().st_ino != original_inode
 
 
 def test_index_build_never_accumulates_more_than_training_chunk_size_source_rows(

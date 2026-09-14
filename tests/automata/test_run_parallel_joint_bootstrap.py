@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -238,6 +239,91 @@ def test_joint_bootstrap_parent_uses_the_workers_exact_generator_config_id(
     module_index = command.index("automata.scripts.generate_joint_bootstrap")
     assert generate_joint_bootstrap.main(command[module_index + 1 :]) == 0
     assert seen["config_id"] == generated["generator_config_id"]
+
+
+def test_joint_bootstrap_forwards_diverse_pilot_options_and_uses_their_config_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(run_parallel, "source_identity", lambda **_kw: ("revision", "dirty"))
+
+    def run_workers(commands: list[tuple[Shard, list[str], Path]], **kwargs: object) -> None:
+        seen["commands"] = commands
+        seen.update(kwargs)
+
+    monkeypatch.setattr(run_parallel, "_run_joint_workers", run_workers)
+    monkeypatch.setattr(run_parallel, "merge_joint_bootstrap", lambda *_args, **_kwargs: 0)
+    options = [
+        "--target-source",
+        "heuristic",
+        "--target-recipe",
+        generate_joint_bootstrap.SOFT_CARD_TARGET_RECIPE,
+        "--pilot-mode",
+        "diverse",
+        "--planning-behavior",
+        "uniform",
+        "--variant-schedule",
+        "balanced",
+        "--card-target-temperature",
+        "0.8",
+        "--card-target-uniform-mass",
+        "0.3",
+        "--max-steps",
+        "321",
+        "--timeout-seconds",
+        "45",
+    ]
+
+    assert (
+        run_parallel.main(
+            [
+                "joint-bootstrap",
+                "--out",
+                str(tmp_path / "out.jsonl.zst"),
+                "--checkpoint",
+                str(tmp_path / "checkpoint.jsonl"),
+                "--seed-start",
+                "10000",
+                "--seed-end",
+                "10002",
+                "--",
+                *options,
+            ]
+        )
+        == 0
+    )
+
+    commands = seen["commands"]
+    assert isinstance(commands, list)
+    for _, command, _ in commands:
+        for option in (
+            "--pilot-mode",
+            "--planning-behavior",
+            "--variant-schedule",
+            "--card-target-temperature",
+            "--card-target-uniform-mass",
+        ):
+            assert _option(command, option) == _option(options, option)
+    worker_command = commands[0][1]
+    module_index = worker_command.index("automata.scripts.generate_joint_bootstrap")
+    worker_args = generate_joint_bootstrap.parse_generator_args(worker_command[module_index + 1 :])
+    expected_config_id = generate_joint_bootstrap.generator_config_id(
+        worker_args, source_revision="revision", dirty_tree_hash="dirty"
+    )
+    assert seen["config_id"] == expected_config_id
+
+    sidecar_path = Path(f"{tmp_path / 'out.jsonl.zst'}.provenance.json")
+    sidecar_bytes = sidecar_path.read_bytes()
+    sidecar = json.loads(sidecar_bytes)
+    assert sidecar_bytes == canonical_json_bytes(
+        generate_joint_bootstrap.GeneratorProvenance.model_validate(sidecar)
+    )
+    assert sidecar["seed_range"] == {"start": 10_000, "end": 10_002}
+    assert sidecar["generator_config_id"] == expected_config_id
+    assert sidecar["generator_config"]["pilot"]["planning_behavior"] == "uniform"
+    assert sidecar["target_provenance"]["card_target"]["recipe"] == (
+        generate_joint_bootstrap.SOFT_CARD_TARGET_RECIPE
+    )
 
 
 def test_joint_bootstrap_disables_child_progress_and_can_disable_parent_progress(

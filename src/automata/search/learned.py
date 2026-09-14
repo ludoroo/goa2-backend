@@ -38,20 +38,43 @@ def _evaluate(runtime: LearnedModelRuntime, observation: DecisionObservation) ->
         raise
 
 
+def _decision_for_context(context: SearchContext, state: GameState) -> DecisionDescriptor:
+    decision = context.current_decision
+    if decision is not None:
+        return decision
+    if state.input_stack:
+        return DecisionDescriptor("INPUT", request=state.input_stack[-1])
+    hero = state.get_hero(HeroID(context.current_owner_id))
+    if hero is None:
+        raise ValueError("leaf has no current decision owner")
+    from goa2.engine.phases import planning_open_for_second_card
+
+    return DecisionDescriptor(
+        "CARD",
+        hero=hero,
+        can_finish_planning=planning_open_for_second_card(state, hero.id),
+    )
+
+
 class LearnedSearchPolicy:
-    """Return unnormalized model logits in the caller's exact legal order."""
+    """Score a canonical observation and return logits in the caller's legal order."""
 
     def __init__(self, runtime: LearnedModelRuntime) -> None:
         self.runtime = runtime
 
     def score(self, context: SearchContext, state: GameState, legal_actions) -> PolicyScores:
         legal = tuple(legal_actions)
-        observation = encode_search_context(context, state, legal)
+        decision = _decision_for_context(context, state)
+        canonical = tuple(legal_keys_for_decision(decision))
+        if len(legal) != len(canonical) or any(action not in legal for action in canonical):
+            raise ValueError("caller actions must contain the exact canonical legal candidates")
+        observation = encode_search_context(context, state, canonical)
         output = _evaluate(self.runtime, observation)
         expected = tuple(candidate.candidate_id for candidate in observation.candidates)
         if output.candidate_ids != expected:
             raise ValueError("runtime candidates must preserve exact legal action order")
-        logits = tuple(float(value) for value in output.policy_logits)
+        canonical_logits = tuple(float(value) for value in output.policy_logits)
+        logits = tuple(canonical_logits[canonical.index(action)] for action in legal)
         return PolicyScores(legal, logits, ScoreSemantics.LOGITS)
 
 
@@ -62,20 +85,7 @@ class LearnedLeafEvaluator:
         self.runtime = runtime
 
     def evaluate(self, context: SearchContext, state: GameState) -> LeafEvaluation:
-        if state.input_stack:
-            request = state.input_stack[-1]
-            decision = DecisionDescriptor("INPUT", request=request)
-        else:
-            hero = state.get_hero(HeroID(context.current_owner_id))
-            if hero is None:
-                raise ValueError("leaf has no current decision owner")
-            from goa2.engine.phases import planning_open_for_second_card
-
-            decision = DecisionDescriptor(
-                "CARD",
-                hero=hero,
-                can_finish_planning=planning_open_for_second_card(state, hero.id),
-            )
+        decision = _decision_for_context(context, state)
         legal = legal_keys_for_decision(decision)
         if not legal:
             raise ValueError("leaf decision has no encodable legal candidates")
