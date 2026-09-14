@@ -421,6 +421,43 @@ draws, completion reason, rounds, steps, latency, timeout/error rates, and
 artifact/protocol identities. Append observations to a locked checkpoint;
 publish canonical evidence only when the declared schedule is complete.
 
+Use the tracked L/H candidate-versus-parent command for production arena
+workers. All matchup inputs are required; seed ranges are half-open. The
+command verifies both artifacts against their pinned model digests, current
+runtime/schema versions, the map inferred from `--map-path`, game mode, hero
+adapters, and the complete scheduled roster before it starts. Each case is
+spawn-isolated under the whole-game timeout and writes no training rows. A
+successful run prints one canonical summary JSON object containing
+candidate/parent wins, draws, completion-reason counts, rounds, steps, and the
+95% Wilson interval:
+
+```bash
+PYTHONPATH=src uv run python -m automata.scripts.run_learned_arena \
+  --candidate-artifact runs/candidate-model --candidate-digest "$CANDIDATE_DIGEST" \
+  --parent-artifact runs/parent-model --parent-digest "$PARENT_DIGEST" \
+  --checkpoint runs/arena/stratum-0.jsonl \
+  --map-path src/goa2/data/maps/forgotten_island.json --game-type QUICK \
+  --red-heroes Wasp Xargatha --blue-heroes Arien Brogan \
+  --seed-start 1020000 --seed-end 1020100 \
+  --search-config '{"iterations":8,"cutoff_limit":1,"cutoff_unit":"DECISIONS","leaf_mode":"IMMEDIATE","max_advance_transitions":1024,"max_forced_decisions":256,"widening_c":2.0,"widening_alpha":0.5,"use_prior":true,"uct_c":1.4,"puct_c":0.0,"root_puct_c":1.5,"root_widening_c":1.0,"root_widening_alpha":0.5}' \
+  --random-stream-namespace promotion-generation-12 \
+  --max-steps 10000 --timeout-seconds 3600
+```
+
+For four parallel independent strata, launch four processes with disjoint
+`--seed-start/--seed-end` ranges and distinct checkpoint paths. Use the same
+random-stream namespace across all four and any candidate/parent swap intended
+to reuse side-specific randomness. The search seed is derived only from that
+namespace, world seed, and RED/BLUE side; artifact assignment is deliberately
+excluded. Re-running an identical command resumes missing cases from its
+checkpoint. Source identity is collected automatically from the current tree
+with `runs/` excluded; changing source, artifacts, matchup, search settings,
+limits, timeout, or namespace invalidates stale checkpoint rows.
+
+The `--search-config` object uses the same strict, complete public L/H preset
+parser as tracked self-play. Unknown keys, coercible-but-wrong JSON types,
+invalid enums, and a caller-supplied `seed` fail before artifact loading.
+
 Promotion gates are predeclared. They consume immutable paired evidence and
 operational statistics, not ad-hoc reruns. A candidate must satisfy strength,
 reliability, and latency gates. The registry stores candidates and champions

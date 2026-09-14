@@ -170,7 +170,7 @@ def _hash_untracked_file(
         os.close(descriptor)
 
 
-def source_identity(*, exclude_paths: tuple[Path, ...] = ()) -> tuple[str, str]:
+def source_tree_identity(*, exclude_paths: tuple[Path, ...] = ()) -> tuple[str, str]:
     """Return HEAD and a content digest of non-excluded changes relative to it.
 
     Tracked changes are represented by a canonical binary Git diff. Untracked,
@@ -213,4 +213,14 @@ def source_identity(*, exclude_paths: tuple[Path, ...] = ()) -> tuple[str, str]:
     return revision, digest.hexdigest()
 
 
-__all__ = ["GATE_FAILURE_EXIT_STATUS", "repository_root", "source_identity"]
+def source_identity(*, exclude_paths: tuple[Path, ...] = ()) -> tuple[str, str]:
+    """Backward-compatible alias for :func:`source_tree_identity`."""
+    return source_tree_identity(exclude_paths=exclude_paths)
+
+
+__all__ = [
+    "GATE_FAILURE_EXIT_STATUS",
+    "repository_root",
+    "source_identity",
+    "source_tree_identity",
+]

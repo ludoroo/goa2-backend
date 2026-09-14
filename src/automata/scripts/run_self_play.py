@@ -14,7 +14,7 @@ import math
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,13 +22,7 @@ from tqdm import tqdm
 
 from automata.harness.game_runner import DEFAULT_MAP
 from automata.models.contracts import LearnedModelRuntime, canonical_json_bytes
-from automata.search.config import (
-    LEARNED_ROOT_PUCT_C,
-    LEARNED_ROOT_WIDENING_ALPHA,
-    LEARNED_ROOT_WIDENING_C,
-    SearchConfig,
-)
-from automata.search.contracts import CutoffUnit, LeafMode
+from automata.search.config import SearchConfig, parse_learned_lh_search_config
 from automata.search.ismcts.strategy import SearchStrategy
 from automata.training.experiments.phase0 import PHASE0_EXPERIMENT
 from automata.training.generation import (
@@ -180,117 +174,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _strict_int(config: Mapping[str, Any], field: str, *, minimum: int) -> int:
-    value = config[field]
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        qualifier = "positive" if minimum == 1 else "non-negative"
-        raise ValueError(f"search-config field {field!r} must be a {qualifier} integer")
-    return value
-
-
-def _strict_float(
-    config: Mapping[str, Any],
-    field: str,
-    *,
-    minimum: float,
-    minimum_inclusive: bool,
-    maximum: float | None = None,
-) -> float:
-    value = config[field]
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"search-config field {field!r} must be a number")
-    parsed = float(value)
-    below_minimum = parsed < minimum if minimum_inclusive else parsed <= minimum
-    if not math.isfinite(parsed) or below_minimum or (maximum is not None and parsed > maximum):
-        bounds = f"{minimum}..{maximum}" if maximum is not None else f">={minimum}"
-        raise ValueError(f"search-config field {field!r} must be finite and in {bounds}")
-    return parsed
-
-
-def _strict_enum(
-    config: Mapping[str, Any], field: str, enum_type: type[CutoffUnit] | type[LeafMode]
-) -> CutoffUnit | LeafMode:
-    value = config[field]
-    if not isinstance(value, str):
-        raise ValueError(f"search-config field {field!r} must be a string enum value")
-    try:
-        return enum_type(value)
-    except ValueError as exc:
-        choices = ", ".join(item.value for item in enum_type)
-        raise ValueError(f"search-config field {field!r} must be one of: {choices}") from exc
-
-
 def _learned_policy_heuristic_value_config(
     raw: Mapping[str, Any],
 ) -> tuple[SearchConfig, dict[str, Any]]:
-    """Strictly resolve the tracked L/H preset without ambient configuration."""
-    if "seed" in raw:
-        raise ValueError("search-config field 'seed' is forbidden; seed comes from agent_seed")
-    defaults = SearchConfig(
-        cutoff_limit=1,
-        cutoff_unit=CutoffUnit.DECISIONS,
-        leaf_mode=LeafMode.IMMEDIATE,
-        use_prior=True,
-        root_puct_c=LEARNED_ROOT_PUCT_C,
-        root_widening_c=LEARNED_ROOT_WIDENING_C,
-        root_widening_alpha=LEARNED_ROOT_WIDENING_ALPHA,
-        max_advance_transitions=1024,
-        max_forced_decisions=256,
-    )
-    allowed = set(asdict(defaults)) - {"seed"}
-    unknown = sorted(set(raw) - allowed)
-    if unknown:
-        raise ValueError(f"unknown search-config fields for L/H preset: {unknown!r}")
-
-    resolved: dict[str, Any] = {**asdict(defaults), **raw}
-    resolved["iterations"] = _strict_int(resolved, "iterations", minimum=1)
-    resolved["cutoff_limit"] = _strict_int(resolved, "cutoff_limit", minimum=0)
-    for field in ("max_advance_transitions", "max_forced_decisions"):
-        resolved[field] = _strict_int(resolved, field, minimum=1)
-    resolved["cutoff_unit"] = _strict_enum(resolved, "cutoff_unit", CutoffUnit)
-    resolved["leaf_mode"] = _strict_enum(resolved, "leaf_mode", LeafMode)
-    if not isinstance(resolved["use_prior"], bool):
-        raise ValueError("search-config field 'use_prior' must be a boolean")
-
-    for field in ("uct_c", "puct_c"):
-        resolved[field] = _strict_float(resolved, field, minimum=0.0, minimum_inclusive=True)
-    resolved["widening_c"] = _strict_float(
-        resolved, "widening_c", minimum=0.0, minimum_inclusive=False
-    )
-    resolved["widening_alpha"] = _strict_float(
-        resolved,
-        "widening_alpha",
-        minimum=0.0,
-        minimum_inclusive=True,
-        maximum=1.0,
-    )
-    for field, minimum, inclusive, maximum in (
-        ("root_puct_c", 0.0, True, None),
-        ("root_widening_c", 0.0, False, None),
-        ("root_widening_alpha", 0.0, True, 1.0),
-    ):
-        if resolved[field] is not None:
-            resolved[field] = _strict_float(
-                resolved,
-                field,
-                minimum=minimum,
-                minimum_inclusive=inclusive,
-                maximum=maximum,
-            )
-    schedule = resolved["adaptive_hex_root_schedule_version"]
-    if schedule is not None and (
-        isinstance(schedule, bool) or not isinstance(schedule, int) or schedule != 1
-    ):
-        raise ValueError(
-            "search-config field 'adaptive_hex_root_schedule_version' must be null or integer 1"
-        )
-
-    config = SearchConfig(**resolved)
-    identity = asdict(config)
-    identity["cutoff_unit"] = config.cutoff_unit.value
-    identity["leaf_mode"] = config.leaf_mode.value
-    identity["seed"] = "agent_seed"
-    return config, identity
+    """Backward-compatible wrapper around the shared production parser."""
+    return parse_learned_lh_search_config(raw)
 
 
 def _resolve_strategy_preset(

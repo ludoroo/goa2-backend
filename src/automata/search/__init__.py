@@ -1,6 +1,6 @@
 """Model-neutral search contracts and the classic ISMCTS implementation."""
 
-from .config import SearchConfig
+from .config import SearchConfig, parse_learned_lh_search_config
 from .contracts import (
     CutoffUnit,
     LeafEvaluation,
@@ -28,4 +28,5 @@ __all__ = [
     "SearchStrategy",
     "StrategyResult",
     "VisitSamplingStrategy",
+    "parse_learned_lh_search_config",
 ]
