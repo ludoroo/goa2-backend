@@ -6,7 +6,7 @@ import math
 from importlib import import_module
 from typing import Any, cast
 
-from automata.models import INITIAL_RELATIONSHIP_NAMES, PublicSnapshot, Viewer
+from automata.models.contracts import INITIAL_RELATIONSHIP_NAMES, PublicSnapshot, Viewer
 from automata.observation import project_snapshot
 from goa2.domain.board import Board, Zone
 from goa2.domain.hex import Hex

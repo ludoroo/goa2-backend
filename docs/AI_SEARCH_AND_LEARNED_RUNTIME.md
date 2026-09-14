@@ -9,9 +9,13 @@
   joint model, batching, artifact, `SharedEncoderRuntime`, and serving cache;
   `LearnedSearchPolicy` and `LearnedLeafEvaluator`; independent
   `policy_source`/`value_source` server composition.
-- **PR3 deferred:** alternative policy-only, shallow, and multiply algorithms,
-  plus all evaluation, training, generation, replay, self-play, arena,
-  promotion, curriculum, CLI, and harness work.
+- **PR3/PR4 preserved:** learned runtime contracts and the shared-encoder
+  implementation remain independent from offline orchestration.
+- **PR6 boundary:** `automata.training` owns generation, datasets, replay,
+  training, curriculum, experiment declarations, registry, and policy iteration.
+  `automata.evaluation` owns arenas, statistics, protocols, promotion gates,
+  ablations, and matchup evidence. The neutral offline `automata.harness` owns
+  the shared headless game runner and trajectory recorders.
 
 ## Scope
 
@@ -32,6 +36,9 @@ trajectory, model, observation-encoding, or ML framework dependency.
 | Observations | `automata.decision.DecisionDescriptor` | `automata.observation.graph.encoder`, `automata.observation.decision_encoder`, `automata.observation.projector` |
 | Hero adapters | `automata.observation.hero_adapters.protocol` | `automata.observation.hero_adapters.registry` |
 | Search components | `automata.search.contracts` | `automata.search.heuristic`, `fallback`, `learned`, `ismcts` |
+| Offline harness | — | `automata.harness.game_runner`, `automata.harness.trajectory` |
+| Offline training | `automata.training.contracts` | `automata.training` |
+| Evaluation | `automata.evaluation.protocol` | `arena`, `arena_stats`, `promotion_gates`, `ablation`, `matchup` |
 
 Artifact errors, scope, and runtime requirements are model contracts. The concrete
 manifest, tensor/file inventory, and artifact export/loading are specific to the
@@ -54,7 +61,12 @@ does not import the concrete ISMCTS implementation.
 In PR1, the package boundary deliberately excluded `automata.models`,
 `automata.observation`, learned policy/value implementations, Torch, and other
 ML dependencies. PR2 adds those runtime pieces while still excluding
-evaluation/training harnesses.
+offline evaluation, training, or harness code. Product runtime and search never
+import `automata.training`, `automata.evaluation`, or `automata.harness`; the
+offline packages depend inward on stable product and model contracts. Training
+and evaluation may use the neutral harness. Their only direct cross-package
+composition is policy iteration importing evaluation; evaluation does not
+import training.
 
 ## Stable search context
 

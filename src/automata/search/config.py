@@ -104,6 +104,7 @@ class SearchConfig:
     # DEFAULT OFF: measured 2-10 (16.7%) vs plain UCB1 at 8 iters / 12 games.
     # At low iteration budgets a strong prior over-commits and under-explores,
     # while UCB1's force-try-every-child does better. PUCT stays available as a
-    # knob for higher-budget / learned-policy experiments (revisit at Rung 3),
-    # where a trained P(a) should make it pay off. See docs/plan_ai_ladder.md.
+    # knob for higher-budget / learned-policy experiments,
+    # where a trained P(a) should make it pay off. See
+    # docs/LEARNED_TRAINING_OPERATIONS.md.
     puct_c: float = 0.0

@@ -16,7 +16,7 @@ import pytest
 import torch
 
 from automata.decision import DecisionDescriptor as Decision
-from automata.models import (
+from automata.models.contracts import (
     DecisionObservation,
     canonical_json_bytes,
     from_canonical_json,
