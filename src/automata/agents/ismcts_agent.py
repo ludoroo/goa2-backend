@@ -260,6 +260,7 @@ class ISMCTSAgent:
             player_id=pid,
             owned_hero_ids=owned_hero_ids,
             decision_owner_hero_id=decision_owner_hero_id,
+            request=request,
         )
         strategy_result = self._select(state, owner.team, target, legal)
         selected_key = strategy_result.selected_candidate

@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from automata.search.root import RootMismatchError, RootTarget, validate_root, validate_root_legal
+from goa2.domain.input import InputRequest, InputRequestType
 from goa2.domain.models import TeamColor
 from goa2.engine.setup import GameSetup
 
@@ -16,6 +17,27 @@ class _Decision:
     kind: str
     hero: Any | None = None
     request: Any | None = None
+
+
+@pytest.mark.parametrize(
+    ("request_id", "player_id"),
+    (("different-request", "hero_wasp"), ("surfaced-request", "hero_arien")),
+)
+def test_input_root_rejects_request_identity_mismatch(request_id: str, player_id: str) -> None:
+    request = InputRequest(
+        id="surfaced-request",
+        request_type=InputRequestType.SELECT_OPTION,
+        player_id="hero_wasp",
+    )
+
+    with pytest.raises(ValueError, match="request"):
+        RootTarget.input(
+            request_id=request_id,
+            player_id=player_id,
+            request=request,
+            owned_hero_ids=frozenset({"hero_wasp"}),
+            decision_owner_hero_id="hero_wasp",
+        )
 
 
 def test_validate_root_legal_preserves_caller_order_and_rejects_drift() -> None:

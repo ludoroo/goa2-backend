@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from goa2.domain.state import GameState
 
 from .contracts import (
@@ -10,6 +12,7 @@ from .contracts import (
     LeafEvaluation,
     LeafEvaluator,
     PolicyScores,
+    PolicyScoreSource,
     SearchContext,
     SearchPolicy,
 )
@@ -26,7 +29,10 @@ class FallbackSearchPolicy:
         try:
             return self._primary.score(context, state, legal_actions)
         except _FALLBACK_ERRORS:
-            return self._fallback.score(context, state, legal_actions)
+            return replace(
+                self._fallback.score(context, state, legal_actions),
+                source=PolicyScoreSource.FALLBACK,
+            )
 
 
 class FallbackLeafEvaluator:

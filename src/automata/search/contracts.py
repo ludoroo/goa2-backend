@@ -14,6 +14,7 @@ from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from automata.decision import DecisionDescriptor
 from goa2.domain.models import TeamColor
 from goa2.domain.state import GameState
 
@@ -22,14 +23,24 @@ ActionT = TypeVar("ActionT")
 
 @dataclass(frozen=True, slots=True)
 class SearchContext:
-    """Stable root perspective plus the owner of the current decision."""
+    """Stable root perspective plus the exact current decision and its owner."""
 
     root_viewer_id: str
     perspective_team: TeamColor
     current_owner_id: str
+    current_decision: DecisionDescriptor | None = None
 
     def for_owner(self, owner_id: str) -> SearchContext:
         return replace(self, current_owner_id=owner_id)
+
+    def for_decision(
+        self, decision: DecisionDescriptor, *, owner_id: str | None = None
+    ) -> SearchContext:
+        return replace(
+            self,
+            current_owner_id=owner_id or self.current_owner_id,
+            current_decision=decision,
+        )
 
 
 class ScoreSemantics(StrEnum):
@@ -37,11 +48,19 @@ class ScoreSemantics(StrEnum):
     PROBABILITIES = "PROBABILITIES"
 
 
+class PolicyScoreSource(StrEnum):
+    """How the policy scores used for this decision were produced."""
+
+    PRIMARY = "PRIMARY"
+    FALLBACK = "FALLBACK"
+
+
 @dataclass(frozen=True, slots=True)
 class PolicyScores:
     actions: tuple[Any, ...]
     scores: tuple[float, ...]
     semantics: ScoreSemantics
+    source: PolicyScoreSource = PolicyScoreSource.PRIMARY
 
     def __post_init__(self) -> None:
         if len(self.actions) != len(self.scores):
@@ -123,6 +142,7 @@ __all__ = [
     "LeafEvaluation",
     "LeafEvaluator",
     "LeafMode",
+    "PolicyScoreSource",
     "PolicyScores",
     "ScoreSemantics",
     "SearchContext",

@@ -41,6 +41,7 @@ from automata.models.shared_encoder.artifacts import (
     LoadedModelArtifact,
     ModelArtifactManifest,
 )
+from automata.models.shared_encoder.schema import TENSOR_SCHEMA_ID
 from automata.training.dataset import JointDatasetRow, joint_decision_id, load_joint_dataset
 from automata.training.generation import CheckpointRow, GameSpec, GenerationConfig, WorkerSpec
 from automata.training.generation_pipeline import (
@@ -72,7 +73,7 @@ def _parent(digest: str = "a" * 64) -> ModelArtifactManifest:
         supported_heroes=("Wasp", "Arien"),
         supported_maps=("forgotten_island",),
         supported_game_types=("QUICK",),
-        tensor_schema_id="joint-v1",
+        tensor_schema_id=TENSOR_SCHEMA_ID,
         tensor_schema_version=1,
         tensor_schema_digest="b" * 64,
         architecture_config={},

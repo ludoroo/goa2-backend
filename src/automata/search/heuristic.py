@@ -50,6 +50,12 @@ class HeuristicPrior:
                 for key in legal
                 if (card := by_id.get(key)) is not None
             }
+        elif context.current_decision is not None and context.current_decision.request is not None:
+            request = context.current_decision.request
+            for option in request.options:
+                key = action_key(selection_value(option))
+                if key in legal and key not in scores:
+                    scores[key] = self._h.score_option(state, request, option)
         elif state.input_stack:
             request = state.input_stack[-1]
             for option in request.options:

@@ -574,3 +574,43 @@ def test_setup_header_defaults_player_names_to_empty(tmp_path):
     )
     header = json.loads((tmp_path / "g2.jsonl").read_text().splitlines()[0])
     assert header["player_names"] == {}
+
+
+def test_automatic_input_records_final_decision_semantics(tmp_path):
+    rec = ReplayRecorder("automatic", str(tmp_path))
+    _record_setup(rec)
+
+    rec.record_input("hero_arien", "ATTACK", 1, 1, automatic=True)
+
+    _, decisions = load_replay(str(rec.path))
+    assert decisions[0]["automatic"] is True
+
+
+def test_legacy_bot_inputs_reconstruct_with_automatic_resolution_semantics(tmp_path, monkeypatch):
+    """Bot answers are final, so they must not leave rollback confirmations open."""
+    from pathlib import Path
+
+    from goa2.server.app import register_all_effects
+
+    register_all_effects()
+    fixture = Path(__file__).parent.parent / "fixtures" / "replays" / "bot_automatic_inputs.jsonl"
+    save_dir = tmp_path / "games"
+    save_dir.mkdir()
+    (save_dir / "a4d127776809.json").write_text(
+        json.dumps(
+            {
+                "bot_specs": {
+                    "hero_arien": {},
+                    "hero_brogan": {},
+                    "hero_xargatha": {},
+                }
+            }
+        )
+    )
+    monkeypatch.setenv("GOA2_SAVE_DIR", str(save_dir))
+
+    replayed = replay_game(str(fixture))
+
+    assert replayed.state.phase.value == "PLANNING"
+    assert replayed.state.round == 1
+    assert replayed.state.turn == 2

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
+import math
 import os
 import signal
 import threading
@@ -24,7 +26,12 @@ from automata.harness.game_runner import RunResult, run_game
 from automata.observation import encode_decision
 from automata.runtime.driver import BotDecision
 from automata.search.config import SearchConfig
-from automata.search.ismcts.strategy import SearchStrategy, StrategyResult
+from automata.search.ismcts.engine import SearchProgressionError
+from automata.search.ismcts.strategy import (
+    SearchStrategy,
+    StrategyResult,
+    VisitSamplingStrategy,
+)
 from automata.search.node import Key
 from automata.search.root import RootTarget
 from automata.training.experiments.phase0 import PHASE0_EXPERIMENT
@@ -40,6 +47,29 @@ from .dataset import JointDatasetRecorder
 
 WORKER_COUNT = 4
 SEED_DERIVATION = "sha256(self-play-agent-v1,worker-config,world-seed,side)"
+NAMESPACED_SEED_DERIVATION = "sha256(self-play-agent-random-stream-v1,namespace,world-seed,side)"
+RANDOM_STREAM_NAMESPACE_MAX_LENGTH = 128
+VISIT_TEMPERATURE_SCHEDULES = ("constant", "round-decay-v1")
+VisitTemperatureSchedule = Literal["constant", "round-decay-v1"]
+
+
+def visit_temperature_provider(
+    schedule: VisitTemperatureSchedule | str, base_temperature: float
+) -> Callable[[GameState], float]:
+    """Resolve a named self-play schedule against the public round number."""
+    if schedule not in VISIT_TEMPERATURE_SCHEDULES:
+        raise ValueError(f"unknown visit_temperature_schedule {schedule!r}")
+    if not math.isfinite(base_temperature) or base_temperature < 0:
+        raise ValueError("visit_temperature must be finite and non-negative")
+
+    def temperature(state: GameState) -> float:
+        if schedule == "constant" or state.round <= 4:
+            return base_temperature
+        if state.round <= 8:
+            return base_temperature / 2
+        return 0.0
+
+    return temperature
 
 
 def _copy_json_mapping(value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
@@ -63,6 +93,10 @@ class GenerationConfig:
     source_config: Mapping[str, JsonValue]
     max_steps: int
     timeout_seconds: float
+    visit_temperature: float = 0.0
+    visit_temperature_schedule: VisitTemperatureSchedule = "constant"
+    decision_timeout_seconds: float | None = None
+    random_stream_namespace: str | None = None
 
     def __post_init__(self) -> None:
         if not self.generation_id or not self.source_revision or not self.dirty_tree_hash:
@@ -75,6 +109,25 @@ class GenerationConfig:
             raise ValueError("parent generation and observation schema are invalid")
         if self.max_steps <= 0 or self.timeout_seconds <= 0:
             raise ValueError("worker limits must be positive")
+        if not math.isfinite(self.visit_temperature) or self.visit_temperature < 0:
+            raise ValueError("visit_temperature must be finite and non-negative")
+        if self.visit_temperature_schedule not in VISIT_TEMPERATURE_SCHEDULES:
+            raise ValueError(
+                f"unknown visit_temperature_schedule {self.visit_temperature_schedule!r}"
+            )
+        if self.decision_timeout_seconds is not None and (
+            not math.isfinite(self.decision_timeout_seconds) or self.decision_timeout_seconds <= 0
+        ):
+            raise ValueError("decision_timeout_seconds must be finite and positive when enabled")
+        if self.random_stream_namespace is not None and (
+            not isinstance(self.random_stream_namespace, str)
+            or not self.random_stream_namespace.strip()
+            or len(self.random_stream_namespace) > RANDOM_STREAM_NAMESPACE_MAX_LENGTH
+        ):
+            raise ValueError(
+                "random_stream_namespace must be a nonempty string of at most "
+                f"{RANDOM_STREAM_NAMESPACE_MAX_LENGTH} characters"
+            )
         object.__setattr__(self, "search_config", _copy_json_mapping(self.search_config))
         object.__setattr__(self, "source_config", _copy_json_mapping(self.source_config))
 
@@ -88,21 +141,33 @@ class GenerationConfig:
 
     @property
     def generator_config_id(self) -> str:
-        return _digest(
-            {
-                "generation_id": self.generation_id,
-                "parent_model_digest": self.parent_model_digest,
-                "parent_generation": self.parent_generation,
-                "observation_schema_version": self.observation_schema_version,
-                "source_revision": self.source_revision,
-                "dirty_tree_hash": self.dirty_tree_hash,
-                "search_config": dict(self.search_config),
-                "source_config": dict(self.source_config),
-                "max_steps": self.max_steps,
-                "timeout_seconds": self.timeout_seconds,
-                "seed_derivation": SEED_DERIVATION,
-            }
-        )
+        identity: dict[str, JsonValue] = {
+            "generation_id": self.generation_id,
+            "parent_model_digest": self.parent_model_digest,
+            "parent_generation": self.parent_generation,
+            "observation_schema_version": self.observation_schema_version,
+            "source_revision": self.source_revision,
+            "dirty_tree_hash": self.dirty_tree_hash,
+            "search_config": dict(self.search_config),
+            "source_config": dict(self.source_config),
+            "max_steps": self.max_steps,
+            "timeout_seconds": self.timeout_seconds,
+            "visit_temperature": self.visit_temperature,
+            "decision_timeout_seconds": self.decision_timeout_seconds,
+            "seed_derivation": SEED_DERIVATION,
+        }
+        if self.visit_temperature_schedule != "constant":
+            # Keep the pre-schedule constant identity byte-for-byte compatible;
+            # its semantics are already fully identified by visit_temperature.
+            identity["visit_temperature_schedule"] = self.visit_temperature_schedule
+        if self.random_stream_namespace is not None:
+            identity.update(
+                {
+                    "random_stream_namespace": self.random_stream_namespace,
+                    "seed_derivation": NAMESPACED_SEED_DERIVATION,
+                }
+            )
+        return _digest(identity)
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,12 +290,27 @@ class CheckpointRow(BaseModel):
 
 
 class TelemetryEvent(BaseModel):
-    """Structured worker telemetry suitable for JSONL logging."""
+    """Bounded structured worker telemetry suitable for JSONL logging.
+
+    Decision events intentionally contain only public identity and aggregate
+    search counts. Candidate values, request prompts/options, and state dumps
+    are never included.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     schema_version: Literal[1] = 1
-    event: Literal["worker_started", "progress", "game_complete", "timeout", "error"]
+    event: Literal[
+        "worker_started",
+        "progress",
+        "game_complete",
+        "timeout",
+        "error",
+        "decision_started",
+        "decision_completed",
+        "decision_timeout",
+        "decision_failed",
+    ]
     worker_id: int = Field(ge=0)
     game_id: str | None = None
     world_seed: int | None = None
@@ -239,6 +319,30 @@ class TelemetryEvent(BaseModel):
     games_per_second: float = Field(ge=0.0)
     reason: str | None = None
     error_type: str | None = None
+    round: int | None = Field(default=None, ge=0)
+    steps: int | None = Field(default=None, ge=0)
+    phase: str | None = None
+    side: Literal["RED", "BLUE"] | None = None
+    perspective_team: Literal["RED", "BLUE"] | None = None
+    decision_index: int | None = Field(default=None, ge=0)
+    decision_owner_hero_id: str | None = None
+    root_kind: Literal["CARD", "INPUT"] | None = None
+    request_type: str | None = None
+    request_id: str | None = None
+    legal_count: int | None = Field(default=None, ge=0)
+    legal_family: str | None = None
+    decision_elapsed_seconds: float | None = Field(default=None, ge=0.0)
+    completed_visits: int | None = Field(default=None, ge=0)
+    visited_legal_count: int | None = Field(default=None, ge=0)
+    legal_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
+    progression_reason: str | None = None
+    progression_phase: str | None = None
+    progression_round: int | None = Field(default=None, ge=0)
+    progression_actor: str | None = None
+    progression_pending_request: str | None = None
+    progression_stack_depth: int | None = Field(default=None, ge=0)
+    progression_top_step: str | None = None
+    progression_transition_counts: dict[str, int] | None = None
 
 
 class RuntimeLoader(Protocol):
@@ -260,25 +364,58 @@ TelemetrySink = Callable[[TelemetryEvent], None]
 
 
 def agent_seed(config: GenerationConfig, world_seed: int, side: str) -> int:
-    return int(
-        _digest(
-            {
-                "derivation": SEED_DERIVATION,
-                "generator_config_id": config.generator_config_id,
-                "world_seed": world_seed,
-                "side": side,
-            }
-        )[:16],
-        16,
-    )
+    if config.random_stream_namespace is None:
+        material: dict[str, JsonValue] = {
+            "derivation": SEED_DERIVATION,
+            "generator_config_id": config.generator_config_id,
+            "world_seed": world_seed,
+            "side": side,
+        }
+    else:
+        material = {
+            "derivation": NAMESPACED_SEED_DERIVATION,
+            "namespace": config.random_stream_namespace,
+            "world_seed": world_seed,
+            "side": side,
+        }
+    return int(_digest(material)[:16], 16)
+
+
+DecisionEventSink = Callable[
+    [
+        Literal["decision_started", "decision_completed", "decision_timeout", "decision_failed"],
+        GameState,
+        TeamColor,
+        RootTarget,
+        tuple[Key, ...],
+        int,
+        float,
+        StrategyResult[Key] | None,
+        SearchProgressionError | None,
+    ],
+    None,
+]
 
 
 class _RecordingStrategy:
-    """Record the improved policy at the exact state passed to ``select``."""
+    """Apply the self-play watchdog and record the exact improved policy root."""
 
-    def __init__(self, delegate: SearchStrategy, recorder: JointDatasetRecorder) -> None:
+    def __init__(
+        self,
+        delegate: SearchStrategy,
+        recorder: JointDatasetRecorder,
+        *,
+        decision_timeout_seconds: float | None = None,
+        decision_index: Callable[[], int] | None = None,
+        decision_events: DecisionEventSink | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._delegate = delegate
         self._recorder = recorder
+        self._decision_timeout_seconds = decision_timeout_seconds
+        self._decision_index = decision_index or (lambda: 0)
+        self._decision_events = decision_events
+        self._clock = clock
         self.strategy_id = delegate.strategy_id
 
     def select(
@@ -289,7 +426,69 @@ class _RecordingStrategy:
         legal_candidates: Sequence[Key],
     ) -> StrategyResult[Key]:
         legal = tuple(legal_candidates)
-        result = self._delegate.select(state, perspective_team, root_target, legal)
+        decision_index = self._decision_index()
+        started = self._clock()
+        self._emit_decision(
+            "decision_started",
+            state,
+            perspective_team,
+            root_target,
+            legal,
+            decision_index,
+            0.0,
+            None,
+        )
+        result: StrategyResult[Key] | None = None
+        try:
+            with _decision_timeout(self._decision_timeout_seconds):
+                result = self._delegate.select(state, perspective_team, root_target, legal)
+        except SourceDecisionTimeout:
+            self._emit_decision(
+                "decision_timeout",
+                state,
+                perspective_team,
+                root_target,
+                legal,
+                decision_index,
+                max(0.0, self._clock() - started),
+                result,
+            )
+            raise
+        except SearchProgressionError as exc:
+            self._emit_decision(
+                "decision_failed",
+                state,
+                perspective_team,
+                root_target,
+                legal,
+                decision_index,
+                max(0.0, self._clock() - started),
+                result,
+                progression_error=exc,
+            )
+            raise
+        assert result is not None
+        self._record_result(state, perspective_team, root_target, legal, result)
+        self._emit_decision(
+            "decision_completed",
+            state,
+            perspective_team,
+            root_target,
+            legal,
+            decision_index,
+            max(0.0, self._clock() - started),
+            result,
+        )
+        return result
+
+    def _record_result(
+        self,
+        state: GameState,
+        perspective_team: TeamColor,
+        root_target: RootTarget,
+        legal: tuple[Key, ...],
+        result: StrategyResult[Key],
+    ) -> None:
         if result.candidates != legal:
             raise ValueError("search strategy changed or reordered the legal candidates")
         owner = state.get_hero(HeroID(root_target.decision_owner_hero_id))
@@ -297,11 +496,19 @@ class _RecordingStrategy:
             raise ValueError("search root decision owner is absent")
         request = None
         if root_target.kind == "INPUT":
-            request = next(
+            request = root_target.request
+            stacked_request = next(
                 (item for item in reversed(state.input_stack) if item.id == root_target.request_id),
                 None,
             )
-            if request is None or request.player_id != root_target.player_id:
+            if request is None:
+                request = stacked_request
+            if (
+                request is None
+                or request.id != root_target.request_id
+                or request.player_id != root_target.player_id
+                or (stacked_request is not None and stacked_request != request)
+            ):
                 raise ValueError("search root request does not match the predecision state")
         decision = DecisionDescriptor(
             root_target.kind,
@@ -326,7 +533,34 @@ class _RecordingStrategy:
             selected_selection=selected.selection,
             action_stats=actions,
         )
-        return result
+
+    def _emit_decision(
+        self,
+        event: Literal[
+            "decision_started", "decision_completed", "decision_timeout", "decision_failed"
+        ],
+        state: GameState,
+        perspective_team: TeamColor,
+        root_target: RootTarget,
+        legal: tuple[Key, ...],
+        decision_index: int,
+        elapsed: float,
+        result: StrategyResult[Key] | None,
+        *,
+        progression_error: SearchProgressionError | None = None,
+    ) -> None:
+        if self._decision_events is not None:
+            self._decision_events(
+                event,
+                state,
+                perspective_team,
+                root_target,
+                legal,
+                decision_index,
+                elapsed,
+                result,
+                progression_error,
+            )
 
 
 def _aligned_action_stats(
@@ -334,15 +568,28 @@ def _aligned_action_stats(
 ) -> tuple[SearchActionTarget, ...]:
     statistics = result.search_result
     if statistics is not None:
-        if statistics.best_key != result.selected_candidate:
-            raise ValueError("search statistics selected candidate disagrees with the action")
+        if statistics.best_key not in result.candidates:
+            raise ValueError("search statistics best action is outside the legal root")
+        if any(key not in result.candidates for key in statistics.root.children):
+            raise ValueError("search statistics contain actions outside the legal root")
         visits = tuple(
             statistics.root.children[key].visits if key in statistics.root.children else 0
             for key in result.candidates
         )
+        if any(
+            isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in visits
+        ):
+            raise ValueError("self-play root visits must be non-negative integers")
         total_visits = sum(visits)
+        improved_probabilities: tuple[float, ...]
         if not total_visits:
-            raise ValueError("self-play search statistics contain no root visits")
+            if len(visits) != 1:
+                raise ValueError("self-play search statistics contain no root visits")
+            # Search intentionally leaves validated forced roots unvisited. Keep
+            # the zero sample/value sentinel while recording the only policy mass.
+            improved_probabilities = (1.0,)
+        else:
+            improved_probabilities = tuple(count / total_visits for count in visits)
         return tuple(
             SearchActionTarget(
                 schema_version=1,
@@ -356,7 +603,7 @@ def _aligned_action_stats(
                     if key in statistics.root.children
                     else 0.0
                 ),
-                improved_probability=visits[index] / total_visits,
+                improved_probability=improved_probabilities[index],
                 selected=index == result.selected_index,
             )
             for index, (key, candidate) in enumerate(
@@ -378,31 +625,76 @@ class _OutcomeObserver:
 
 
 class SourceGameTimeout(TimeoutError):
-    pass
+    """The whole self-play game exceeded its wall-clock deadline."""
+
+
+class SourceDecisionTimeout(TimeoutError):
+    """One self-play source-policy decision exceeded its hard deadline."""
 
 
 @contextmanager
-def _game_timeout(seconds: float) -> Iterator[None]:
+def _alarm_timeout(seconds: float, error_type: type[TimeoutError]) -> Iterator[None]:
+    """Install a nestable real-time deadline without extending an outer timer.
+
+    POSIX interval timers are process-global and only safely managed from the
+    main thread. A nested deadline therefore arms whichever of its own timeout
+    and the existing timer expires first. On exit, elapsed wall time is
+    subtracted before restoring the outer timer rather than accidentally
+    granting that timer a fresh budget.
+    """
     if (
         not hasattr(signal, "setitimer")
         or threading.current_thread() is not threading.main_thread()
     ):
         yield
         return
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    previous_timer = signal.getitimer(signal.ITIMER_REAL)
 
-    def expire(_signum: int, _frame: Any) -> None:
-        raise SourceGameTimeout
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_delay, previous_interval = signal.getitimer(signal.ITIMER_REAL)
+    started = time.monotonic()
+    own_deadline = previous_delay <= 0 or seconds < previous_delay
+    delay = seconds if own_deadline else previous_delay
+
+    def expire(signum: int, frame: Any) -> None:
+        if own_deadline:
+            raise error_type
+        if callable(previous_handler):
+            previous_handler(signum, frame)
+            return
+        # An ignored/default outer alarm cannot provide a typed exception to
+        # the worker. Fail closed under this scope's timeout instead of letting
+        # a stalled source decision continue without any armed watchdog.
+        raise error_type
 
     signal.signal(signal.SIGALRM, expire)
     try:
-        signal.setitimer(signal.ITIMER_REAL, seconds)
+        signal.setitimer(signal.ITIMER_REAL, delay)
         yield
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
+        elapsed = max(0.0, time.monotonic() - started)
         signal.signal(signal.SIGALRM, previous_handler)
-        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        if previous_delay > 0:
+            remaining = previous_delay - elapsed
+            if remaining <= 0 and previous_interval > 0:
+                remaining = previous_interval - ((-remaining) % previous_interval)
+            if remaining > 0:
+                signal.setitimer(signal.ITIMER_REAL, remaining, previous_interval)
+
+
+@contextmanager
+def _game_timeout(seconds: float) -> Iterator[None]:
+    with _alarm_timeout(seconds, SourceGameTimeout):
+        yield
+
+
+@contextmanager
+def _decision_timeout(seconds: float | None) -> Iterator[None]:
+    if seconds is None:
+        yield
+        return
+    with _alarm_timeout(seconds, SourceDecisionTimeout):
+        yield
 
 
 class SelfPlayWorker:
@@ -453,12 +745,12 @@ class SelfPlayWorker:
             fragment = self.fragment_path(game)
             fragment.unlink(missing_ok=True)
             recorder = self._recorder(fragment, game, game_id)
-            agents = self._build_agents(loaded.runtime, game, recorder)
+            agents = self._build_agents(loaded.runtime, game, recorder, started, completed)
             result: RunResult | None = None
 
             def report_progress(
-                _round: int,
-                _steps: int,
+                round_number: int,
+                steps: int,
                 *,
                 current_game: GameSpec = game,
                 completed_before_game: int = completed,
@@ -468,6 +760,8 @@ class SelfPlayWorker:
                     started,
                     completed=completed_before_game,
                     game=current_game,
+                    round_number=round_number,
+                    steps=steps,
                 )
 
             try:
@@ -483,14 +777,37 @@ class SelfPlayWorker:
                         decision_observer=_OutcomeObserver(recorder),
                         progress_callback=report_progress,
                     )
+            except SourceDecisionTimeout:
+                try:
+                    recorder.close()
+                finally:
+                    fragment.unlink(missing_ok=True)
+                continue
             except SourceGameTimeout:
-                recorder.close()
+                try:
+                    recorder.close()
+                finally:
+                    fragment.unlink(missing_ok=True)
                 self._emit(
                     "timeout",
                     started,
                     completed=completed,
                     game=game,
                     reason="wall_clock_timeout",
+                )
+                continue
+            except SearchProgressionError as exc:
+                try:
+                    recorder.close()
+                finally:
+                    fragment.unlink(missing_ok=True)
+                self._emit(
+                    "timeout",
+                    started,
+                    completed=completed,
+                    game=game,
+                    reason="search_progression",
+                    error_type=type(exc).__name__,
                 )
                 continue
             except BaseException as exc:
@@ -507,6 +824,7 @@ class SelfPlayWorker:
             finally:
                 recorder.close()
             if result.reason != "game_over":
+                fragment.unlink(missing_ok=True)
                 self._emit(
                     "timeout",
                     started,
@@ -548,9 +866,15 @@ class SelfPlayWorker:
         )
 
     def _build_agents(
-        self, runtime: object, game: GameSpec, recorder: JointDatasetRecorder
+        self,
+        runtime: object,
+        game: GameSpec,
+        recorder: JointDatasetRecorder,
+        worker_started: float,
+        completed_before_game: int,
     ) -> dict[str, Agent]:
         agents: dict[str, Agent] = {}
+        decision_indexes = itertools.count()
         sides: tuple[
             tuple[Literal["RED", "BLUE"], tuple[str, ...]],
             tuple[Literal["RED", "BLUE"], tuple[str, ...]],
@@ -558,7 +882,67 @@ class SelfPlayWorker:
         for side, composition in sides:
             seed = agent_seed(self.spec.config, game.world_seed, side)
             strategy = self.strategy_factory(runtime, game, side, seed)
-            agent = self.agent_factory(_RecordingStrategy(strategy, recorder), seed)
+            if self.spec.config.visit_temperature_schedule == "constant":
+                sampled_strategy = VisitSamplingStrategy(
+                    strategy,
+                    temperature=self.spec.config.visit_temperature,
+                    seed=seed,
+                )
+            else:
+                sampled_strategy = VisitSamplingStrategy(
+                    strategy,
+                    temperature_provider=visit_temperature_provider(
+                        self.spec.config.visit_temperature_schedule,
+                        self.spec.config.visit_temperature,
+                    ),
+                    seed=seed,
+                )
+
+            def report_decision(
+                event: Literal[
+                    "decision_started",
+                    "decision_completed",
+                    "decision_timeout",
+                    "decision_failed",
+                ],
+                state: GameState,
+                perspective_team: TeamColor,
+                root_target: RootTarget,
+                legal: tuple[Key, ...],
+                decision_index: int,
+                elapsed: float,
+                result: StrategyResult[Key] | None,
+                progression_error: SearchProgressionError | None,
+                *,
+                game_side: Literal["RED", "BLUE"] = side,
+            ) -> None:
+                self._emit_decision(
+                    event,
+                    worker_started,
+                    completed=completed_before_game,
+                    game=game,
+                    side=game_side,
+                    state=state,
+                    perspective_team=perspective_team,
+                    root_target=root_target,
+                    legal=legal,
+                    decision_index=decision_index,
+                    decision_elapsed=elapsed,
+                    result=result,
+                    progression_error=progression_error,
+                )
+
+            agent = self.agent_factory(
+                _RecordingStrategy(
+                    sampled_strategy,
+                    recorder,
+                    decision_timeout_seconds=self.spec.config.decision_timeout_seconds,
+                    decision_index=lambda: next(decision_indexes),
+                    decision_events=report_decision,
+                    clock=self.clock,
+                ),
+                seed,
+            )
             for hero in composition:
                 agents[f"hero_{hero.lower().replace(' ', '_')}"] = agent
         return agents
@@ -692,6 +1076,99 @@ class SelfPlayWorker:
             handle.flush()
             os.fsync(handle.fileno())
 
+    def _emit_decision(
+        self,
+        event: Literal[
+            "decision_started", "decision_completed", "decision_timeout", "decision_failed"
+        ],
+        started: float,
+        *,
+        completed: int,
+        game: GameSpec,
+        side: Literal["RED", "BLUE"],
+        state: GameState,
+        perspective_team: TeamColor,
+        root_target: RootTarget,
+        legal: tuple[Key, ...],
+        decision_index: int,
+        decision_elapsed: float,
+        result: StrategyResult[Key] | None,
+        progression_error: SearchProgressionError | None,
+    ) -> None:
+        request = root_target.request or next(
+            (item for item in reversed(state.input_stack) if item.id == root_target.request_id),
+            None,
+        )
+        request_type = request.request_type.value if request is not None else None
+        completed_visits: int | None = None
+        visited_legal_count: int | None = None
+        legal_coverage: float | None = None
+        if result is not None and result.search_result is not None:
+            children = result.search_result.root.children
+            visit_counts = tuple(children[key].visits if key in children else 0 for key in legal)
+            completed_visits = sum(visit_counts)
+            visited_legal_count = sum(count > 0 for count in visit_counts)
+            legal_coverage = visited_legal_count / len(legal) if legal else 0.0
+        elapsed = max(0.0, self.clock() - started)
+        self.telemetry(
+            TelemetryEvent(
+                event=event,
+                worker_id=self.spec.worker_id,
+                game_id=game.game_id(self.spec.config),
+                world_seed=game.world_seed,
+                completed_games=completed,
+                elapsed_seconds=elapsed,
+                games_per_second=completed / elapsed if elapsed else 0.0,
+                reason=(
+                    "decision_timeout"
+                    if event == "decision_timeout"
+                    else "search_progression" if event == "decision_failed" else None
+                ),
+                error_type=(
+                    type(progression_error).__name__ if progression_error is not None else None
+                ),
+                round=state.round,
+                phase=state.phase.value,
+                side=side,
+                perspective_team=perspective_team.value,
+                decision_index=decision_index,
+                decision_owner_hero_id=root_target.decision_owner_hero_id,
+                root_kind=root_target.kind,
+                request_type=request_type,
+                request_id=root_target.request_id,
+                legal_count=len(legal),
+                legal_family=request_type or root_target.kind,
+                decision_elapsed_seconds=decision_elapsed,
+                completed_visits=completed_visits,
+                visited_legal_count=visited_legal_count,
+                legal_coverage=legal_coverage,
+                progression_reason=(
+                    progression_error.reason if progression_error is not None else None
+                ),
+                progression_phase=(
+                    progression_error.phase if progression_error is not None else None
+                ),
+                progression_round=(
+                    progression_error.round if progression_error is not None else None
+                ),
+                progression_actor=(
+                    progression_error.actor if progression_error is not None else None
+                ),
+                progression_pending_request=(
+                    progression_error.pending_request if progression_error is not None else None
+                ),
+                progression_stack_depth=(
+                    progression_error.stack_depth if progression_error is not None else None
+                ),
+                progression_top_step=(
+                    progression_error.top_step if progression_error is not None else None
+                ),
+                progression_transition_counts=(
+                    progression_error.transition_counts if progression_error is not None else None
+                ),
+            )
+        )
+
     def _emit(
         self,
         event: Literal["worker_started", "progress", "game_complete", "timeout", "error"],
@@ -701,6 +1178,8 @@ class SelfPlayWorker:
         game: GameSpec | None = None,
         reason: str | None = None,
         error_type: str | None = None,
+        round_number: int | None = None,
+        steps: int | None = None,
     ) -> None:
         elapsed = max(0.0, self.clock() - started)
         self.telemetry(
@@ -714,20 +1193,26 @@ class SelfPlayWorker:
                 games_per_second=completed / elapsed if elapsed else 0.0,
                 reason=reason,
                 error_type=error_type,
+                round=round_number,
+                steps=steps,
             )
         )
 
 
 __all__ = [
+    "VISIT_TEMPERATURE_SCHEDULES",
     "WORKER_COUNT",
     "CheckpointRow",
     "GameSpec",
     "GenerationConfig",
     "LoadedChampionRuntime",
     "SelfPlayWorker",
+    "SourceDecisionTimeout",
     "SourceGameTimeout",
     "TelemetryEvent",
+    "VisitTemperatureSchedule",
     "WorkerSpec",
     "agent_seed",
     "build_worker_specs",
+    "visit_temperature_provider",
 ]

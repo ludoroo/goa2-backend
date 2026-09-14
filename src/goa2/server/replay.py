@@ -209,10 +209,22 @@ class ReplayRecorder:
     def record_uncommit(self, hero_id: str, round_num: int, turn: int) -> None:
         self._append({"type": "uncommit", "r": round_num, "t": turn, "hero": hero_id})
 
-    def record_input(self, hero_id: str, selection: Any, round_num: int, turn: int) -> None:
-        self._append(
-            {"type": "input", "r": round_num, "t": turn, "hero": hero_id, "sel": selection}
-        )
+    def record_input(
+        self,
+        hero_id: str,
+        selection: Any,
+        round_num: int,
+        turn: int,
+        *,
+        automatic: bool = False,
+    ) -> None:
+        record = {"type": "input", "r": round_num, "t": turn, "hero": hero_id, "sel": selection}
+        if automatic:
+            # Automatic resolution choices are final: live play freezes rollback
+            # before applying them, which also makes the trailing confirmation
+            # auto-complete. Reconstruction must reproduce that control flow.
+            record["automatic"] = True
+        self._append(record)
 
     def record_rollback(self, hero_id: str, round_num: int, turn: int) -> None:
         self._append({"type": "rollback", "r": round_num, "t": turn, "hero": hero_id})
@@ -304,7 +316,36 @@ def load_replay(path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
     if setup is None:
         raise ValueError(f"Replay file has no setup header: {path}")
+
+    # Logs written before automatic inputs identified themselves need the
+    # companion live save to recover which heroes were server-managed bots.
+    # This is exact provenance, not an attempt to repair invalid decisions by
+    # guessing after they fail. New logs carry ``automatic`` on each input and
+    # remain independently durable after their game save expires.
+    legacy_bot_heroes = _bot_heroes_from_live_save(setup)
+    if legacy_bot_heroes:
+        for decision in decisions:
+            if (
+                decision.get("type") == "input"
+                and "automatic" not in decision
+                and decision.get("hero") in legacy_bot_heroes
+            ):
+                decision["automatic"] = True
     return setup, decisions
+
+
+def _bot_heroes_from_live_save(setup: dict[str, Any]) -> set[str]:
+    """Recover bot ownership omitted by legacy replay records, if still saved."""
+    game_id = setup.get("game_id")
+    if not game_id:
+        return set()
+    save_dir = Path(os.environ.get("GOA2_SAVE_DIR", "data/games"))
+    try:
+        payload = json.loads((save_dir / f"{game_id}.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return set()
+    specs = payload.get("bot_specs")
+    return set(specs) if isinstance(specs, dict) else set()
 
 
 def load_clock_telemetry(path: str) -> list[dict[str, Any]]:
@@ -684,6 +725,12 @@ def _apply_decision(session: GameSession, decision: dict[str, Any]) -> None:
     elif kind == "uncommit":
         session.uncommit_card(hero_id)
     elif kind == "input":
+        if decision.get("automatic") and session.state.phase == GamePhase.RESOLUTION:
+            # Server-managed bot answers are externally revealed and final, like
+            # timer answers. Live play freezes rollback before applying them.
+            session.state.execution_context["rollback_frozen"] = True
+            session._rollback_snapshot = None
+            session._rollback_actor_id = None
         # Replay decisions are trusted server-side data; request UUIDs are
         # intentionally not logged because they are transport correlation,
         # not deterministic game decisions.
