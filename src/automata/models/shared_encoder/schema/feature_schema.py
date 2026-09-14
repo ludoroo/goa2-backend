@@ -13,7 +13,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from automata.models.contracts import CandidateID, DecisionObservation, EncodedCandidate
 
+TensorSchemaID = Literal["goa2-tensor-features-v1"]
+TensorSchemaVersion = Literal[1]
+TENSOR_SCHEMA_ID: TensorSchemaID = "goa2-tensor-features-v1"
+TENSOR_SCHEMA_VERSION: TensorSchemaVersion = 1
+
 _RESERVED = ("PAD", "UNK", "MISSING")
+_MAX_HASHED_FEATURE_DIMENSION = 4096
+_MAX_HASHED_FEATURE_NGRAM = 16
 
 
 class _Frozen(BaseModel):
@@ -26,6 +33,31 @@ class NumericFeature(_Frozen):
     default: bool | int | float
     normalization: Literal["NONE", "STANDARD", "MIN_MAX", "SIGNED_LOG"] = "NONE"
     policy: Literal["DIRECT", "COUNT", "SUM", "MEAN", "MAX"] = "DIRECT"
+
+
+class HashedStringFeature(_Frozen):
+    """Executable declaration for a fixed-width open-world string feature."""
+
+    source: str = Field(min_length=1)
+    namespace: Literal["ACTION", "OPTION"]
+    algorithm: Literal["BLAKE2B_SIGNED_CHARACTER_NGRAM"] = "BLAKE2B_SIGNED_CHARACTER_NGRAM"
+    algorithm_version: Literal[1] = 1
+    dimension: int = Field(gt=0, le=_MAX_HASHED_FEATURE_DIMENSION)
+    min_n: int = Field(gt=0)
+    max_n: int = Field(gt=0, le=_MAX_HASHED_FEATURE_NGRAM)
+    character_unit: Literal["UNICODE_CODE_POINT"] = "UNICODE_CODE_POINT"
+    boundary_markers: Literal[True] = True
+    framing: Literal["CANONICAL_JSON_UTF8"] = "CANONICAL_JSON_UTF8"
+    digest_size: Literal[16] = 16
+    index_bytes: Literal["DIGEST_0_TO_7_BIG_ENDIAN"] = "DIGEST_0_TO_7_BIG_ENDIAN"
+    sign_bit: Literal["DIGEST_BYTE_8_LOW_BIT"] = "DIGEST_BYTE_8_LOW_BIT"
+    normalization: Literal["L2"] = "L2"
+
+    @model_validator(mode="after")
+    def _valid_ngram_range(self) -> HashedStringFeature:
+        if self.min_n > self.max_n:
+            raise ValueError("hashed string min_n cannot exceed max_n")
+        return self
 
 
 class CategoricalFeature(_Frozen):
@@ -55,6 +87,7 @@ class IgnoredFeature(_Frozen):
 class RecordFeatureSchema(_Frozen):
     kind: str = Field(min_length=1)
     numeric: tuple[NumericFeature, ...] = ()
+    hashed: tuple[HashedStringFeature, ...] = ()
     categorical: tuple[CategoricalFeature, ...] = ()
     references: tuple[ReferenceFeature, ...] = ()
     ignored: tuple[IgnoredFeature, ...] = ()
@@ -62,6 +95,7 @@ class RecordFeatureSchema(_Frozen):
     @model_validator(mode="after")
     def _unique_sources(self) -> RecordFeatureSchema:
         sources = [item.source for item in self.numeric]
+        sources.extend(item.source for item in self.hashed)
         sources.extend(item.source for item in self.categorical)
         sources.extend(item.source for item in self.references)
         sources.extend(item.source for item in self.ignored)
@@ -128,6 +162,16 @@ def _b(source: str) -> NumericFeature:
     return _n(source, "BOOLEAN", default=False)
 
 
+def _h(source: str, namespace: Literal["ACTION", "OPTION"]) -> HashedStringFeature:
+    return HashedStringFeature(
+        source=source,
+        namespace=namespace,
+        dimension=64,
+        min_n=1,
+        max_n=4,
+    )
+
+
 def _c(source: str, *values: str) -> CategoricalFeature:
     return CategoricalFeature(source=source, vocabulary=(*_RESERVED, *values))
 
@@ -144,6 +188,7 @@ def _record(
     kind: str,
     *,
     numeric: tuple[NumericFeature, ...] = (),
+    hashed: tuple[HashedStringFeature, ...] = (),
     categorical: tuple[CategoricalFeature, ...] = (),
     references: tuple[ReferenceFeature, ...] = (),
     ignored: tuple[IgnoredFeature, ...] = (),
@@ -151,6 +196,7 @@ def _record(
     return RecordFeatureSchema(
         kind=kind,
         numeric=numeric,
+        hashed=hashed,
         categorical=categorical,
         references=references,
         ignored=ignored,
@@ -414,7 +460,7 @@ def _relationship_schemas() -> tuple[RecordFeatureSchema, ...]:
 
 
 def _candidate_schemas() -> tuple[RecordFeatureSchema, ...]:
-    raw = "Engine selection identity remains Python-side and is never embedded categorically."
+    raw = "Exact engine selection identity remains Python-side for output alignment."
     common_ignored = (
         _i("selection", raw),
         _i("features", "No candidate extension fields are declared in schema v1."),
@@ -442,13 +488,15 @@ def _candidate_schemas() -> tuple[RecordFeatureSchema, ...]:
         ),
         _record(
             "OPTION",
+            hashed=(_h("option_id", "OPTION"),),
             references=(_r("target_ref", False),),
-            ignored=(*common_ignored, _i("option_id", raw)),
+            ignored=common_ignored,
         ),
         _record(
             "ACTION",
+            hashed=(_h("action_id", "ACTION"),),
             references=(_r("target_ref", False),),
-            ignored=(*common_ignored, _i("action_id", raw)),
+            ignored=common_ignored,
         ),
         _record(
             "ENTITY",
@@ -492,8 +540,8 @@ def _schema_digest(
 class TensorFeatureSchema(_Frozen):
     """Immutable declarations that convert observations to primitive arrays."""
 
-    schema_version: Literal[1] = 1
-    schema_id: str = "goa2-tensor-features-v1"
+    schema_version: TensorSchemaVersion = TENSOR_SCHEMA_VERSION
+    schema_id: TensorSchemaID = TENSOR_SCHEMA_ID
     observation_schema_version: Literal[3] = 3
     tokens: tuple[RecordFeatureSchema, ...]
     relationships: tuple[RecordFeatureSchema, ...]
@@ -539,8 +587,8 @@ class TensorFeatureSchema(_Frozen):
             relationships = _relationship_schemas()
             candidates = _candidate_schemas()
             digest = _schema_digest(
-                schema_version=1,
-                schema_id="goa2-tensor-features-v1",
+                schema_version=TENSOR_SCHEMA_VERSION,
+                schema_id=TENSOR_SCHEMA_ID,
                 observation_schema_version=3,
                 tokens=tokens,
                 relationships=relationships,
@@ -657,6 +705,7 @@ class TensorFeatureSchema(_Frozen):
         training: bool,
     ) -> tuple[tuple[float, ...], tuple[bool, ...], tuple[int, ...]]:
         declared = {item.source for item in schema.numeric}
+        declared.update(item.source for item in schema.hashed)
         declared.update(item.source for item in schema.categorical)
         declared.update(item.source for item in schema.references)
         declared.update(item.source for item in schema.ignored)
@@ -665,11 +714,17 @@ class TensorFeatureSchema(_Frozen):
             raise ValueError(f"undeclared {schema.kind} fields: {sorted(unknown)!r}")
         numeric_values: list[float] = []
         numeric_valid: list[bool] = []
-        for feature in schema.numeric:
-            raw = values.get(feature.source)
-            value, valid = TensorFeatureSchema._numeric(feature, raw)
+        for numeric_feature in schema.numeric:
+            raw = values.get(numeric_feature.source)
+            value, valid = TensorFeatureSchema._numeric(numeric_feature, raw)
             numeric_values.append(value)
             numeric_valid.append(valid)
+        for hashed_feature in schema.hashed:
+            hashed = TensorFeatureSchema._hashed_string(
+                hashed_feature, values.get(hashed_feature.source)
+            )
+            numeric_values.extend(hashed)
+            numeric_valid.extend(True for _ in hashed)
         categorical_values = tuple(
             TensorFeatureSchema._categorical(feature, values.get(feature.source))
             for feature in schema.categorical
@@ -717,6 +772,32 @@ class TensorFeatureSchema(_Frozen):
         return value, True
 
     @staticmethod
+    def _hashed_string(feature: HashedStringFeature, raw: object) -> tuple[float, ...]:
+        if not isinstance(raw, str) or not raw:
+            raise ValueError(f"{feature.source} must be a non-empty string")
+        # Boundary symbols are tagged structures rather than user-representable
+        # characters. Canonical JSON frames every code-point n-gram unambiguously.
+        symbols: list[tuple[str, str]] = [("BOUNDARY", "START")]
+        symbols.extend(("CHARACTER", character) for character in raw)
+        symbols.append(("BOUNDARY", "END"))
+        vector = [0.0] * feature.dimension
+        for size in range(feature.min_n, feature.max_n + 1):
+            for start in range(len(symbols) - size + 1):
+                payload = json.dumps(
+                    [feature.namespace, symbols[start : start + size]],
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                digest = hashlib.blake2b(payload, digest_size=feature.digest_size).digest()
+                index = int.from_bytes(digest[:8], byteorder="big") % feature.dimension
+                vector[index] += 1.0 if digest[8] & 1 else -1.0
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm == 0.0:  # Defensive only: every non-empty ID emits boundary n-grams.
+            raise ValueError(f"{feature.source} produced an empty hash vector")
+        return tuple(value / norm for value in vector)
+
+    @staticmethod
     def _categorical(feature: CategoricalFeature, raw: object) -> int:
         if raw is None:
             return 2
@@ -750,15 +831,26 @@ class TensorFeatureSchema(_Frozen):
         return tuple(indexes), tuple(valid)
 
 
+def expanded_numeric_width(schema: RecordFeatureSchema) -> int:
+    """Return scalar columns after fixed-width hashed features are expanded."""
+    return len(schema.numeric) + sum(feature.dimension for feature in schema.hashed)
+
+
 __all__ = [
+    "TENSOR_SCHEMA_ID",
+    "TENSOR_SCHEMA_VERSION",
     "CategoricalFeature",
+    "HashedStringFeature",
     "IgnoredFeature",
     "NumericFeature",
     "RecordFeatureSchema",
     "ReferenceFeature",
     "TensorFeatureSchema",
+    "TensorSchemaID",
+    "TensorSchemaVersion",
     "VectorizedCandidate",
     "VectorizedDecision",
     "VectorizedRelationship",
     "VectorizedToken",
+    "expanded_numeric_width",
 ]

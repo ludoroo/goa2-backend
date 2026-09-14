@@ -151,6 +151,50 @@ def _config(paths: dict[str, Path], **changes: object) -> JointTrainingConfig:
     return JointTrainingConfig(**values)
 
 
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"entropy_weight": float("nan")}, "entropy_weight must be finite and non-negative"),
+        ({"entropy_weight": float("inf")}, "entropy_weight must be finite and non-negative"),
+        ({"entropy_weight": -0.01}, "entropy_weight must be finite and non-negative"),
+        ({"l2_weight": float("nan")}, "l2_weight must be finite and non-negative"),
+        ({"l2_weight": float("inf")}, "l2_weight must be finite and non-negative"),
+        ({"l2_weight": -0.01}, "l2_weight must be finite and non-negative"),
+        ({"value_weight": float("nan")}, "value_weight must be finite and positive"),
+        ({"value_weight": float("inf")}, "value_weight must be finite and positive"),
+        ({"value_weight": 0.0}, "value_weight must be finite and positive"),
+        ({"value_weight": -0.01}, "value_weight must be finite and positive"),
+        ({"validation_fraction": float("nan")}, "validation_fraction must be between zero and one"),
+        ({"validation_fraction": 0.0}, "validation_fraction must be between zero and one"),
+        ({"validation_fraction": 1.0}, "validation_fraction must be between zero and one"),
+        (
+            {"holdout_game_modes": ("STANDARD",)},
+            "holdout_game_modes must contain only QUICK or LONG",
+        ),
+    ],
+)
+def test_training_config_rejects_invalid_regularization_and_validation_fields_early(
+    tmp_path: Path, changes: dict[str, object], message: str
+) -> None:
+    config = _config(_paths(tmp_path), **changes)
+
+    with pytest.raises(ValueError, match=message):
+        config.validate()
+
+
+def test_training_config_accepts_declared_regularization_and_known_game_mode_holdouts(
+    tmp_path: Path,
+) -> None:
+    _config(
+        _paths(tmp_path),
+        entropy_weight=0.01,
+        l2_weight=0.0001,
+        value_weight=2.0,
+        validation_fraction=0.25,
+        holdout_game_modes=("QUICK", "LONG"),
+    ).validate()
+
+
 def test_non_dyadic_policy_targets_survive_tensorized_metric_evaluation(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _dataset(paths["dataset_path"], policy_target=(1.0 / 3.0, 2.0 / 3.0))

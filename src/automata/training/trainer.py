@@ -94,12 +94,20 @@ class JointTrainingConfig:
             raise ValueError("seed must be non-negative")
         if not self.dataset_seed_purpose:
             raise ValueError("dataset_seed_purpose must be non-empty")
-        for name in ("learning_rate", "max_gradient_norm"):
+        for name in ("learning_rate", "max_gradient_norm", "value_weight"):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
+        for name in ("entropy_weight", "l2_weight"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError("dropout must be in [0, 1)")
+        if not math.isfinite(self.validation_fraction) or not 0.0 < self.validation_fraction < 1.0:
+            raise ValueError("validation_fraction must be between zero and one")
+        if any(mode not in {"QUICK", "LONG"} for mode in self.holdout_game_modes):
+            raise ValueError("holdout_game_modes must contain only QUICK or LONG")
 
 
 @dataclass(frozen=True, slots=True)
@@ -642,6 +650,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-index", type=Path)
     parser.add_argument("--index-workers", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--entropy-weight", type=float, default=0.0)
+    parser.add_argument("--l2-weight", type=float, default=0.0)
+    parser.add_argument("--value-weight", type=float, default=1.0)
+    parser.add_argument("--validation-fraction", type=float, default=0.2)
+    parser.add_argument("--holdout-game-mode", action="append")
     parser.add_argument("--dataset-seed-purpose", default="bootstrap")
     parser.add_argument(
         "--no-progress", dest="progress", action="store_false", help="disable progress output"
@@ -665,6 +679,12 @@ def main(argv: list[str] | None = None) -> int:
             dataset_index_path=args.dataset_index,
             index_workers=args.index_workers,
             learning_rate=args.learning_rate,
+            dropout=args.dropout,
+            entropy_weight=args.entropy_weight,
+            l2_weight=args.l2_weight,
+            value_weight=args.value_weight,
+            validation_fraction=args.validation_fraction,
+            holdout_game_modes=tuple(args.holdout_game_mode or ()),
             dataset_seed_purpose=args.dataset_seed_purpose,
         ),
         show_progress=args.progress,

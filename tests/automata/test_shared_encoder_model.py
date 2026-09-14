@@ -208,6 +208,29 @@ def test_train_mode_for_all_candidate_families_has_finite_forward_and_backward(
     )
 
 
+def test_batched_model_can_distinguish_open_world_option_candidate_ids(
+    schema: TensorFeatureSchema,
+) -> None:
+    state = _state()
+    observations = [
+        _encode(
+            state,
+            Decision(
+                "INPUT",
+                request=_request(InputRequestType.SELECT_OPTION, [candidate_id]),
+            ),
+        )
+        for candidate_id in ("hold", "future-extension:teleport")
+    ]
+    batch = _batch(schema, observations)
+
+    output = _model(schema)(batch)
+
+    assert batch.candidate_ids[0] != batch.candidate_ids[1]
+    assert not torch.equal(batch.candidates.numeric[0, 0], batch.candidates.numeric[1, 0])
+    assert not torch.isclose(output.policy_logits[0, 0], output.policy_logits[1, 0])
+
+
 def test_candidate_permutation_only_permutes_logits(schema: TensorFeatureSchema) -> None:
     observation = _unit_observation()
     permutation = (1, 0)

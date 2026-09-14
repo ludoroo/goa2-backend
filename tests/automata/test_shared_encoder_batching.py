@@ -21,7 +21,11 @@ from automata.models.shared_encoder.batching import (
     masked_softmax,
     safe_gather,
 )
-from automata.models.shared_encoder.schema import TensorFeatureSchema, VectorizedDecision
+from automata.models.shared_encoder.schema import (
+    TensorFeatureSchema,
+    VectorizedDecision,
+    expanded_numeric_width,
+)
 from automata.observation import encode_decision
 from automata.search.ismcts.engine import legal_keys
 from goa2.domain.input import InputOption, InputRequest, InputRequestType
@@ -114,7 +118,7 @@ def _unit_observation(*, two_per_team: bool) -> DecisionObservation:
 
 def _assert_feature_table(table: Any, *, batch_size: int, rows: int, schema: Any) -> None:
     assert table.mask.shape == (batch_size, rows)
-    assert table.numeric.shape == (batch_size, rows, len(schema.numeric))
+    assert table.numeric.shape == (batch_size, rows, expanded_numeric_width(schema))
     assert table.numeric_valid.shape == table.numeric.shape
     assert table.categorical.shape == (batch_size, rows, len(schema.categorical))
     assert table.references.shape == (batch_size, rows, len(schema.references))
@@ -174,7 +178,7 @@ def test_collates_real_decision_families_into_schema_width_tables() -> None:
     assert batch.candidates.numeric.shape == (
         len(vectorized),
         max_candidates,
-        max(len(item.numeric) for item in schema.candidates),
+        max(expanded_numeric_width(item) for item in schema.candidates),
     )
     assert batch.candidates.numeric_valid.shape == batch.candidates.numeric.shape
     assert batch.candidates.categorical.shape == (

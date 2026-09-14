@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import torch
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 from ...contracts import (
     ArtifactError,
@@ -179,6 +179,13 @@ def _read_manifest(path: Path) -> ModelArtifactManifest:
     try:
         payload = path.read_bytes()
         manifest = from_canonical_json(ModelArtifactManifest, payload)
+    except ValidationError as exc:
+        tensor_identity_fields = {"tensor_schema_id", "tensor_schema_version"}
+        if any(
+            error["loc"] and error["loc"][0] in tensor_identity_fields for error in exc.errors()
+        ):
+            raise ArtifactError("invalid tensor schema identity in artifact manifest") from exc
+        raise ArtifactError("invalid artifact manifest") from exc
     except (OSError, ValueError) as exc:
         raise ArtifactError("invalid artifact manifest") from exc
     if payload != canonical_json_bytes(manifest):

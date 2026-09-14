@@ -10,7 +10,12 @@ import torch
 from torch import Tensor
 
 from ..contracts import CandidateID, DecisionObservation
-from .schema import RecordFeatureSchema, TensorFeatureSchema, VectorizedDecision
+from .schema import (
+    RecordFeatureSchema,
+    TensorFeatureSchema,
+    VectorizedDecision,
+    expanded_numeric_width,
+)
 
 
 @dataclass(frozen=True)
@@ -200,7 +205,7 @@ def _empty_feature_table(batch_size: int, rows: int, schema: RecordFeatureSchema
     return _empty_table(
         batch_size,
         rows,
-        len(schema.numeric),
+        expanded_numeric_width(schema),
         len(schema.categorical),
         len(schema.references),
     )
@@ -312,7 +317,7 @@ def collate_decisions(
     base = _empty_table(
         batch_size,
         max_candidates,
-        max(len(item.numeric) for item in schema.candidates),
+        max(expanded_numeric_width(item) for item in schema.candidates),
         max(len(item.categorical) for item in schema.candidates),
         max(len(item.references) for item in schema.candidates),
     )

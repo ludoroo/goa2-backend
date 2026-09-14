@@ -342,9 +342,10 @@ def encode_search_context(
     legal_keys: Sequence[Any],
 ) -> DecisionObservation:
     """Encode the current decision while preserving the root information viewer."""
-    if state.input_stack:
+    decision = context.current_decision
+    if decision is None and state.input_stack:
         decision = DecisionDescriptor("INPUT", request=state.input_stack[-1])
-    else:
+    elif decision is None:
         hero = state.get_hero(HeroID(context.current_owner_id))
         if hero is None:
             raise ValueError(f"current decision owner does not exist: {context.current_owner_id!r}")

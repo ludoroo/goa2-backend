@@ -17,12 +17,19 @@ from typing import Any, TextIO
 
 from tqdm import tqdm
 
-from automata.evaluation.provenance import GATE_FAILURE_EXIT_STATUS, source_identity
+from automata.evaluation.provenance import (
+    GATE_FAILURE_EXIT_STATUS,
+    repository_root,
+    source_identity,
+)
 from automata.scripts.generate_joint_bootstrap import (
     CheckpointRow,
     _read_checkpoint,
+    build_generator_provenance,
     generator_config_id,
+    generator_provenance_path,
     parse_generator_args,
+    write_generator_provenance,
 )
 from automata.training.dataset import JointDatasetRow, iter_joint_dataset, write_joint_dataset
 from automata.training.io import (
@@ -433,7 +440,14 @@ def _joint_bootstrap(args: argparse.Namespace) -> int:
         revision, dirty_hash = args.source_revision, args.dirty_tree_hash
     else:
         revision, dirty_hash = source_identity(
-            exclude_paths=(output, checkpoint, output_dir, checkpoint_dir)
+            exclude_paths=(
+                repository_root() / "runs",
+                output,
+                checkpoint,
+                output_dir,
+                checkpoint_dir,
+                generator_provenance_path(output),
+            )
         )
     extra = _extra_args(args.generator_options)
     reserved = {"--out", "--checkpoint", "--seed-start", "--seed-end"}
@@ -511,6 +525,16 @@ def _joint_bootstrap(args: argparse.Namespace) -> int:
     _atomic_publish(
         checkpoint,
         b"".join(canonical_json_bytes(row) + b"\n" for row in checkpoint_rows),
+    )
+    write_generator_provenance(
+        output,
+        build_generator_provenance(
+            worker_args,
+            source_revision=revision,
+            dirty_tree_hash=dirty_hash,
+            seed_start=args.seed_start,
+            seed_end=args.seed_end,
+        ),
     )
     print(f"Merged {row_count} joint decisions into {output}", file=sys.stderr)
     return 0
