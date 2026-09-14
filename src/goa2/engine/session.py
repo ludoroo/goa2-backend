@@ -101,6 +101,17 @@ class GameSession:
 
         stack_result = process_stack(self.state)
 
+        if (
+            stack_result.input_request is None
+            and self.state.phase == GamePhase.RESOLUTION
+            and self.state.current_actor_id is None
+            and not self.state.execution_stack
+        ):
+            raise RuntimeError(
+                "RESOLUTION invariant violated: execution stack drained without "
+                "selecting an actor or transitioning phase"
+            )
+
         # Snapshot & rollback flag management
         self._manage_rollback(stack_result)
 

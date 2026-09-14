@@ -17,6 +17,7 @@ from goa2.domain.models import (
     ActionType,
     Card,
     CardColor,
+    CardState,
     CardTier,
     Minion,
     MinionType,
@@ -38,7 +39,7 @@ from goa2.engine.handler import process_stack, push_steps
 from goa2.engine.rules import is_immune
 from goa2.engine.steps import AttackSequenceStep
 
-from ..builders import EffectScenarioBuilder, hero_card
+from ..builders import EffectScenarioBuilder, hero_card, skill_card
 from ..runner import run_card
 
 # =============================================================================
@@ -393,11 +394,16 @@ class TestFutureProof:
 
     def test_immunity_branch_creates_aura(self):
         state = self._state()
+        enemy_card = skill_card("enemy_card")
+        enemy_card.state = CardState.UNRESOLVED
+        state.get_hero("hero_enemy").current_turn_card = enemy_card
         run = run_card(state, "hero_emmitt", finalize_turn=True)
         run.expect_input("CHOOSE_ACTION").choose("SKILL")
         run.expect_input("SELECT_NUMBER")  # choose-one branch
         run.choose(2)  # immunity
-        run.finish()
+        # Keep the turn open on the enemy's valid unresolved card so the
+        # THIS_TURN aura can be asserted before it expires.
+        run.expect_input("CHOOSE_ACTION")
 
         auras = [
             e
@@ -562,7 +568,11 @@ class TestReverseTime:
         )
         if with_target:
             builder = builder.blue_minion("minion_target", at=(1, 0, -1))
-        return builder.build()
+        state = builder.build()
+        next_turn_card = skill_card("far_next_turn")
+        next_turn_card.state = CardState.HAND
+        state.get_hero("hero_far").hand.append(next_turn_card)
+        return state
 
     def test_attack_then_creates_next_turn_reversal(self):
         state = self._state()
