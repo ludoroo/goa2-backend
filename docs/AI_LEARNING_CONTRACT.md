@@ -8,8 +8,10 @@ This is the target contract and current execution plan. Boundary recognition,
 actual-play observation, candidate-free value encoding, and the first source
 cleanup are implemented and published in the replacement draft stack. Opt-in
 heuristic-valued search now uses the shared transition contract on the local
-search-parity branch. Learned-value inference, dataset publication, model
-batching/losses, and the learning loop must adopt it before any fresh Gen1
+search-parity branch. Offline outcomes are normalized on the local outcome branch;
+4,936 full-suite tests and source checks pass, with independent review complete.
+Learned-value inference, Gen1 dataset publication, model batching/losses, and the
+learning loop must adopt the transition contract before any fresh Gen1
 generation. Existing commands are not yet Gen1 commands.
 
 **Status verified 2026-09-25:** #3 is merged at `7e75671`; #4 is merged at
@@ -98,7 +100,10 @@ The new dataset has distinct sample kinds:
 Value scale is `[-1, 1]`: win `+1`, loss `-1`, and a genuine terminal draw `0`,
 from the fixed perspective team's viewpoint. Individual hero winners must be
 resolved through their team, not treated as an unknown winning team. Probability
-metrics use `(value + 1) / 2` explicitly.
+metrics use `(value + 1) / 2` explicitly. The current engine has no terminal draw
+rule: `GAME_OVER` with no winner is malformed and fails closed, not a zero label.
+Nullable dataset/evaluation outcomes retain abstract draw support; adding an actual
+engine draw requires positive rule evidence rather than missing winner markers.
 
 A counterfactual search leaf is never labeled with the played game's winner.
 Search may inspect it to choose an action; only the subsequent actual trajectory
@@ -153,13 +158,16 @@ as operational failures/censored evidence, not strategic draws or losses.
    learned/fallback evaluators are rejected, even for singleton roots. Live-bot
    deadline recovery still cannot authorize incomplete teacher evidence or turn
    an interrupted transition into a stable value leaf.
-4. **Pending — data and model.** Discriminated policy/value rows, atomic complete-
-   game publication, bounded indexing, per-head masks/weights, candidate-free value
-   batching and runtime. Align offline winner normalization too: the generic
-   matchup evaluator currently counts hero-ID winners as draws, whereas joint
-   training and the learned arena reject them. Neither behavior is the Gen1 team-
-   outcome contract. Replace the retained joint-data path and resolve source/seed
-   identity portability without relabeling old datasets or checkpoints.
+4. **Complete locally and reviewed — offline outcomes; data/model next.**
+   `ai-gen1-outcome-normalization` starts from reviewed search checkpoint `02b3cce`.
+   Search and actual play share authoritative terminal-team resolution; raw
+   individual-winner diagnostics survive even rejected outcomes. Censored games
+   never become draws or strength evidence. Verification: **4,936 full-suite tests**
+   and source Ruff/Black/mypy pass; dependencies are unchanged.
+   Next add discriminated policy/value rows, atomic complete-game publication,
+   bounded indexing, per-head masks/weights, and candidate-free value batching/
+   runtime. Replace the retained joint-data path and resolve source/seed identity
+   portability without relabeling old datasets or checkpoints.
 5. **Pending — executable iteration, then fresh generation.** Bootstrap → train →
    paired evaluation → parent initialization/replay, with persistent split/seed
    isolation. Start only after the preceding steps and behavior/engine/server
@@ -189,6 +197,59 @@ as operational failures/censored evidence, not strategic draws or losses.
 - Keep the old synthetic-context path operational until the data/model slice
   supplies its replacement. This search slice alone does not open the generation
   gate or change client APIs, training schemas, dependencies, or old artifacts.
+
+### Offline outcome slice (implemented and independently reviewed)
+
+The neutral runtime resolver maps raw team/hero winners using authoritative
+finished-state rosters, shared by search and actual play. `RunResult` keeps raw
+`winner` and requires explicit normalized `winner_side`. Raw trajectory recording
+happens before normalization, so rejected unknown/missing winners remain diagnostic
+evidence. Learning observers and the strict dataset recorder use `winner_side`.
+Unknown/missing engine winners, contradictory fields, and nonterminal winners fail
+closed; invalid recorder outcomes also discard provisional data immediately.
+
+Generic matchup evaluation rejects nonterminal results because it lacks a
+censoring model. Strict arena checkpoints retain censored observations only for
+operational diagnostics: summaries exclude them from wins/draws, paired scoring
+rejects them, and arena promotion stops without strength metrics. Fresh sequential
+execution, fully cached replay, and partial-pair resume have regression coverage.
+Cost averages still include non-timeout censored rows and are named
+`average_non_timeout` in new learned-arena summary schema version 2.
+
+Bootstrap receipts carry raw winner plus required normalized side; incompatible
+old receipts are rejected, not inferred or migrated. Use fresh bootstrap checkpoint
+paths: a pre-change row missing `winner_side` invalidates the entire checkpoint
+file even if its configuration identity differs. Generation identities pin
+`raw-winner+canonical-side-v1`. Self-play checks both live result/fragment and
+resumed checkpoint/fragment winners; known contradictory new fragments are removed
+so resume cannot recover them as valid orphans. Legitimate crash-orphan recovery
+is unchanged. Independent review found no production blockers; its final identity-
+test defect was corrected and the full suite rerun. No training-row schema expansion
+or historical artifact migration is part of this fix. Native policy/value data
+and model changes still follow it.
+
+### Next data/model checkpoints (pending; no generation yet)
+
+1. **Native rows and publication.** Add discriminated policy/value records and
+   a whole-game recorder over the existing `StableBoundaryObserver` and
+   `encode_stable_value` seams. Policy rows retain exact candidates/root visits
+   without a value target; value rows contain actual boundary observations and
+   terminal labels without policy candidates. Test per-viewer deduplication,
+   perspective orientation, atomic publication, and discard on every failure.
+2. **Candidate-free model/runtime.** Separate shared graph batching from candidate
+   tables in `shared_encoder/batching.py`, expose value-only model/runtime paths,
+   and preserve boundary/viewer metadata and strict artifact/scope validation.
+   Test batched/single parity, privacy, and native boundary-value inference without
+   constructing candidates or policy logits.
+3. **Bounded indexing and separate losses.** Index tagged policy/value chunks with
+   source/dataset identity checks. Normalize each head independently per game;
+   policy metrics must ignore value rows and value metrics need no candidate
+   metadata. Test interrupted indexing, digest/range validation, and weighting.
+4. **Trainer and generation integration.** Wire native training and actual-play
+   recording end to end, then retire the replaced joint path deliberately. The
+   retained joint commands stay operational during these checkpoints, not as a
+   permanent legacy-format bridge. Only after these checks and the separate
+   executable-iteration gate may a small fresh Gen1 diagnostic be generated.
 
 Artifact deletion is a separate inventoried task. No reset command may delete
 `runs/` or mutate historical results as a side effect.

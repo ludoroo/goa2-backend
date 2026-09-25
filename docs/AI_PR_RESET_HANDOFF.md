@@ -16,7 +16,54 @@ The experiment history and reset direction are in
 [AI_EXPERIMENT_JOURNAL.md](AI_EXPERIMENT_JOURNAL.md). The active implementation
 checklist is in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md).
 
-## Current search-parity work — 2026-09-25
+## Current offline-outcome checkpoint — 2026-09-25
+
+Implemented and verified on `ai-gen1-outcome-normalization`, starting from reviewed
+search checkpoint `02b3cce` (4,879 passing tests). Search history remains on
+`ai-gen1-search-parity`; no worktree moved. Draft #8/#9/#10 states and heads were
+reverified unchanged before this slice; this recovery did not change remote refs.
+
+Raw engine winners remain diagnostic evidence, with a required explicit normalized
+`winner_side` for learning/evaluation resolved from actual team rosters. Learning
+callbacks use that named side; raw trajectory callbacks retain raw `winner` even
+when normalization rejects it. Unknown or missing engine winners fail closed:
+there is no engine draw rule that would justify labeling absent markers as draws.
+Generic matchup rejects censored games; strict evaluation retains them only as
+operational evidence, excluding them from draws, wins, and paired strength scores
+and blocking promotion. Bootstrap receipts/config identities make the outcome
+contract explicit; no historical receipt inference or migration occurs. Use fresh
+bootstrap checkpoint paths: any legacy row missing `winner_side` rejects the file,
+even if it has another configuration identity. Self-play receipts keep normalized
+`winner` (unlike bootstrap's raw `winner`), cross-checked against fragment labels.
+
+Recovered the interrupted session's 4,923-test run and independent review. Fixed
+its missing-winner and raw-diagnostic findings, added sequential fresh/cache/
+partial-pair censor regressions, avoided new type-only runtime import coupling,
+and made invalid dataset outcomes clean their spool immediately. A raw-engine
+integration test covers both perspectives, real decisions, normalized labels,
+invalid/missing winners, and whole-game discard. Learned-arena cost averages are
+now truthfully named `average_non_timeout` in summary schema version 2. Additional
+red/green regressions exposed a contradictory newly published fragment surviving
+into resume, and an unchecked cached receipt winner. Both now fail closed without
+breaking valid crash-orphan recovery; rejected new fragments cannot be recovered.
+
+Final verification: **4,936 full-suite tests pass**, source Ruff/Black/mypy pass
+(283 files), and dependency files remain byte-identical to `fc20bb9`. Independent
+review found no production blockers and verified the resume corrections. Its last
+finding was a lazy-property identity test reading its baseline too late; corrected
+that test and reran the full suite. No generation, training, arena experiment,
+push, merge, artifact conversion, dependency, or client API change occurred.
+
+Censoring remains explicit in observation `reason` fields; a separate redundant
+arena halt marker is deferred. The exploratory `evaluation/search_boundaries.py`
+scoring path is not connected to an engine runner and must be audited before reuse
+as Gen1 evidence. Neither point weakens this slice's promotion gates.
+
+**Next action:** implement native discriminated policy/value records and atomic
+actual-boundary publication first; the ordered model/index/trainer checkpoints are
+in `AI_LEARNING_CONTRACT.md`. Iteration and fresh-generation gates remain closed.
+
+## Reviewed search-parity checkpoint — 2026-09-25
 
 Local branch `ai-gen1-search-parity` starts from published checkpoint `3eef358`.
 The #8/#9/#10 foundation heads remain unchanged. Terminal checkpoint `d66682e`
@@ -55,10 +102,10 @@ exists. Historical `STABLE_TURN`, serving defaults, schemas, and artifacts are
 unchanged. Request schedules 1/2 cannot be combined with the new mode; no
 historical schedule may silently change its horizon. No Gen1 generation was run.
 
-**Remaining offline outcome gap:** the generic matchup evaluator counts hero-ID
-winners as draws; retained joint training and the learned arena reject those IDs.
-That is not fixed by the search helper. Align these paths before using individual-
-victory games for Gen1 evidence, without changing historical results or artifacts.
+**Gap at this search checkpoint, now addressed by the outcome slice above:** generic
+matchup counted hero-ID winners as draws; retained joint training and the learned
+arena rejected those IDs. The shared resolver now aligns these paths without
+relabeling historical results or artifacts.
 
 ## Published replacement stack — 2026-09-25
 
@@ -322,10 +369,12 @@ local Git configuration alone does not rewrite existing commits.
 ## Files and artifacts to preserve during concurrent cleanup
 
 - Working checkout: `/Users/lucasbarcelos/code/.goa2-backend-ai-learned-self-play-next`
-- Working branch: `ai-gen1-integration`, based on merged #4 at `851f96a`.
+- Working branch: `ai-gen1-outcome-normalization`, based on reviewed search
+  checkpoint `02b3cce`; the published foundation remains `ai-gen1-integration`
+  on merged #4 at `851f96a`.
 - Preserved source branch: `ai-learned-self-play-next` at `fc20bb9`.
-- Preserve the local reset commits and their contract/journal/handoff documents;
-  they have not been integrated into the published PRs.
+- Preserve the local search/outcome checkpoints and their contract/journal/handoff
+  documents; these follow-ups are not yet integrated into the published draft PRs.
 - `runs/` is ignored and now lives in this checkout, not the removed Herdr one.
   Do not delete or clean this worktree as a side effect of restacking PRs.
 - Historical artifact retirement is a separate cleanup decision; it is not

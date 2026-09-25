@@ -120,10 +120,17 @@ def evaluate(
         )
         total_rounds += result.rounds
 
-        winner = (result.winner or "").upper()
-        if winner not in ("RED", "BLUE"):
+        if result.reason != "game_over":
+            raise ValueError(
+                "matchup evaluation cannot score a non-game_over outcome: "
+                f"reason={result.reason!r}"
+            )
+        winner = result.winner_side
+        if winner is None:
             draws += 1
             continue
+        if winner not in ("RED", "BLUE"):
+            raise ValueError(f"matchup evaluation received invalid winner_side {winner!r}")
         a_won = (winner == "RED") == a_is_red
         if a_won:
             a_wins += 1

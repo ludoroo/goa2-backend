@@ -113,6 +113,11 @@ def pair_seed_scores(observations: Iterable[EvaluationGameResult]) -> tuple[Pair
     """
     grouped: dict[int, dict[str, EvaluationGameResult]] = {}
     for observation in observations:
+        if observation.reason != "game_over":
+            raise ValueError(
+                "cannot score nonterminal observation "
+                f"{observation.case_id!r} with reason {observation.reason!r}"
+            )
         if observation.a_side not in ("RED", "BLUE"):
             raise ValueError(f"invalid a_side {observation.a_side!r}")
         if observation.winner_side not in (None, "RED", "BLUE"):

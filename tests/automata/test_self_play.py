@@ -153,8 +153,8 @@ def _short_game(
     hero = state.get_hero(HeroID("hero_wasp"))
     assert hero is not None
     agents[hero.id].choose_planning(state, hero)
-    result = RunResult("RED", 1, 1, 1, "game_over")
-    kwargs["decision_observer"].record_outcome(winner="RED", rounds=1, reason="game_over")
+    result = RunResult("hero_wasp", 1, 1, 1, "game_over", winner_side="RED")
+    kwargs["decision_observer"].record_outcome(winner_side="RED", rounds=1, reason="game_over")
     return result
 
 
@@ -377,8 +377,8 @@ def test_partial_visit_budget_discards_the_entire_provisional_game(tmp_path: Pat
         assert hero is not None
         agents[hero.id].choose_planning(state, hero)
         agents[hero.id].choose_planning(state, hero)
-        kwargs["decision_observer"].record_outcome(winner="RED", rounds=1, reason="game_over")
-        return RunResult("RED", 1, 2, 2, "game_over")
+        kwargs["decision_observer"].record_outcome(winner_side="RED", rounds=1, reason="game_over")
+        return RunResult("RED", 1, 2, 2, "game_over", winner_side="RED")
 
     checkpoint = tmp_path / "checkpoint.jsonl"
     worker = module.SelfPlayWorker(
@@ -422,8 +422,8 @@ def test_worker_applies_configured_visit_sampling_only_to_self_play(tmp_path: Pa
         decision = agents[hero.id].choose_planning(state, hero)
         assert decision.card is not None
         assert decision.card.id == expected
-        kwargs["decision_observer"].record_outcome(winner="RED", rounds=1, reason="game_over")
-        return RunResult("RED", 1, 1, 1, "game_over")
+        kwargs["decision_observer"].record_outcome(winner_side="RED", rounds=1, reason="game_over")
+        return RunResult("RED", 1, 1, 1, "game_over", winner_side="RED")
 
     worker = module.SelfPlayWorker(
         spec,
@@ -488,6 +488,69 @@ def test_resume_skips_complete_games_without_loading_or_duplicates(tmp_path: Pat
     assert module.SelfPlayWorker(spec, **kwargs).run() == 0
     assert loads == 1
     assert (tmp_path / "checkpoint.jsonl").read_bytes() == checkpoint
+
+
+def test_outcome_disagreement_discards_fragment_and_resume_replays_game(tmp_path: Path) -> None:
+    module = _module()
+    spec = module.WorkerSpec(worker_id=0, config=_config(), games=_games(20_002))
+    checkpoint = tmp_path / "checkpoint.jsonl"
+    fragments = tmp_path / "fragments"
+    common = dict(
+        output_dir=fragments,
+        checkpoint_path=checkpoint,
+        runtime_loader=lambda _config: module.LoadedChampionRuntime(object(), "a" * 64, 6, 4),
+        strategy_factory=lambda *_args: _ImprovedStrategy(),
+    )
+
+    def contradictory(*args: Any, **kwargs: Any) -> RunResult:
+        _short_game(*args, **kwargs)  # Observer published RED.
+        return RunResult("BLUE", 1, 1, 1, "game_over", winner_side="BLUE")
+
+    with pytest.raises(ValueError, match="winner side disagree"):
+        module.SelfPlayWorker(spec, game_runner=contradictory, **common).run()
+
+    assert list(fragments.iterdir()) == []
+    assert not checkpoint.exists()
+    assert module.SelfPlayWorker(spec, game_runner=_short_game, **common).run() == 1
+    receipt = module.CheckpointRow.model_validate_json(checkpoint.read_bytes())
+    assert receipt.winner == "RED"
+
+
+def test_resume_rejects_checkpoint_winner_that_disagrees_with_fragment(tmp_path: Path) -> None:
+    from automata.models.contracts import canonical_json_bytes
+
+    module = _module()
+    spec = module.WorkerSpec(worker_id=0, config=_config(), games=_games(20_002))
+    checkpoint = tmp_path / "checkpoint.jsonl"
+    worker = module.SelfPlayWorker(
+        spec,
+        output_dir=tmp_path / "fragments",
+        checkpoint_path=checkpoint,
+        runtime_loader=lambda _config: module.LoadedChampionRuntime(object(), "a" * 64, 6, 4),
+        strategy_factory=lambda *_args: _ImprovedStrategy(),
+        game_runner=_short_game,
+    )
+    assert worker.run() == 1
+    receipt = module.CheckpointRow.model_validate_json(checkpoint.read_bytes())
+    contradictory = receipt.model_copy(update={"winner": "BLUE"})
+    checkpoint.write_bytes(canonical_json_bytes(contradictory) + b"\n")
+
+    with pytest.raises(ValueError, match="checkpoint and fragment disagree"):
+        worker.run()
+
+
+def test_outcome_contract_changes_generation_and_game_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before = _config()
+    game = _games(20_002)[0]
+    before_id = before.generator_config_id
+    before_game_id = game.game_id(before)
+    monkeypatch.setattr(_module(), "OUTCOME_CONTRACT", "different-outcome-contract")
+    after = _config()
+
+    assert before_id != after.generator_config_id
+    assert before_game_id != game.game_id(after)
 
 
 def test_four_worker_assignment_is_deterministic_disjoint_and_training_only() -> None:
@@ -573,8 +636,8 @@ def test_nonterminal_game_emits_timeout_telemetry_without_fragment_or_checkpoint
     events: list[Any] = []
 
     def capped(_red: Any, _blue: Any, _agents: Any, **kwargs: Any) -> RunResult:
-        kwargs["decision_observer"].record_outcome(winner=None, rounds=1, reason="max_steps")
-        return RunResult(None, 1, 1, 20, "max_steps")
+        kwargs["decision_observer"].record_outcome(winner_side=None, rounds=1, reason="max_steps")
+        return RunResult(None, 1, 1, 20, "max_steps", winner_side=None)
 
     worker = module.SelfPlayWorker(
         spec,
@@ -839,8 +902,8 @@ def test_decision_timeout_discards_game_and_continues_with_actionable_telemetry(
             xargatha = state.get_hero(HeroID("hero_xargatha"))
             assert xargatha is not None
             agents[xargatha.id].choose_planning(state, xargatha)
-        kwargs["decision_observer"].record_outcome(winner="RED", rounds=1, reason="game_over")
-        return RunResult("RED", 1, 1, 1, "game_over")
+        kwargs["decision_observer"].record_outcome(winner_side="RED", rounds=1, reason="game_over")
+        return RunResult("RED", 1, 1, 1, "game_over", winner_side="RED")
 
     worker = module.SelfPlayWorker(
         spec,
@@ -962,8 +1025,8 @@ def test_search_progression_failure_discards_game_and_continues_with_diagnostics
             xargatha = state.get_hero(HeroID("hero_xargatha"))
             assert xargatha is not None
             agents[xargatha.id].choose_planning(state, xargatha)
-        kwargs["decision_observer"].record_outcome(winner="RED", rounds=1, reason="game_over")
-        return RunResult("RED", 1, 1, 1, "game_over")
+        kwargs["decision_observer"].record_outcome(winner_side="RED", rounds=1, reason="game_over")
+        return RunResult("RED", 1, 1, 1, "game_over", winner_side="RED")
 
     fragments = tmp_path / "fragments"
     checkpoint = tmp_path / "checkpoint.jsonl"
@@ -1063,8 +1126,8 @@ def test_input_decision_telemetry_is_bounded_and_progress_keeps_round_and_steps(
             decision_owner_hero_id="hero_wasp",
         )
         kwargs["progress_callback"](3, 9)
-        kwargs["decision_observer"].record_outcome(winner="RED", rounds=3, reason="game_over")
-        return RunResult("RED", 3, 2, 9, "game_over")
+        kwargs["decision_observer"].record_outcome(winner_side="RED", rounds=3, reason="game_over")
+        return RunResult("RED", 3, 2, 9, "game_over", winner_side="RED")
 
     class ScheduledStrategy(_ImprovedStrategy):
         def select(self, state: GameState, team: TeamColor, target: Any, legal: Any) -> Any:

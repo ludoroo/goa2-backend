@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from automata.evaluation.learned_matrix import LearnedMatrixCell
-from automata.evaluation.protocol import GameCase
+from automata.evaluation.protocol import EvaluationGameResult, GameCase
 from automata.scripts import run_learned_arena as arena
 from automata.search.config import parse_learned_lh_search_config
 from automata.search.heuristic import HeuristicLeafEvaluator
@@ -37,10 +37,12 @@ def runner(tmp_path: Path) -> arena.LearnedArenaRunner:
 
 
 @pytest.mark.parametrize("candidate_side", ["RED", "BLUE"])
+@pytest.mark.parametrize("raw_winner", ["RED", "hero_wasp", None])
 def test_runner_is_spawn_picklable_and_binds_one_agent_per_side(
     runner: arena.LearnedArenaRunner,
     monkeypatch: pytest.MonkeyPatch,
     candidate_side: str,
+    raw_winner: str | None,
 ) -> None:
     runner = replace(runner, candidate_matrix_cell=LearnedMatrixCell.LL)
     candidate_runtime = object()
@@ -56,7 +58,13 @@ def test_runner_is_spawn_picklable_and_binds_one_agent_per_side(
         red: list[str], blue: list[str], agents: dict[str, Any], **kwargs: Any
     ) -> Any:
         captured.update(red=red, blue=blue, agents=agents, kwargs=kwargs)
-        return SimpleNamespace(winner="RED", rounds=7, steps=91, reason="game_over")
+        return SimpleNamespace(
+            winner=raw_winner,
+            winner_side="RED" if raw_winner is not None else None,
+            rounds=7,
+            steps=91,
+            reason="game_over" if raw_winner is not None else "max_steps",
+        )
 
     monkeypatch.setattr(arena, "_load_pinned_runtime", fake_load)
     monkeypatch.setattr(arena, "run_game", fake_run_game)
@@ -64,7 +72,8 @@ def test_runner_is_spawn_picklable_and_binds_one_agent_per_side(
     pickle.dumps(runner)
     result = runner(GameCase(case_id="case", world_seed=42, a_side=candidate_side))
 
-    assert result.winner_side == "RED"
+    assert result.winner_side == ("RED" if raw_winner is not None else None)
+    assert result.reason == ("game_over" if raw_winner is not None else "max_steps")
     assert loads == [
         (runner.candidate_artifact, runner.candidate_digest),
         (runner.parent_artifact, runner.parent_digest),
@@ -85,6 +94,41 @@ def test_runner_is_spawn_picklable_and_binds_one_agent_per_side(
     assert isinstance(agents["hero_arien"]._strategy._leaf_evaluator, expected_blue_leaf)
     assert captured["kwargs"]["max_steps"] == 123
     assert "recorder" not in captured["kwargs"]
+
+
+def test_summary_separates_strength_from_observed_operational_cost(
+    runner: arena.LearnedArenaRunner,
+) -> None:
+    protocol = arena.build_protocol(
+        runner,
+        world_seeds=(9, 10),
+        source_revision="revision",
+        dirty_tree_hash="tree",
+        case_timeout_seconds=60.0,
+    )
+    terminal, capped, timeout, draw = protocol.cases()
+    observations = [
+        EvaluationGameResult(
+            case.case_id, case.world_seed, case.a_side, winner, rounds, steps, reason
+        )
+        for case, winner, rounds, steps, reason in [
+            (terminal, terminal.a_side, 4, 80, "game_over"),
+            (capped, None, 2, 60, "max_steps"),
+            (timeout, None, 1, 10, "wall_clock_timeout"),
+            (draw, None, 3, 40, "game_over"),
+        ]
+    ]
+
+    summary = arena._summary_payload(observations, protocol)
+
+    assert summary["schema_version"] == 2
+    assert summary["candidate_wins"] == 1
+    assert summary["parent_wins"] == 0
+    assert summary["draws"] == 1
+    assert summary["censored_terminations"] == 2
+    assert summary["max_step_terminations"] == summary["timeout_terminations"] == 1
+    assert summary["rounds"] == {"total": 10, "average_non_timeout": 3.0}
+    assert summary["steps"] == {"total": 190, "average_non_timeout": 60.0}
 
 
 def test_candidate_is_paired_on_both_sides(runner: arena.LearnedArenaRunner) -> None:

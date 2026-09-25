@@ -25,6 +25,7 @@ from automata.decision import DecisionDescriptor
 from automata.harness.game_runner import RunResult, run_game
 from automata.observation import encode_decision
 from automata.runtime.driver import BotDecision
+from automata.runtime.outcomes import WinnerSide
 from automata.search.config import SearchConfig
 from automata.search.ismcts.engine import SearchProgressionError
 from automata.search.ismcts.strategy import (
@@ -50,6 +51,7 @@ WORKER_COUNT = 4
 SEED_DERIVATION = "sha256(self-play-agent-v1,worker-config,world-seed,side)"
 NAMESPACED_SEED_DERIVATION = "sha256(self-play-agent-random-stream-v1,namespace,world-seed,side)"
 RANDOM_STREAM_NAMESPACE_MAX_LENGTH = 128
+OUTCOME_CONTRACT = "raw-winner+canonical-side-v1"
 VISIT_TEMPERATURE_SCHEDULES = ("constant", "round-decay-v1")
 VisitTemperatureSchedule = Literal["constant", "round-decay-v1"]
 
@@ -156,10 +158,11 @@ class GenerationConfig:
             "visit_temperature": self.visit_temperature,
             "decision_timeout_seconds": self.decision_timeout_seconds,
             "seed_derivation": SEED_DERIVATION,
+            "outcome_contract": OUTCOME_CONTRACT,
         }
         if self.visit_temperature_schedule != "constant":
-            # Keep the pre-schedule constant identity byte-for-byte compatible;
-            # its semantics are already fully identified by visit_temperature.
+            # Keep constant-schedule identity stable within this outcome
+            # contract; its semantics are already identified by temperature.
             identity["visit_temperature_schedule"] = self.visit_temperature_schedule
         if self.random_stream_namespace is not None:
             identity.update(
@@ -266,7 +269,11 @@ class LoadedChampionRuntime:
 
 
 class CheckpointRow(BaseModel):
-    """A durable receipt for one and only one complete terminal game."""
+    """A durable receipt for one and only one complete terminal game.
+
+    ``winner`` is the normalized dataset team side, not the raw engine token.
+    Bootstrap receipts separately retain both raw ``winner`` and ``winner_side``.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
@@ -708,8 +715,8 @@ class _OutcomeObserver:
     def record_decision(self, state: GameState, decision: BotDecision) -> None:
         del state, decision  # Root decisions are recorded synchronously by _RecordingStrategy.
 
-    def record_outcome(self, *, winner: str | None, rounds: int, reason: str) -> None:
-        self._recorder.record_outcome(winner=winner, rounds=rounds, reason=reason)
+    def record_outcome(self, *, winner_side: WinnerSide | None, rounds: int, reason: str) -> None:
+        self._recorder.record_outcome(winner_side=winner_side, rounds=rounds, reason=reason)
 
 
 class SourceGameTimeout(TimeoutError):
@@ -1105,8 +1112,10 @@ class SelfPlayWorker:
             self._validate_fragment(dataset, game, game_id)
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             if checkpoint is not None:
-                if checkpoint.fragment_digest != digest or checkpoint.row_count != len(
-                    dataset.rows
+                if (
+                    checkpoint.fragment_digest != digest
+                    or checkpoint.row_count != len(dataset.rows)
+                    or checkpoint.winner != dataset.rows[0].terminal_winner
                 ):
                     raise ValueError("self-play checkpoint and fragment disagree")
                 continue
@@ -1140,6 +1149,11 @@ class SelfPlayWorker:
         self._validate_fragment(dataset, game, game_id)
         config = self.spec.config
         winner = dataset.rows[0].terminal_winner
+        if result is not None and result.winner_side != winner:
+            # A known contradictory publication is not a crash-recovery orphan.
+            # Remove it now so a later resume cannot bless it without the result.
+            path.unlink(missing_ok=True)
+            raise ValueError("self-play result and dataset winner side disagree")
         return CheckpointRow(
             worker_id=self.spec.worker_id,
             worker_config_id=self.spec.worker_config_id,

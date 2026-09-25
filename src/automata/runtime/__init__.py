@@ -10,14 +10,17 @@ from .driver import (
     inspect_next_decision,
 )
 from .effects import register_all_effects
+from .outcomes import WinnerSide, resolve_terminal_winner_side
 
 __all__ = [
     "BotDecision",
     "DecisionKind",
     "IllegalBotDecisionError",
+    "WinnerSide",
     "apply_decision",
     "clone_state",
     "determinize",
     "inspect_next_decision",
     "register_all_effects",
+    "resolve_terminal_winner_side",
 ]

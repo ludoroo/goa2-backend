@@ -314,6 +314,151 @@ def test_arena_runs_explicit_side_swapped_stages_and_scores_draws_as_half(
     ]
 
 
+class CensoredRunner(FakeRunner):
+    def __call__(self, case: GameCase) -> EvaluationGameResult:
+        self.calls.append((case.world_seed, case.a_side))
+        return EvaluationGameResult(
+            case_id=case.case_id,
+            world_seed=case.world_seed,
+            a_side=case.a_side,
+            winner_side=None,
+            rounds=3,
+            steps=30,
+            reason="max_rounds",
+        )
+
+
+def test_censored_stage_is_checkpointed_but_never_scored_or_promoted(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    first_runner = CensoredRunner()
+    first = run_arena(
+        config,
+        run_cases={stage: first_runner for stage in ArenaStage},
+        operational_evidence=_evidence(),
+    )
+
+    assert first.promoted is False
+    assert [stage.stage for stage in first.stages] == [ArenaStage.SMOKE]
+    assert len(first.stages[0].observations) == 4
+    assert first.stages[0].pairs == ()
+    assert first.promotion_metrics is None
+    assert first.promotion_gates is None
+
+    replay_runner = CensoredRunner()
+    replay = run_arena(
+        config,
+        run_cases={stage: replay_runner for stage in ArenaStage},
+        operational_evidence=_evidence(),
+    )
+
+    assert replay.promoted is False
+    assert replay_runner.calls == []
+    assert replay.stages[0].observations == first.stages[0].observations
+    assert replay.stages[0].pairs == ()
+
+
+def test_censored_sequential_screen_is_preserved_without_strength_or_promotion(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    screen_runner = CensoredRunner()
+    promotion_runner = FakeRunner()
+
+    result = run_arena(
+        config,
+        run_cases={
+            ArenaStage.SMOKE: FakeRunner(),
+            ArenaStage.SCREEN: screen_runner,
+            ArenaStage.PROMOTION: promotion_runner,
+        },
+        operational_evidence=_evidence(),
+    )
+
+    screen = result.stage(ArenaStage.SCREEN)
+    assert [stage.stage for stage in result.stages] == [ArenaStage.SMOKE, ArenaStage.SCREEN]
+    assert len(screen.observations) == 20
+    assert all(observation.reason == "max_rounds" for observation in screen.observations)
+    assert screen.pairs == ()
+    assert screen.sequential is None
+    assert result.promotion_metrics is None
+    assert result.promotion_gates is None
+    assert result.promoted is False
+    assert promotion_runner.calls == []
+
+
+def test_complete_cached_censored_screen_replay_makes_no_runner_calls(tmp_path: Path) -> None:
+    config = replace(
+        _config(tmp_path),
+        screen=_stage(tmp_path, ArenaStage.SCREEN, (10, 11), looks=(1,)),
+    )
+    smoke_observations = [FakeRunner()(case) for case in config.smoke.protocol.cases()]
+    config.smoke.checkpoint_path.write_text(
+        "".join(observation.to_json() + "\n" for observation in smoke_observations),
+        encoding="utf-8",
+    )
+    screen_cases = list(config.screen.protocol.cases())
+    cached_screen = [
+        CensoredRunner()(screen_cases[0]),
+        *(FakeRunner()(case) for case in screen_cases[1:]),
+    ]
+    config.screen.checkpoint_path.write_text(
+        "".join(observation.to_json() + "\n" for observation in cached_screen),
+        encoding="utf-8",
+    )
+    replay_runners = {stage: FakeRunner() for stage in ArenaStage}
+
+    replay = run_arena(
+        config,
+        run_cases=replay_runners,
+        operational_evidence=_evidence(),
+    )
+
+    screen = replay.stage(ArenaStage.SCREEN)
+    assert all(runner.calls == [] for runner in replay_runners.values())
+    assert [stage.stage for stage in replay.stages] == [ArenaStage.SMOKE, ArenaStage.SCREEN]
+    assert screen.observations == tuple(cached_screen)
+    assert screen.pairs == ()
+    assert screen.sequential is None
+    assert replay.promotion_metrics is None
+    assert replay.promotion_gates is None
+    assert replay.promoted is False
+
+
+def test_partial_censored_screen_pair_resume_preserves_row_without_scoring(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    first_case = next(iter(config.screen.protocol.cases()))
+    censored = CensoredRunner()(first_case)
+    config.screen.checkpoint_path.write_text(censored.to_json() + "\n", encoding="utf-8")
+    screen_runner = FakeRunner()
+    promotion_runner = FakeRunner()
+
+    result = run_arena(
+        config,
+        run_cases={
+            ArenaStage.SMOKE: FakeRunner(),
+            ArenaStage.SCREEN: screen_runner,
+            ArenaStage.PROMOTION: promotion_runner,
+        },
+        operational_evidence=_evidence(),
+    )
+
+    screen = result.stage(ArenaStage.SCREEN)
+    assert [stage.stage for stage in result.stages] == [ArenaStage.SMOKE, ArenaStage.SCREEN]
+    assert (first_case.world_seed, first_case.a_side) not in screen_runner.calls
+    assert (first_case.world_seed, "BLUE") in screen_runner.calls
+    assert len(screen_runner.calls) == 19
+    assert len(screen.observations) == 20
+    assert censored in screen.observations
+    assert screen.pairs == ()
+    assert screen.sequential is None
+    assert result.promotion_metrics is None
+    assert result.promotion_gates is None
+    assert result.promoted is False
+    assert promotion_runner.calls == []
+
+
 def test_promotion_stops_at_first_predeclared_complete_pair_boundary(tmp_path: Path) -> None:
     config = _config(tmp_path)
     promotion_runner = FakeRunner()
