@@ -320,8 +320,15 @@ def _record_replay(
         else:  # PASS
             rec.record_pass(hero_id_str, rec_round, rec_turn)
         return
-    # INPUT: use the decision maker, not request.player_id.
-    rec.record_input(hero_id_str, decision.selection, rec_round, rec_turn)
+    # INPUT: use the decision maker, not request.player_id. Mark it automatic
+    # because bot resolution answers freeze rollback before they are applied.
+    rec.record_input(
+        hero_id_str,
+        decision.selection,
+        rec_round,
+        rec_turn,
+        automatic=True,
+    )
 
 
 def _log_action_specific(game: ManagedGame, decision: BotDecision) -> None:
@@ -539,9 +546,7 @@ async def _bot_drive_worker(game: ManagedGame, registry: GameRegistry) -> None:
 
         if build_game is not None:
             try:
-                built_agents = await asyncio.to_thread(
-                    bot_factory.get_or_build_agents, build_game
-                )
+                built_agents = await asyncio.to_thread(bot_factory.get_or_build_agents, build_game)
             except asyncio.CancelledError:
                 # The detached build may continue in its executor thread, but
                 # it has no reference to the live game and cannot publish an
@@ -666,12 +671,10 @@ async def _apply_bot_decision(
     try:
         async with game.outbound_lock:
             async with game.lock:
-                if game.removed:
-                    # Tombstone landed while we were computing. Do NOT
-                    # persist, log, replay, or broadcast — the game is
-                    # being torn down and any side effect after remove is
-                    # a defect (stale save file resurrection, phantom
-                    # STATE_UPDATE to reconnecting clients, etc.).
+                if game.removed or not _registry_still_owns(game, registry):
+                    # A tombstone or same-ID replacement landed while we were
+                    # computing. Do NOT persist, log, replay, or broadcast from
+                    # an orphaned game object.
                     return _ApplyDecisionOutcome.failed()
                 if not _is_runnable_for_bots(game):
                     # State transitioned out of RUNNING (SUSPENDED /
@@ -791,7 +794,7 @@ async def _maybe_plain_advance(
     try:
         async with game.outbound_lock:
             async with game.lock:
-                if game.removed:
+                if game.removed or not _registry_still_owns(game, registry):
                     return False
                 if not _is_runnable_for_bots(game):
                     # State transitioned out of RUNNING mid-flight; do

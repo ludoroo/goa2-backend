@@ -135,6 +135,17 @@ def test_default_attack_immunity_still_blocks_all_attacks_and_honors_exceptions(
     assert _target_is_allowed(state) is True
 
 
+def test_attack_immunity_remains_fail_closed_when_current_actor_is_missing() -> None:
+    state = _state(_attack_card("basic_attack", CardColor.GOLD))
+    _protect(state)
+    state.execution_context.update(
+        {"current_action_type": ActionType.ATTACK, "attack_is_basic": True}
+    )
+    state.current_actor_id = None
+
+    assert _target_is_allowed(state) is False
+
+
 def test_create_effect_step_plumbs_basic_attacks_only_payload() -> None:
     state = _state(_attack_card("basic_attack", CardColor.GOLD))
 

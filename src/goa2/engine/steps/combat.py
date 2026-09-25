@@ -1919,12 +1919,16 @@ class ReturnMinionToZoneStep(GameStep):
     """
 
     type: StepType = StepType.RETURN_MINION_TO_ZONE
+    processed_minion_ids: list[str] = Field(default_factory=list)
 
     def _get_minions_outside_zone(self, state: GameState) -> list[tuple[str, TeamColor]]:
-        """Find all minions outside the Battle Zone of their own lane."""
+        """Find unprocessed minions outside the Battle Zone of their own lane."""
+        processed = set(self.processed_minion_ids)
         outside = []
         for team in state.teams.values():
             for minion in team.minions:
+                if str(minion.id) in processed:
+                    continue
                 zone_id = state.battle_zone_for_lane(minion.lane_id)
                 zone = state.board.zones.get(zone_id) if zone_id else None
                 if not zone:
@@ -1939,9 +1943,65 @@ class ReturnMinionToZoneStep(GameStep):
                         outside.append((str(minion.id), minion.team))
         return outside
 
-    def resolve(self, state: GameState, context: dict[str, Any]) -> StepResult:
-        from goa2.engine.steps.movement import PlaceUnitStep
+    def _continuation(self, minion_id: str, has_remaining: bool) -> list[GameStep]:
+        if not has_remaining:
+            return []
+        return [
+            ReturnMinionToZoneStep(processed_minion_ids=[*self.processed_minion_ids, minion_id])
+        ]
 
+    def _return_steps(
+        self,
+        state: GameState,
+        *,
+        minion_id: str,
+        target_hex: Hex,
+        uses_placement_fallback: bool,
+        has_remaining: bool,
+    ) -> list[GameStep]:
+        from goa2.engine import rules
+        from goa2.engine.steps.movement import MoveUnitStep, PlaceUnitStep
+
+        continuation = self._continuation(minion_id, has_remaining)
+        if uses_placement_fallback:
+            return [
+                PlaceUnitStep(
+                    unit_id=minion_id,
+                    target_hex_arg=target_hex,
+                    is_mandatory=False,
+                ),
+                *continuation,
+            ]
+
+        start_hex = state.get_position(minion_id)
+        max_range = len(state.board.tiles)
+        move_range = max_range
+        if start_hex is not None:
+            for distance in range(1, max_range + 1):
+                if rules.validate_movement_path(
+                    board=state.board,
+                    start=start_hex,
+                    end=target_hex,
+                    max_steps=distance,
+                    state=state,
+                    actor_id=minion_id,
+                    topology_unit_ids=[minion_id],
+                ):
+                    move_range = distance
+                    break
+
+        return [
+            MoveUnitStep(
+                unit_id=minion_id,
+                target_hex_arg=target_hex,
+                range_val=move_range,
+                is_movement_action=False,
+                is_mandatory=False,
+            ),
+            *continuation,
+        ]
+
+    def resolve(self, state: GameState, context: dict[str, Any]) -> StepResult:
         outside_minions = self._get_minions_outside_zone(state)
 
         if not outside_minions:
@@ -1957,45 +2017,39 @@ class ReturnMinionToZoneStep(GameStep):
 
         loc = state.entity_locations.get(BoardEntityID(minion_id))
         if not loc:
-            # Minion somehow has no location, skip
-            if remaining:
-                return StepResult(
-                    is_finished=True,
-                    new_steps=[ReturnMinionToZoneStep()],
-                )
-            return StepResult(is_finished=True)
+            # Minion somehow has no location, skip it without rediscovering it.
+            return StepResult(
+                is_finished=True,
+                new_steps=self._continuation(minion_id, bool(remaining)),
+            )
 
         # Return the minion to the Battle Zone of its own lane
         minion = state.get_unit(UnitID(minion_id))
         home_zone_id = state.battle_zone_for_lane(getattr(minion, "lane_id", DEFAULT_LANE_ID))
         if not home_zone_id:
-            # No active zone for this lane, skip
-            if remaining:
-                return StepResult(
-                    is_finished=True,
-                    new_steps=[ReturnMinionToZoneStep()],
-                )
-            return StepResult(is_finished=True)
+            # No active zone for this lane, skip it without rediscovering it.
+            return StepResult(
+                is_finished=True,
+                new_steps=self._continuation(minion_id, bool(remaining)),
+            )
 
         from goa2.engine.map_logic import find_nearest_empty_hexes
 
         candidates = find_nearest_empty_hexes(
             state, loc, home_zone_id, respect_obstacles=True, actor_id=minion_id
         )
+        uses_placement_fallback = not candidates
 
-        if not candidates:
-            # Fallback: "If no path exists, it is Placed instead via shortest distance to an empty space within the BattleZone."
+        if uses_placement_fallback:
+            # If no path exists, place by shortest distance to an empty Battle Zone space.
             candidates = find_nearest_empty_hexes(state, loc, home_zone_id, respect_obstacles=False)
 
         if not candidates:
             logger.debug(f"   [ZONE] No empty space in zone for {minion_id}!")
-            # Skip this minion, process remaining
-            if remaining:
-                return StepResult(
-                    is_finished=True,
-                    new_steps=[ReturnMinionToZoneStep()],
-                )
-            return StepResult(is_finished=True)
+            return StepResult(
+                is_finished=True,
+                new_steps=self._continuation(minion_id, bool(remaining)),
+            )
 
         # If pending input, process it
         if self.pending_input:
@@ -2003,12 +2057,16 @@ class ReturnMinionToZoneStep(GameStep):
             target_hex = parse_hex_selection(selection)
             if target_hex in candidates:
                 logger.debug(f"   [ZONE] Returning {minion_id} to zone at {target_hex}")
-                new_steps: list[GameStep] = [
-                    PlaceUnitStep(unit_id=minion_id, target_hex_arg=target_hex),
-                ]
-                if remaining:
-                    new_steps.append(ReturnMinionToZoneStep())
-                return StepResult(is_finished=True, new_steps=new_steps)
+                return StepResult(
+                    is_finished=True,
+                    new_steps=self._return_steps(
+                        state,
+                        minion_id=minion_id,
+                        target_hex=target_hex,
+                        uses_placement_fallback=uses_placement_fallback,
+                        has_remaining=bool(remaining),
+                    ),
+                )
             logger.debug("   [ZONE] Rejected invalid hex %r; re-requesting.", selection)
             self.pending_input = None
 
@@ -2016,12 +2074,16 @@ class ReturnMinionToZoneStep(GameStep):
         if len(candidates) == 1:
             target = candidates[0]
             logger.debug(f"   [ZONE] Auto-returning {minion_id} to zone at {target}")
-            new_steps = [
-                PlaceUnitStep(unit_id=minion_id, target_hex_arg=target),
-            ]
-            if remaining:
-                new_steps.append(ReturnMinionToZoneStep())
-            return StepResult(is_finished=True, new_steps=new_steps)
+            return StepResult(
+                is_finished=True,
+                new_steps=self._return_steps(
+                    state,
+                    minion_id=minion_id,
+                    target_hex=target,
+                    uses_placement_fallback=uses_placement_fallback,
+                    has_remaining=bool(remaining),
+                ),
+            )
 
         # Multiple candidates - need team input
         return StepResult(
