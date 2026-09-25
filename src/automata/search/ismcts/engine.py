@@ -46,6 +46,12 @@ from automata.agents.contracts import Agent, PlanningKind
 from automata.decision import ActionBoundaryKind, DecisionDescriptor, DecisionSemanticRole
 from automata.runtime.clone import clone_state
 from automata.runtime.determinize import determinize
+from automata.runtime.value_boundary import (
+    StableValueBoundary,
+    capture_transition_anchor,
+    should_stop_before_stable_boundary,
+    transition_reached,
+)
 from goa2.domain.input import (
     InputOption,
     InputRequest,
@@ -59,7 +65,7 @@ from goa2.domain.models.unit import Hero
 from goa2.domain.state import GameState
 from goa2.domain.types import HeroID
 from goa2.engine.phases import planning_open_for_second_card
-from goa2.engine.session import GameSession, SessionResultType
+from goa2.engine.session import GameSession, SessionResult, SessionResultType
 
 from ..config import SearchConfig
 from ..contextual_noop import ContextualNoopKind, contextual_noop_shape
@@ -74,6 +80,8 @@ from ..contracts import (
     ScoreSemantics,
     SearchContext,
     SearchPolicy,
+    StableValueContext,
+    StableValueEvaluator,
     score_policy,
     supports_contextual_root_coverage,
     supports_immediate_edge,
@@ -634,6 +642,281 @@ class _Simulator:
             action_boundary=action_boundary,
         )
 
+    def apply_stable_transition_root(
+        self,
+        decision: DecisionDescriptor,
+        key: Key | None,
+        *,
+        continuation_policy: ContinuationPolicy,
+        context: SearchContext,
+    ) -> tuple[DecisionDescriptor, StableValueBoundary | None]:
+        """Apply one root edge and drive it to the next shared stable boundary."""
+        self._advance_calls += 1
+        self._current_advance_transitions = 0
+        continuation = as_continuation_policy(continuation_policy)
+        anchor = capture_transition_anchor(self.state)
+
+        def stop_before_step(state: GameState, step: Any) -> bool:
+            return should_stop_before_stable_boundary(anchor, state, step)
+
+        latest_owned_owner = _decision_owner_id(self.state, decision, context)
+        response: InputResponse | None = None
+        result: SessionResult | None = None
+        decisions = 0
+        seen_decisions: set[tuple[object, ...]] = set()
+
+        if decision.kind == "CARD":
+            hero = decision.hero
+            assert hero is not None
+            self._check_advance_budget()
+            before = _state_fingerprint(self.state)
+            self._record_transition("continuation", decision)
+            result = self._apply_planning_key(
+                hero,
+                key,
+                stop_before_step=stop_before_step,
+            )
+            if (
+                result.result_type is SessionResultType.ACTION_COMPLETE
+                and before == _state_fingerprint(self.state)
+            ):
+                raise self.progression_error(
+                    "unchanged stable-transition root planning ACTION_COMPLETE",
+                    decision,
+                )
+        elif decision.kind == "INPUT":
+            request = decision.request
+            assert request is not None
+            selection = self._selection_for_key(request, key)
+            response = InputResponse(request_id=request.id, selection=selection)
+        else:
+            raise self.progression_error(
+                "stable transition requires a CARD or INPUT root", decision
+            )
+
+        while True:
+            boundary = transition_reached(anchor, self.state)
+            if boundary is not None:
+                return (
+                    DecisionDescriptor(
+                        "BOUNDARY", action_boundary_kind=ActionBoundaryKind.COMPLETE
+                    ),
+                    boundary,
+                )
+
+            if result is not None:
+                if result.result_type is SessionResultType.GAME_OVER:
+                    return DecisionDescriptor("OVER", winner=result.winner), None
+                if result.result_type is SessionResultType.INPUT_NEEDED:
+                    request = result.input_request
+                    assert request is not None
+                    current = DecisionDescriptor("INPUT", request=request)
+                    fingerprint = _decision_fingerprint(self.state, current)
+                    if fingerprint in seen_decisions:
+                        raise self.progression_error(
+                            "repeated stable-transition input decision",
+                            current,
+                            forced_decisions=decisions,
+                        )
+                    if decisions >= self.cfg.max_forced_decisions:
+                        raise self.progression_error(
+                            "stable-transition decision limit exceeded "
+                            f"({self.cfg.max_forced_decisions})",
+                            current,
+                            forced_decisions=decisions,
+                        )
+                    seen_decisions.add(fingerprint)
+                    decisions += 1
+                    response, latest_owned_owner = self._stable_transition_response(
+                        current,
+                        continuation,
+                        context,
+                        latest_owned_owner,
+                    )
+                    result = None
+                    continue
+
+            if self.state.phase is GamePhase.PLANNING:
+                hero = self._next_uncommitted()
+                if hero is None:
+                    raise self.progression_error(
+                        "planning state has no pending hero and is not a stable boundary",
+                        forced_decisions=decisions,
+                    )
+                current = DecisionDescriptor(
+                    "CARD",
+                    hero=hero,
+                    can_finish_planning=planning_open_for_second_card(self.state, HeroID(hero.id)),
+                )
+                fingerprint = _decision_fingerprint(self.state, current)
+                if fingerprint in seen_decisions:
+                    raise self.progression_error(
+                        "repeated stable-transition planning decision",
+                        current,
+                        forced_decisions=decisions,
+                    )
+                if decisions >= self.cfg.max_forced_decisions:
+                    raise self.progression_error(
+                        "stable-transition decision limit exceeded "
+                        f"({self.cfg.max_forced_decisions})",
+                        current,
+                        forced_decisions=decisions,
+                    )
+                seen_decisions.add(fingerprint)
+                decisions += 1
+                self._check_advance_budget()
+                before = _state_fingerprint(self.state)
+                if self._is_owned_hero(hero):
+                    latest_owned_owner = str(hero.id)
+                    legal = tuple(legal_keys(current))
+                    # Empty-hand planning is an engine transition, not a
+                    # policy candidate. It still consumes progression budget.
+                    selected = (
+                        continuation.choose(
+                            context.for_decision(current, owner_id=latest_owned_owner),
+                            self.state,
+                            current,
+                            legal,
+                        )
+                        if legal
+                        else None
+                    )
+                    self._record_transition("continuation", current)
+                    result = self._apply_planning_key(
+                        hero,
+                        selected,
+                        stop_before_step=stop_before_step,
+                    )
+                else:
+                    self._record_transition("planning", current)
+                    planning = self.environment_policy.choose_planning(self.state, hero)
+                    if planning.kind is PlanningKind.FINISH:
+                        result = self.session.finish_planning(
+                            HeroID(hero.id), stop_before_step=stop_before_step
+                        )
+                    elif planning.kind is PlanningKind.PASS:
+                        result = self.session.pass_turn(
+                            HeroID(hero.id), stop_before_step=stop_before_step
+                        )
+                    else:
+                        assert planning.card is not None
+                        result = self.session.commit_card(
+                            HeroID(hero.id),
+                            planning.card,
+                            stop_before_step=stop_before_step,
+                        )
+                if (
+                    result.result_type is SessionResultType.ACTION_COMPLETE
+                    and before == _state_fingerprint(self.state)
+                ):
+                    raise self.progression_error(
+                        "unchanged stable-transition planning ACTION_COMPLETE",
+                        current,
+                        forced_decisions=decisions,
+                    )
+                continue
+
+            self._check_advance_budget()
+            before = _state_fingerprint(self.state)
+            self._record_transition("session")
+            result = self.session.advance(
+                response,
+                stop_before_step=stop_before_step,
+            )
+            response = None
+            if (
+                result.result_type is SessionResultType.ACTION_COMPLETE
+                and before == _state_fingerprint(self.state)
+            ):
+                raise self.progression_error(
+                    "unchanged stable-transition ACTION_COMPLETE",
+                    forced_decisions=decisions,
+                )
+
+    @staticmethod
+    def _selection_for_key(request: InputRequest, key: Key | None) -> Any:
+        raw = _input_raw_map(request)
+        if key not in raw:
+            raise ValueError("stable-transition input key is outside canonical legality")
+        return raw[key]
+
+    def _apply_planning_key(
+        self,
+        hero: Hero,
+        key: Key | None,
+        *,
+        stop_before_step: Callable[[GameState, Any], bool],
+    ) -> SessionResult:
+        if key is None:
+            if planning_open_for_second_card(self.state, HeroID(hero.id)):
+                return self.session.finish_planning(
+                    HeroID(hero.id), stop_before_step=stop_before_step
+                )
+            if not hero.hand:
+                return self.session.pass_turn(HeroID(hero.id), stop_before_step=stop_before_step)
+            raise ValueError("stable-transition planning key is outside canonical legality")
+        card = _find_card(hero, key)
+        if card is None:
+            raise ValueError("stable-transition planning key is outside canonical legality")
+        return self.session.commit_card(HeroID(hero.id), card, stop_before_step=stop_before_step)
+
+    def _stable_transition_response(
+        self,
+        decision: DecisionDescriptor,
+        continuation: ContinuationPolicy,
+        context: SearchContext,
+        latest_owned_owner: str,
+    ) -> tuple[InputResponse, str]:
+        request = decision.request
+        assert request is not None
+        if request.request_type is InputRequestType.UPGRADE_PHASE:
+            players = request.context.get("players")
+            if (
+                request.player_id != "simultaneous"
+                or request.options
+                or not isinstance(players, dict)
+            ):
+                raise self.progression_error(
+                    "invalid UPGRADE_PHASE stable-transition request", decision
+                )
+            self._record_transition("input", decision)
+            selection = self.environment_policy.choose_input(self.state, request)
+            return InputResponse(request_id=request.id, selection=selection), latest_owned_owner
+        if request.player_id == "simultaneous":
+            raise self.progression_error(
+                "unsupported simultaneous stable-transition request", decision
+            )
+
+        addressed_team = _team_of_player(self.state, request.player_id)
+        if addressed_team is None:
+            raise self.progression_error("unknown stable-transition request owner", decision)
+        legal = tuple(legal_keys(decision))
+        if not legal:
+            raise self.progression_error("unencodable stable-transition input request", decision)
+        if self._is_owned_request(request):
+            owner_id = _decision_owner_id(
+                self.state,
+                decision,
+                context.for_decision(decision, owner_id=latest_owned_owner),
+            )
+            self._record_transition("continuation", decision)
+            selected = continuation.choose(
+                context.for_decision(decision, owner_id=owner_id),
+                self.state,
+                decision,
+                legal,
+            )
+            selection = self._selection_for_key(request, selected)
+            return InputResponse(request_id=request.id, selection=selection), owner_id
+
+        self._record_transition("input", decision)
+        selection = self.environment_policy.choose_input(self.state, request)
+        if action_key(selection) not in legal:
+            raise ValueError(
+                "stable-transition environment selection is outside canonical legality"
+            )
+        return InputResponse(request_id=request.id, selection=selection), latest_owned_owner
+
     def apply_stable_turn_root(
         self,
         decision: DecisionDescriptor,
@@ -1003,6 +1286,74 @@ def _apply_root_edge(
     return _apply_ours(sim, decision, key, action_boundary), action_boundary, None
 
 
+def _evaluate_selected_edge(
+    sim: _Simulator,
+    decision: DecisionDescriptor,
+    key: Key | None,
+    cfg: SearchConfig,
+    root_target: RootTarget,
+    *,
+    is_root: bool,
+    context: SearchContext,
+    continuation_policy: ContinuationPolicy,
+    leaf_evaluator: LeafEvaluator,
+    cutoff_observer: CutoffObserver | None,
+) -> float:
+    """Apply and evaluate one selected edge under the configured horizon."""
+    if cfg.leaf_mode is LeafMode.STABLE_TRANSITION:
+        if not is_root:
+            raise sim.progression_error("stable transition must evaluate the root edge")
+        if not isinstance(leaf_evaluator, StableValueEvaluator):
+            raise TypeError("STABLE_TRANSITION requires a StableValueEvaluator")
+        reached, boundary = sim.apply_stable_transition_root(
+            decision,
+            key,
+            continuation_policy=continuation_policy,
+            context=context,
+        )
+        if reached.is_terminal:
+            return terminal_reward(reached.winner, sim.our_team, state=sim.state)
+        if boundary is None:
+            raise sim.progression_error("stable transition ended without a boundary")
+        stable_context = StableValueContext(
+            root_viewer_id=context.root_viewer_id,
+            perspective_team=context.perspective_team,
+            boundary=boundary,
+        )
+        active_value = leaf_evaluator.evaluate_stable_value(stable_context, sim.state).value
+        if cutoff_observer is not None:
+            cutoff_observer(sim.state, sim.our_team, active_value)
+        return _value_to_reward(active_value)
+
+    immediate_edge = (
+        leaf_evaluator.prepare_immediate_edge(context, sim.state, decision, key)
+        if _uses_immediate_edge(cfg) and supports_immediate_edge(leaf_evaluator)
+        else None
+    )
+    reached, action_boundary, stable_turn_boundary = _apply_root_edge(
+        sim,
+        decision,
+        key,
+        cfg,
+        root_target,
+        is_root=is_root,
+        context=context,
+        continuation_policy=continuation_policy,
+    )
+    return _rollout(
+        sim,
+        reached,
+        cfg,
+        continuation_policy,
+        leaf_evaluator,
+        context,
+        immediate_edge=immediate_edge,
+        action_boundary=action_boundary,
+        stable_turn_boundary=stable_turn_boundary,
+        cutoff_observer=cutoff_observer,
+    )
+
+
 def _effective_root_puct_c(
     cfg: SearchConfig,
     *,
@@ -1355,12 +1706,7 @@ def _simulate(
                 child = node.children[key]
                 node = child
                 path.append(child)
-                immediate_edge = (
-                    leaf_evaluator.prepare_immediate_edge(current_context, sim.state, decision, key)
-                    if _uses_immediate_edge(cfg) and supports_immediate_edge(leaf_evaluator)
-                    else None
-                )
-                decision, action_boundary, stable_turn_boundary = _apply_root_edge(
+                value = _evaluate_selected_edge(
                     sim,
                     decision,
                     key,
@@ -1369,17 +1715,7 @@ def _simulate(
                     is_root=is_root,
                     context=current_context,
                     continuation_policy=continuation_policy,
-                )
-                value = _rollout(
-                    sim,
-                    decision,
-                    cfg,
-                    continuation_policy,
-                    leaf_evaluator,
-                    current_context,
-                    immediate_edge=immediate_edge,
-                    action_boundary=action_boundary,
-                    stable_turn_boundary=stable_turn_boundary,
+                    leaf_evaluator=leaf_evaluator,
                     cutoff_observer=cutoff_observer,
                 )
                 break
@@ -1389,12 +1725,7 @@ def _simulate(
             child = node.children[key]
             node = child
             path.append(child)
-            immediate_edge = (
-                leaf_evaluator.prepare_immediate_edge(current_context, sim.state, decision, key)
-                if _uses_immediate_edge(cfg) and supports_immediate_edge(leaf_evaluator)
-                else None
-            )
-            decision, action_boundary, stable_turn_boundary = _apply_root_edge(
+            value = _evaluate_selected_edge(
                 sim,
                 decision,
                 key,
@@ -1403,17 +1734,7 @@ def _simulate(
                 is_root=is_root,
                 context=current_context,
                 continuation_policy=continuation_policy,
-            )
-            value = _rollout(
-                sim,
-                decision,
-                cfg,
-                continuation_policy,
-                leaf_evaluator,
-                current_context,
-                immediate_edge=immediate_edge,
-                action_boundary=action_boundary,
-                stable_turn_boundary=stable_turn_boundary,
+                leaf_evaluator=leaf_evaluator,
                 cutoff_observer=cutoff_observer,
             )  # evaluate freshly expanded leaf
             break
@@ -1438,17 +1759,14 @@ def _simulate(
         child = node.children[key]
         node = child
         path.append(child)
-        if (
-            is_root
-            and root_target.kind == "INPUT"
-            and cfg.leaf_mode in {LeafMode.IMMEDIATE_ACTION, LeafMode.STABLE_TURN}
-        ):
-            immediate_edge = (
-                leaf_evaluator.prepare_immediate_edge(current_context, sim.state, decision, key)
-                if supports_immediate_edge(leaf_evaluator)
-                else None
+        if is_root and (
+            cfg.leaf_mode is LeafMode.STABLE_TRANSITION
+            or (
+                root_target.kind == "INPUT"
+                and cfg.leaf_mode in {LeafMode.IMMEDIATE_ACTION, LeafMode.STABLE_TURN}
             )
-            decision, action_boundary, stable_turn_boundary = _apply_root_edge(
+        ):
+            value = _evaluate_selected_edge(
                 sim,
                 decision,
                 key,
@@ -1457,17 +1775,7 @@ def _simulate(
                 is_root=True,
                 context=current_context,
                 continuation_policy=continuation_policy,
-            )
-            value = _rollout(
-                sim,
-                decision,
-                cfg,
-                continuation_policy,
-                leaf_evaluator,
-                current_context,
-                immediate_edge=immediate_edge,
-                action_boundary=action_boundary,
-                stable_turn_boundary=stable_turn_boundary,
+                leaf_evaluator=leaf_evaluator,
                 cutoff_observer=cutoff_observer,
             )
             break
@@ -1636,6 +1944,15 @@ def search(
     hidden-info resampling), but does NOT redo the legal-set diff since
     that's a property of the caller's arguments, not the determinization.
     """
+    evaluator = leaf_evaluator or HeuristicLeafEvaluator()
+    if cfg.leaf_mode is LeafMode.STABLE_TRANSITION and not isinstance(
+        evaluator, StableValueEvaluator
+    ):
+        # Capability validation precedes root policy/value inference and the
+        # singleton fast path. Learned/fallback evaluators cannot silently
+        # downgrade this horizon to candidate-bearing value evaluation.
+        raise TypeError("STABLE_TRANSITION requires a StableValueEvaluator")
+
     # Leave a cooperative grace margin for the final engine/inference call and
     # result delivery before a live coordinator's hard timeout. Deterministic
     # offline configurations explicitly leave this as ``None``.
@@ -1706,7 +2023,6 @@ def search(
             else _normalize_weights(root_weights, list(root_legal))
         )
 
-    evaluator = leaf_evaluator or HeuristicLeafEvaluator()
     continuation = (
         AgentContinuationPolicy(environment_policy)
         if continuation_policy is None

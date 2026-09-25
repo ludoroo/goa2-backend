@@ -4,7 +4,8 @@
 > and leaf-evaluation contract is being reset; see
 > [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md) for the target and
 > [AI_EXPERIMENT_JOURNAL.md](AI_EXPERIMENT_JOURNAL.md) for implementation status.
-> Existing search/training behavior has not yet been switched to that contract.
+> Opt-in `STABLE_TRANSITION` now implements the heuristic-valued search boundary.
+> Existing defaults, learned-value inference, and training remain transitional.
 
 ## Implementation status
 
@@ -15,6 +16,9 @@
   joint model, batching, artifact, `SharedEncoderRuntime`, and serving cache;
   `LearnedSearchPolicy` and `LearnedLeafEvaluator`; independent
   `policy_source`/`value_source` server composition.
+- **Gen1 search boundary:** opt-in complete-transition search shares the live
+  boundary detector and exposes a candidate-free value interface. Only heuristic
+  value implements it so far; incompatible value evaluators fail explicitly.
 - **Offline boundary:** `automata.training` owns generation, datasets, replay,
   training, experiment declarations, and the registry. The unused curriculum
   and callback-only pipeline/iteration wrappers have been retired; a complete
@@ -152,6 +156,16 @@ a finite normalized value in `[-1, 1]`, positive for
 `context.perspective_team`. The Pydantic model validates this contract at every
 evaluator boundary.
 
+Candidate-free evaluation instead uses
+`StableValueEvaluator.evaluate_stable_value(context, state)`, where
+`StableValueContext` contains only fixed `root_viewer_id`, `perspective_team`, and
+an authoritative `StableValueBoundary`. There is no decision, request, candidate,
+or action-boundary proxy. The heuristic implementation rejects absent/stale
+boundaries and measures public material without immediate-edge shaping.
+
+Terminal rewards bypass both interfaces. Team names and individual hero IDs are
+resolved against authoritative team membership; unknown winners fail closed.
+
 `LeafMode` is explicit:
 
 - `IMMEDIATE`: evaluate the state reached by expansion. An evaluator may also
@@ -190,6 +204,23 @@ evaluator boundary.
   nonterminal leaf. Any game-over outcome encountered before that boundary
   bypasses leaf evaluation. Actorless or interphase roots fall back to an
   immediate horizon rather than drifting across turns.
+- `STABLE_TRANSITION`: opt-in Gen1 horizon for planning and all searchable INPUT
+  roots. Every selected root edge, including revisits, completes the shared
+  transition to `ACTOR_READY` or a later clean `PLANNING_READY`. Root planning,
+  owned/environment planning, and input advancement all use the same stop hook;
+  cleaned planning is checked after each call. The same actor's same-turn respawn
+  or second card is not a completed transition. Final-turn cleanup includes
+  minion battle, removals, lane movement, upgrades, and round reset. Owned
+  continuation retains its latest eligible owner and fixed private viewer/team;
+  foreign choices use the environment. `UPGRADE_PHASE` has an explicit temporary
+  environment fallback for simultaneous upgrades; unknown simultaneous or
+  unencodable requests fail. Noncanonical actions, missing boundaries, repeated
+  states, and exhausted budgets fail rather than producing a value. Only the
+  explicit stable-value capability is accepted, even for singleton roots and
+  before policy inference. Current learned and fallback value adapters lack that
+  capability and are rejected. Historical request schedules 1/2 are incompatible;
+  `request_schedule_version=None` and the separate adaptive-HEX option remain
+  available. This mode does not change serving defaults or make training Gen1-ready.
 - `BOUNDED_CONTINUATION`: advance with `continuation_policy` to the configured
   round bound, then evaluate. Immediate-edge shaping is deliberately excluded.
 
@@ -222,8 +253,9 @@ then uses UCB1 rather than PUCT for value-led selection. This prevents a
 previously learned SKIP prior from overwhelming better observed Q. RESPawn/PASS
 and action/HOLD retain learned PUCT after their guaranteed comparison. None of
 these rules rewrites logits, priors, legality, visits, or stored diagnostics,
-and harmful concrete choices can still lose to the no-op. At a boundary leaf,
-search supplies a private synthetic one-option `CONFIRM` decision context for
+and harmful concrete choices can still lose to the no-op. At a historical
+`IMMEDIATE_ACTION` or `STABLE_TURN` boundary leaf, search supplies a private
+synthetic one-option `CONFIRM` decision context for
 value encoding; it never exposes a foreign reaction/cleanup request or sends
 the internal `BOUNDARY` sentinel to a learned encoder. Stable-turn context keeps
 `root_viewer_id` and perspective fixed but assigns `current_owner_id` to the
@@ -233,8 +265,9 @@ proxy at complete or interrupted boundaries: equal measured ATTACK, SKILL,
 MOVEMENT, and HOLD outcomes tie. The executable RESPAWN continuation remains a
 narrow special case because classic immediate expansion stops before placement.
 
-The heuristic recipe is global whenever heuristic value is active; it is not a
-client-tunable switch. Provenance binds both `value_recipe` and `leaf_mode`. A
+The heuristic recipe is fixed by its leaf mode, not a client-tunable shaping
+switch: `STABLE_TRANSITION` uses public material only, without the historical
+contextual edge recipe. Provenance binds both `value_recipe` and `leaf_mode`. A
 learned value is never shaped. If learned inference raises a declared
 recoverable failure, its heuristic fallback uses the contextual recipe for the
 already-expanded edge.
@@ -263,6 +296,11 @@ L/L, both adapters share one `SharedEncoderRuntime`:
 | L | H | Learned expansion/ranking with heuristic leaf |
 | H | L | heuristic policy with Learned leaf |
 | L | L | shared-runtime Learned policy and value |
+
+This matrix describes the unchanged serving modes. Lower-level opt-in
+`STABLE_TRANSITION` currently supports heuristic value only (H/H or L/H), not
+learned-value H/L or L/L. Rejecting unsupported value configurations is not a
+recoverable learned-inference failure or permission to substitute heuristic value.
 
 The environment remains H in this first product architecture so opponent and
 foreign behavior is a fixed search assumption. When policy is L, controlled
@@ -452,6 +490,10 @@ coverage target.
 
 The shared-encoder runtime, observation encoder, artifact loading, and batching
 remain reusable foundations. The leaf and dataset changes required for fresh
-Gen1 are tracked in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md). Until
-search/data/model integration is complete, the existing leaf modes above remain
-operational but must not be represented as the new learning contract.
+Gen1 are tracked in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md).
+`STABLE_TRANSITION` now supplies the heuristic search boundary, with byte-for-byte
+search/live candidate-free observation parity tests. The historical modes remain
+operational until the data/model replacement exists. No mode alone constitutes
+the complete learning contract: separate policy/value publication, candidate-free
+model batching/runtime, parent initialization, durable holdouts, and executable
+iteration still gate fresh Gen1 generation.

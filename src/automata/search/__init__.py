@@ -10,6 +10,8 @@ from .contracts import (
     LeafMode,
     SearchContext,
     SearchPolicy,
+    StableValueContext,
+    StableValueEvaluator,
 )
 from .ismcts.strategy import (
     ISMCTSStrategy,
@@ -45,6 +47,8 @@ __all__ = [
     "SearchContext",
     "SearchPolicy",
     "SearchStrategy",
+    "StableValueContext",
+    "StableValueEvaluator",
     "StrategyResult",
     "VisitSamplingStrategy",
     "observe_root_search_plans",

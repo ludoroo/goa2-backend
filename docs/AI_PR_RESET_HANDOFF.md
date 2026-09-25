@@ -19,19 +19,41 @@ checklist is in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md).
 ## Current search-parity work — 2026-09-25
 
 Local branch `ai-gen1-search-parity` starts from published checkpoint `3eef358`.
-The #8/#9/#10 foundation heads remain unchanged. The first slice fixes search
-terminal rewards for individual hero winners using authoritative team membership;
+The #8/#9/#10 foundation heads remain unchanged. Terminal checkpoint `d66682e`
+fixes search rewards for individual hero winners using authoritative team membership;
 unknown non-null winners now raise rather than counting as losses for both teams.
 Both rollout and tree terminal paths bypass leaf evaluation.
 
 Independent review found no blockers; follow-up tests cover losing tree backup,
 missing perspective team, and rejection of piece IDs as hero winner identities.
 Verification: **4,844 full-suite tests pass**, including 23 new terminal tests;
-source Ruff/Black/mypy and dependency-identity checks pass. The next implementation
-is opt-in `STABLE_TRANSITION`, with candidate-free heuristic value, shared live/
-search boundaries, explicit owned/foreign routing, and bounded failure semantics.
-Learned-value use remains unsupported until the candidate-free runtime exists.
-Historical `STABLE_TURN` is deliberately unchanged.
+source Ruff/Black/mypy and dependency-identity checks pass.
+
+The next slice is implemented locally and independently reviewed:
+`STABLE_TRANSITION` uses shared live/search boundaries with a candidate-free
+`StableValueContext`/`StableValueEvaluator` interface, currently public-material
+heuristic value only. Every root visit completes the transition, including
+planning and already-expanded roots. All session mutators carry the boundary
+hook; cleaned planning is checked after calls. Owned continuation retains its
+latest eligible owner and fixed viewer/team. Simultaneous upgrades use an explicit
+environment fallback; unknown/unencodable requests fail closed.
+
+Parent-written tests compare live/search canonical observations byte-for-byte
+and exercise budgets, terminal bypass, owner continuity, and actual learned-runtime
+rejection. Additional guard tests exposed permissive invalid planning/input keys
+and an absent-boundary acceptance case; these now fail clearly instead of
+silently finishing/skipping or valuing a non-boundary. Review probes became durable
+end-to-end tests for real upgrades, owned/foreign and teammate routing, Emmitt's
+second commit/retrieval, unsupported simultaneous input, and evaluator contracts;
+the private-helper-only upgrade test was replaced. **4,879 full-suite tests pass**,
+including 35 new-mode tests; source Ruff/Black/mypy and dependency checks pass.
+Independent follow-up verified the corrections and all gap tests, with no blockers
+(127 focused tests including historical modes; counts overlap the full suite).
+
+Learned-value use remains unsupported until candidate-free model/runtime support
+exists. Historical `STABLE_TURN`, serving defaults, schemas, and artifacts are
+unchanged. Request schedules 1/2 cannot be combined with the new mode; no
+historical schedule may silently change its horizon. No Gen1 generation was run.
 
 **Remaining offline outcome gap:** the generic matchup evaluator counts hero-ID
 winners as draws; retained joint training and the learned arena reject those IDs.

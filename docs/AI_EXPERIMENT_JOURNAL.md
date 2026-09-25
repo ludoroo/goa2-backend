@@ -15,10 +15,11 @@ client-facing API.
 **Current status:** the first reset foundation and source cleanup are tested
 and checkpointed in focused local commits (see final sections). #3/#4 have merged;
 the final foundation at `851f96a` passes a fresh 4,046-test run. Integration is
-complete locally on `ai-gen1-integration`; all 4,821 post-review tests and source
-checks pass. Replacement drafts #8/#9/#10 are published; #6/#7 are closed as
-superseded with their source branches preserved. Shared Gen1 search/data/model
-implementation is next.
+published in draft stack #8/#9/#10 on `ai-gen1-integration`, with 4,821 reviewed
+tests passing. #6/#7 are closed as superseded with their source branches preserved.
+The local `ai-gen1-search-parity` follow-up now implements reviewed terminal-team
+scoring and candidate-free heuristic `STABLE_TRANSITION`; 4,879 tests and source
+checks pass. Offline outcome normalization and Gen1 data/model integration are next.
 No new generation has started and no run artifacts were removed.
 The historical code checkpoint before reset implementation is
 `88b85d0c1b57c30a31be5fd00a0320236008924a`.
@@ -363,7 +364,8 @@ separate the tested foundation from the still-missing Gen1 learning loop.
 ## First search-parity slice: terminal orientation — 2026-09-25
 
 Continued locally on `ai-gen1-search-parity` from publication checkpoint `3eef358`,
-leaving the draft foundation heads unchanged. The old search helper compared a
+leaving the draft foundation heads unchanged. Terminal fix checkpoint: `d66682e`.
+The old search helper compared a
 winner string only with `RED`/`BLUE`; an individual hero winner therefore scored
 as a loss for both teams. It now requires the authoritative game state, resolves
 hero/team roster membership, and rejects unknown non-null winners. Genuine
@@ -382,9 +384,43 @@ reject them. These paths are unchanged in this bounded search fix. Offline team-
 outcome normalization remains a gate before individual-victory games contribute
 Gen1 evidence; no old outcomes or artifacts were reinterpreted.
 
-**Next action:** implement opt-in `STABLE_TRANSITION` using shared search/live
-boundary recognition and a candidate-free heuristic-value interface. Reject
-learned-value configurations until their runtime exists; retain historical
-`STABLE_TURN` for now. Keep the active checklist in
-[AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md) and evidence in
+## Candidate-free heuristic search transitions — 2026-09-25
+
+Implemented opt-in `STABLE_TRANSITION` on the local search-parity branch. It uses
+shared anchors/detection for every planning/INPUT root and completes cleanup to
+an actor-ready or clean planning-ready boundary. Every visit, including an
+already-expanded root, uses that horizon. `StableValueContext` carries only the
+fixed private viewer, perspective team, and authoritative boundary; the heuristic
+implements `StableValueEvaluator` without decision candidates or edge shaping.
+
+Owned decisions use controlled continuation with persistent owner attribution;
+foreign choices use the environment. Simultaneous upgrades have an explicit
+heuristic/environment fallback rather than accidental foreign-owner inference.
+Unknown/unencodable requests fail. Learned/fallback value configurations fail
+before inference, including singletons. Historical request schedules 1/2 are
+rejected with this mode; historical leaf behavior and serving defaults stay intact.
+
+The initial implementation passed 4,859 tests. Independent parent-written guard
+coverage then reproduced invalid planning keys silently finishing Emmitt planning,
+noncanonical owned `None` becoming `SKIP`, and an absent boundary reaching the
+heuristic. These now raise clearly. Invalid foreign input is also rejected before
+application rather than waiting for a progression watchdog. An attempted draw
+fixture was corrected: `TriggerGameOverStep` requires an actual team or individual
+winner; no invalid fixture was made into a product draw rule.
+
+Final verification: **4,879 full-suite tests pass**, with source Ruff/Black/mypy
+and dependency identity checks clean. The 35 new-mode cases include byte-for-byte
+search/live observation parity, hidden-card invariance, fixed reaction viewer,
+respawn, complete round cleanup, team ties/owner continuity, terminal bypass,
+capability rejection, and bounded failures. Independent review found no blockers;
+its probes became end-to-end tests for real simultaneous upgrades, owned/foreign
+and teammate routing, Emmitt's second commit/retrieval, unknown simultaneous input,
+and evaluator contracts. The private-helper-only upgrade test was replaced.
+Follow-up review verified the corrections and new coverage (127 focused tests,
+overlapping the full suite), with no blockers. No fresh generation, artifact
+conversion, push, or merge occurred.
+
+**Next action:** align offline terminal outcomes, then implement candidate-free
+data/model support. The heuristic search slice does not itself open generation.
+Keep [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md) and
 [AI_PR_RESET_HANDOFF.md](AI_PR_RESET_HANDOFF.md) current at each checkpoint.
