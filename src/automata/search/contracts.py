@@ -15,6 +15,7 @@ from typing import Any, Protocol, TypeGuard, TypeVar, runtime_checkable
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from automata.decision import ActionBoundaryKind, DecisionDescriptor
+from automata.runtime.value_boundary import StableValueBoundary
 from goa2.domain.models import TeamColor
 from goa2.domain.state import GameState
 
@@ -138,6 +139,24 @@ class LeafEvaluator(Protocol):
     def evaluate(self, context: SearchContext, state: GameState) -> LeafEvaluation: ...
 
 
+@dataclass(frozen=True, slots=True)
+class StableValueContext:
+    """Candidate-free context for one authoritative stable transition leaf."""
+
+    root_viewer_id: str
+    perspective_team: TeamColor
+    boundary: StableValueBoundary
+
+
+@runtime_checkable
+class StableValueEvaluator(Protocol):
+    """Evaluate only a reached, authoritative stable value boundary."""
+
+    def evaluate_stable_value(
+        self, context: StableValueContext, state: GameState
+    ) -> LeafEvaluation: ...
+
+
 @runtime_checkable
 class ImmediateEdgeLeafEvaluator(LeafEvaluator, Protocol):
     """Optionally shape a nonterminal immediate-cutoff edge.
@@ -196,6 +215,7 @@ class LeafMode(StrEnum):
     IMMEDIATE = "IMMEDIATE"
     IMMEDIATE_ACTION = "IMMEDIATE_ACTION"
     STABLE_TURN = "STABLE_TURN"
+    STABLE_TRANSITION = "STABLE_TRANSITION"
     BOUNDED_CONTINUATION = "BOUNDED_CONTINUATION"
 
 
@@ -227,6 +247,8 @@ __all__ = [
     "ScoreSemantics",
     "SearchContext",
     "SearchPolicy",
+    "StableValueContext",
+    "StableValueEvaluator",
     "score_policy",
     "supports_contextual_root_coverage",
     "supports_immediate_edge",

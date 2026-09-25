@@ -105,8 +105,9 @@ class SearchConfig:
 
     # Evaluate a newly expanded state immediately, continue only through the
     # current actor's same-action inputs, continue through finalization to a
-    # stable next-actor boundary, or run bounded continuation up to
-    # ``cutoff_limit``. IMMEDIATE_ACTION stops at action/turn boundaries.
+    # historical stable-turn boundary, drive the selected root through a full
+    # stable transition, or run bounded continuation up to ``cutoff_limit``.
+    # IMMEDIATE_ACTION stops at action/turn boundaries.
     leaf_mode: LeafMode = LeafMode.BOUNDED_CONTINUATION
 
     # Progressive widening: a node with visit count N may reveal at most
@@ -161,6 +162,10 @@ class SearchConfig:
     root_puct_c: float | None = None
 
     def __post_init__(self) -> None:
+        if self.leaf_mode is LeafMode.STABLE_TRANSITION and self.request_schedule_version in {1, 2}:
+            raise ValueError(
+                "STABLE_TRANSITION is incompatible with request_schedule_version 1 or 2"
+            )
         for field_name in (
             "adaptive_hex_root_schedule_version",
             "request_schedule_version",

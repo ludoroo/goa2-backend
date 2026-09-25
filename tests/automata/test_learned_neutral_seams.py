@@ -126,6 +126,7 @@ def test_leaf_evaluation_and_modes_have_exact_score_semantics() -> None:
         LeafMode.IMMEDIATE,
         LeafMode.IMMEDIATE_ACTION,
         LeafMode.STABLE_TURN,
+        LeafMode.STABLE_TRANSITION,
         LeafMode.BOUNDED_CONTINUATION,
     } == set(LeafMode)
     assert {CutoffUnit.ROUNDS, CutoffUnit.DECISIONS} == set(CutoffUnit)
