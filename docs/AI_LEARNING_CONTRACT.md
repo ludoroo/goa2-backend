@@ -6,7 +6,7 @@ API remain intact. Historical AI artifact compatibility is not a requirement.
 
 This is the target contract and current execution plan. Boundary recognition,
 actual-play observation, candidate-free value encoding, and the first source
-cleanup are implemented and committed locally. Search, dataset publication,
+cleanup are implemented and published in the replacement draft stack. Search, dataset publication,
 model batching/losses, and the learning loop must adopt the contract before any
 fresh Gen1 generation. Existing commands are not yet Gen1 commands.
 
@@ -15,10 +15,11 @@ fresh Gen1 generation. Existing commands are not yet Gen1 commands.
 `main` agree. The merged foundation passes 4,046 tests plus Ruff/mypy; targeted
 review found no blockers and reran 78 of those tests. Black flags two formatting-
 only changes. The preserved reset source at `fc20bb9` passes 4,631 tests.
-Foundation integration is **complete locally** on `ai-gen1-integration`, based
-on `851f96a`, in the same checkout. The reviewed result passes **4,821 tests** and
-source Ruff/Black/mypy, with focused engine, runtime/model, and offline commits.
-The old source branch remains intact; published #6/#7 have not been rewritten.
+Foundation integration is **complete and published as drafts #8 → #9 → #10**,
+based on `851f96a`. The reviewed combined result passes **4,821 tests** and source
+Ruff/Black/mypy; draft #8 independently passes 4,090 tests. Superseded #6/#7 are
+closed, not merged. Their source branches and artifacts remain intact; no history
+was rewritten. This is a reviewable foundation, not a complete Gen1 pipeline.
 Commit and integration details are maintained in
 [AI_PR_RESET_HANDOFF.md](AI_PR_RESET_HANDOFF.md); historical findings stay in
 [AI_EXPERIMENT_JOURNAL.md](AI_EXPERIMENT_JOURNAL.md).
@@ -129,15 +130,16 @@ as operational failures/censored evidence, not strategic draws or losses.
 1. **Complete — foundation and first cleanup.** Shared boundary detection/anchors,
    planning stop hooks, behavior-neutral actual-play observation, candidate-free
    value encoding, truthful prior evidence, and removal of legacy model bridges
-   and unused callback coordinators. These are local commits, not merged #6/#7.
-2. **Complete locally — integrate the verified #4 foundation.** The explicit
+   and unused callback coordinators. The preserved work is in drafts #8/#9/#10;
+   old #6/#7 are closed as superseded.
+2. **Complete; drafts published — integrate the verified #4 foundation.** The explicit
    `SearchContext.decision` / `for_decision` API and main's engine/server/privacy
    fixes coexist with the retained native runtime and infrastructure. Review caught
    and corrected forced-pass leaf handling and incomplete offline search evidence.
    Engine `f26d9a6`, runtime/model `2af43f5`, and offline `718ed47` are based on
    `851f96a`; no historical chain was blindly replayed. Independent reviews and
-   all combined tests/source checks pass. These are local integration checkpoints,
-   not shipped #6/#7 replacements or a completed Gen1 pipeline.
+   all combined tests/source checks pass. These are published draft checkpoints,
+   not merged replacements or a completed Gen1 pipeline.
 3. **Next — search parity.** All Gen1 root types reach the same boundaries;
    exact terminal orientation, explicit owned/foreign continuation, and fail-closed
    watchdogs. Prove search/live encodings agree for the same state/viewer/boundary.

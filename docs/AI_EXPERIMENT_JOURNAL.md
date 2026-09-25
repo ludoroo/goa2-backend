@@ -16,7 +16,9 @@ client-facing API.
 and checkpointed in focused local commits (see final sections). #3/#4 have merged;
 the final foundation at `851f96a` passes a fresh 4,046-test run. Integration is
 complete locally on `ai-gen1-integration`; all 4,821 post-review tests and source
-checks pass. Shared Gen1 search/data/model implementation is next.
+checks pass. Replacement drafts #8/#9/#10 are published; #6/#7 are closed as
+superseded with their source branches preserved. Shared Gen1 search/data/model
+implementation is next.
 No new generation has started and no run artifacts were removed.
 The historical code checkpoint before reset implementation is
 `88b85d0c1b57c30a31be5fd00a0320236008924a`.
@@ -330,10 +332,33 @@ Local integration commits, directly on `851f96a`:
 - `2af43f5`: current native runtime/model, explicit context, guarded search.
 - `718ed47`: retained offline harness/training/replay/arena infrastructure.
 
-No published PR was rewritten, pushed, or closed. The original source branch
-and run artifacts remain intact. Dependency files are unchanged from `fc20bb9`;
+At that integration checkpoint, no published PR had been rewritten, pushed, or
+closed. The original source branch and run artifacts remain intact. Dependency
+files are unchanged from `fc20bb9`;
 their existing harness additions relative to main are carried forward. This is
 foundation integration, not completion of the fresh learning loop.
+
+## Draft publication and superseded PR closure — 2026-09-25
+
+With the owner's approval to proceed autonomously, published a dependency-ordered
+draft train without rewriting existing history:
+
+- [#8](https://github.com/ludoroo/goa2-backend/pull/8): engine/replay foundation,
+  `ai-gen1-engine-foundation` → `main`.
+- [#9](https://github.com/ludoroo/goa2-backend/pull/9): native runtime/model/search,
+  `ai-gen1-runtime-foundation` → `ai-gen1-engine-foundation`.
+- [#10](https://github.com/ludoroo/goa2-backend/pull/10): offline infrastructure and
+  reset plan, `ai-gen1-integration` → `ai-gen1-runtime-foundation`.
+
+Before publication, the exact first-layer snapshot passed **4,090 tests** in
+isolation. The second-layer isolation result remains 1,000 focused tests; the
+full stack remains 4,821 tests. No CI success is inferred from creating the drafts.
+
+Closed **#7, then #6**, as superseded after the replacement links existed. Both
+received explicit preservation/scope comments. Verified their old remote heads
+still exist at `a0f8181` and `5c844f3`; no branches or artifacts were deleted.
+The new PRs remain drafts and were not merged. Their descriptions explicitly
+separate the tested foundation from the still-missing Gen1 learning loop.
 
 **Next action:** shared Gen1 search/live boundary parity and exact team-oriented
 terminal handling, then candidate-free value runtime/data integration. Keep the
