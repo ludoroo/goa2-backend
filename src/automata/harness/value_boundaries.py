@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from automata.runtime.outcomes import WinnerSide
 from automata.runtime.value_boundary import (
     StableValueBoundary,
     capture_transition_anchor,
@@ -36,7 +37,9 @@ class StableBoundaryObserver(Protocol):
         viewer_hero_ids: tuple[str, ...],
     ) -> None: ...
 
-    def record_outcome(self, *, winner: str | None, rounds: int, reason: str) -> None: ...
+    def record_outcome(
+        self, *, winner_side: WinnerSide | None, rounds: int, reason: str
+    ) -> None: ...
 
 
 class StableBoundaryTracker:

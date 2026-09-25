@@ -267,14 +267,11 @@ class LearnedArenaRunner:
             max_steps=self.max_steps,
             progress_callback=self._progress_callback,
         )
-        winner = None if outcome.winner is None else outcome.winner.upper()
-        if winner not in (None, "RED", "BLUE"):
-            raise ValueError(f"arena game returned invalid winner {outcome.winner!r}")
         return EvaluationGameResult(
             case_id=case.case_id,
             world_seed=case.world_seed,
             a_side=case.a_side,
-            winner_side=winner,
+            winner_side=outcome.winner_side,
             rounds=outcome.rounds,
             steps=outcome.steps,
             reason=outcome.reason,
@@ -449,7 +446,7 @@ def _summary_payload(
     aggregate = summarize(observations)
     lower, upper = aggregate.wilson_ci()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "protocol_identity": protocol.identity_digest(),
         "candidate_matrix_cell": protocol.agent_a.params["matrix_cell"],
         "parent_matrix_cell": protocol.agent_b.params["matrix_cell"],
@@ -463,11 +460,11 @@ def _summary_payload(
         "reasons": dict(sorted(Counter(row.reason for row in observations).items())),
         "rounds": {
             "total": sum(row.rounds for row in observations),
-            "average_completed": aggregate.avg_rounds,
+            "average_non_timeout": aggregate.avg_rounds,
         },
         "steps": {
             "total": sum(row.steps for row in observations),
-            "average_completed": aggregate.avg_steps,
+            "average_non_timeout": aggregate.avg_steps,
         },
         "wilson_95": {
             "decisive_games": aggregate.decisive,
@@ -477,6 +474,7 @@ def _summary_payload(
         },
         "max_step_terminations": aggregate.max_step_terminations,
         "timeout_terminations": aggregate.timeout_terminations,
+        "censored_terminations": aggregate.censored_terminations,
     }
 
 

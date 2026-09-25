@@ -467,7 +467,7 @@ def test_winner_mapping_covers_a_b_and_draw() -> None:
     assert (b_win_blue.a_wins, b_win_blue.b_wins) == (0, 1)
 
 
-def test_max_step_terminations_are_counted_and_are_draws() -> None:
+def test_max_step_terminations_are_censored_not_draws() -> None:
     rows = [
         _obs(case_id="1", winner_side="RED"),
         _obs(case_id="2", winner_side=None, reason="max_steps"),
@@ -475,7 +475,30 @@ def test_max_step_terminations_are_counted_and_are_draws() -> None:
     ]
     summary = summarize(rows)
     assert summary.max_step_terminations == 2
-    assert summary.draws >= 2  # max_steps rows are non-decisive
+    assert summary.censored_terminations == 2
+    assert summary.draws == 0
+
+
+@pytest.mark.parametrize("reason", ["max_rounds", "engine_stalled", "unknown_failure"])
+def test_every_nonterminal_reason_is_censored_and_blocks_gates(reason: str) -> None:
+    rows = [_obs(case_id=f"a{i}", winner_side="RED") for i in range(12)]
+    rows.append(_obs(case_id="censored", winner_side=None, reason=reason))
+
+    summary = summarize(rows)
+
+    assert summary.censored_terminations == 1
+    assert summary.draws == 0
+    assert summary.screening_passes() is False
+    assert summary.promotion_passes() is False
+
+
+def test_evaluation_result_rejects_malformed_side_and_censoring_combinations() -> None:
+    with pytest.raises(ValueError, match="a_side"):
+        _obs(a_side="red")
+    with pytest.raises(ValueError, match="winner_side"):
+        _obs(winner_side="hero_wasp")
+    with pytest.raises(ValueError, match="nonterminal"):
+        _obs(winner_side="RED", reason="max_steps")
 
 
 def test_summary_is_order_independent() -> None:
@@ -486,11 +509,18 @@ def test_summary_is_order_independent() -> None:
         _obs(case_id="4", winner_side=None, reason="max_steps"),
     ]
     fwd, rev = summarize(rows), summarize(list(reversed(rows)))
-    assert (fwd.a_wins, fwd.b_wins, fwd.draws, fwd.max_step_terminations) == (
+    assert (
+        fwd.a_wins,
+        fwd.b_wins,
+        fwd.draws,
+        fwd.max_step_terminations,
+        fwd.censored_terminations,
+    ) == (
         rev.a_wins,
         rev.b_wins,
         rev.draws,
         rev.max_step_terminations,
+        rev.censored_terminations,
     )
 
 
@@ -980,16 +1010,19 @@ def test_timeout_rows_block_screening_and_promotion() -> None:
 
 
 def test_avg_rounds_and_steps_ignore_timeout_rows() -> None:
-    """Timeout rows must not distort avg_rounds / avg_steps.
-
-    Two normally completed observations at rounds=10, steps=500 plus a
-    timeout row (rounds=0, steps=0) must yield averages of 10 and 500,
-    not the naive (10+10+0)/3 = 6.67 / (500+500+0)/3 = 333.3.
-    """
+    """Averages preserve observed non-timeout operational cost."""
     rows = [
         _obs(case_id="ok1", winner_side="RED"),
         _obs(case_id="ok2", winner_side="RED"),
-        _timeout_obs(case_id="t1"),
+        EvaluationGameResult(
+            case_id="t1",
+            world_seed=0,
+            a_side="RED",
+            winner_side=None,
+            rounds=4,
+            steps=100,
+            reason="wall_clock_timeout",
+        ),
     ]
     summary = summarize(rows)
     assert summary.avg_rounds == pytest.approx(10.0)

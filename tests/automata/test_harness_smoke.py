@@ -87,6 +87,7 @@ def test_random_quick_game_completes() -> None:
     # The game should terminate with a real result, not hit the step cap.
     assert result.reason == "game_over", f"did not finish: {result}"
     assert result.winner in {"RED", "BLUE", "red", "blue"}, f"unexpected winner {result.winner!r}"
+    assert result.winner_side == result.winner.upper()
     assert result.rounds >= 1
 
 
@@ -124,6 +125,7 @@ def test_decision_observer_is_opt_in_and_sees_predecision_state() -> None:
     )
 
     assert result.reason == "max_steps"
+    assert result.winner is result.winner_side is None
     assert len(seen) == 1
     assert seen[0][0] == GamePhase.PLANNING
 

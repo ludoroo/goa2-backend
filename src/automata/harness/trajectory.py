@@ -15,8 +15,9 @@ Design choices:
 - **Append-only JSONL, streamed to disk.** Rows are written as they occur
   (hundreds per game, ~180 KB each) rather than buffered in RAM. Each row
   carries ``game_id`` + ``decision_index``; a terminal ``{"kind":"outcome",...}``
-  row lets a loader label every decision with the eventual winner without
-  rewriting rows.
+  row keeps the engine's raw winner token (team name or individual hero ID)
+  without rewriting or normalizing it. Learning labels use the separate
+  canonical winner-side observer contract.
 
 The recorder is a small Protocol so a null/in-memory/file implementation can be
 swapped freely; ``run_game`` depends only on the Protocol.

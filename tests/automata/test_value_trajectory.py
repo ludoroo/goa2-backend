@@ -71,8 +71,8 @@ class _Observer:
             )
         )
 
-    def record_outcome(self, *, winner, rounds, reason):
-        self.outcomes.append((winner, rounds, reason))
+    def record_outcome(self, *, winner_side, rounds, reason):
+        self.outcomes.append((winner_side, rounds, reason))
 
 
 def _game() -> GameState:
@@ -146,7 +146,7 @@ def test_observing_boundaries_does_not_change_choices_ticks_or_game_state() -> N
     }
     assert len(observer.records) > 3
     assert observer.state_ids == {id(observed)}
-    assert observer.outcomes == [(actual.winner, actual.rounds, actual.reason)]
+    assert observer.outcomes == [(actual.winner_side, actual.rounds, actual.reason)]
     first = observer.records[0]
     assert first.boundary.kind is StableValueBoundaryKind.ACTOR_READY
     assert first.viewers == ("hero_arien", "hero_wasp")
@@ -296,3 +296,48 @@ def test_terminal_does_not_masquerade_as_a_neural_value_boundary() -> None:
     assert result.reason == "game_over"
     assert observer.records == []
     assert observer.outcomes == [("RED", result.rounds, "game_over")]
+
+
+def test_individual_victory_keeps_raw_id_but_labels_learning_with_team_side() -> None:
+    state = _game()
+    _turn(state, next_actor=False)
+    state.execution_stack.clear()
+    push_steps(
+        state,
+        [
+            TriggerGameOverStep(
+                individual_winner_id=HeroID("hero_wasp"),
+                condition="individual_victory_test",
+            )
+        ],
+    )
+    trajectory = InMemoryRecorder()
+    boundary_observer = _Observer()
+    decision_outcomes: list[tuple[str | None, int, str]] = []
+
+    class Decisions:
+        def record_decision(self, _state, _decision):
+            pass
+
+        def record_outcome(self, *, winner_side, rounds, reason):
+            decision_outcomes.append((winner_side, rounds, reason))
+
+    result = continue_game(
+        state,
+        _agents(),
+        max_steps=2,
+        recorder=trajectory,
+        decision_observer=Decisions(),
+        boundary_observer=boundary_observer,
+    )
+
+    assert result.winner == "hero_wasp"
+    assert result.winner_side == "RED"
+    assert trajectory.outcome == {
+        "winner": "hero_wasp",
+        "rounds": result.rounds,
+        "reason": "game_over",
+    }
+    expected = [("RED", result.rounds, "game_over")]
+    assert decision_outcomes == expected
+    assert boundary_observer.outcomes == expected

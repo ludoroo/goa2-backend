@@ -74,7 +74,7 @@ def test_generator_excludes_repository_runs_root_from_source_identity(
     monkeypatch.setattr(
         module,
         "run_game",
-        lambda *_args, **_kwargs: RunResult(None, 1, 2, 3, "max_steps"),
+        lambda *_args, **_kwargs: RunResult(None, 1, 2, 3, "max_steps", winner_side=None),
     )
     out = tmp_path / "other-output" / "joint.jsonl"
     checkpoint = tmp_path / "other-output" / "checkpoint.jsonl"
@@ -95,7 +95,7 @@ def test_generator_uses_fresh_deterministic_agents_and_resumes(
 
     def fake_run(red: Any, blue: Any, agents: Any, **kwargs: Any) -> RunResult:
         runs.append({"red": list(red), "blue": list(blue), "agents": dict(agents), **kwargs})
-        return RunResult("RED", 1, 2, 3, "game_over")
+        return RunResult("hero_wasp", 1, 2, 3, "game_over", winner_side="RED")
 
     monkeypatch.setattr(module, "run_game", fake_run)
     out, checkpoint = tmp_path / "joint.jsonl", tmp_path / "checkpoint.jsonl"
@@ -118,6 +118,7 @@ def test_generator_uses_fresh_deterministic_agents_and_resumes(
     assert len(runs) == 2
     rows = [json.loads(line) for line in checkpoint.read_text().splitlines()]
     assert all(row["completed"] and row["reason"] == "game_over" for row in rows)
+    assert all(row["winner"] == "hero_wasp" and row["winner_side"] == "RED" for row in rows)
 
 
 def test_diverse_pilot_uniformly_samples_legal_cards_and_finish_deterministically(
@@ -240,7 +241,7 @@ def test_soft_card_targets_use_temperature_and_uniform_mass_but_inputs_stay_one_
             selection="b",
         ),
     )
-    observer.record_outcome(winner="RED", rounds=1, reason="game_over")
+    observer.record_outcome(winner_side="RED", rounds=1, reason="game_over")
 
     card_row, input_row = load_joint_dataset(path).rows
     assert card_row.policy_source == "UNIFORM_PLANNING_SOFT_HEURISTIC"
@@ -253,7 +254,7 @@ def test_soft_card_targets_use_temperature_and_uniform_mass_but_inputs_stay_one_
     assert input_row.policy_target == (0.0, 1.0)
 
 
-def test_default_config_identity_is_unchanged_while_diverse_knobs_are_identity_bearing(
+def test_default_config_marks_outcome_contract_and_diverse_knobs_are_identity_bearing(
     tmp_path: Path,
 ) -> None:
     module = _module()
@@ -262,6 +263,7 @@ def test_default_config_identity_is_unchanged_while_diverse_knobs_are_identity_b
         default_args, source_revision="revision", dirty_tree_hash="dirty"
     )
     assert "pilot" not in default_config
+    assert default_config["outcome_contract"] == "raw-winner+canonical-side-v1"
     assert default_config["scope"] == {
         "map_id": "forgotten_island",
         "map_path": DEFAULT_MAP,
@@ -322,7 +324,7 @@ def test_diverse_main_runs_one_balanced_variant_per_world_seed(
 
     def fake_run(red: Any, blue: Any, agents: Any, **kwargs: Any) -> RunResult:
         runs.append({"red": tuple(red), "blue": tuple(blue), "agents": agents, **kwargs})
-        return RunResult("RED", 1, 2, 3, "game_over")
+        return RunResult("RED", 1, 2, 3, "game_over", winner_side="RED")
 
     monkeypatch.setattr(module, "run_game", fake_run)
     argv = _args(tmp_path / "out", tmp_path / "checkpoint", 10_000, 10_004)
@@ -406,7 +408,9 @@ def test_checkpoint_tolerates_only_a_truncated_final_line(
     monkeypatch.setattr(module, "source_identity", lambda **_kwargs: ("rev", "dirty"))
     monkeypatch.setattr(module, "_publish_output", lambda *_a, **_kw: None)
     monkeypatch.setattr(
-        module, "run_game", lambda *_a, **_kw: RunResult("RED", 1, 2, 3, "game_over")
+        module,
+        "run_game",
+        lambda *_a, **_kw: RunResult("RED", 1, 2, 3, "game_over", winner_side="RED"),
     )
     out, checkpoint = tmp_path / "joint.jsonl", tmp_path / "checkpoint.jsonl"
     checkpoint.write_bytes(b'{"broken":')
@@ -418,6 +422,32 @@ def test_checkpoint_tolerates_only_a_truncated_final_line(
         module.main(_args(out, checkpoint, 10_000, 10_001))
 
 
+def test_checkpoint_rejects_legacy_rows_without_explicit_winner_side(tmp_path: Path) -> None:
+    module = _module()
+    checkpoint = tmp_path / "legacy.jsonl"
+    checkpoint.write_text(
+        json.dumps(
+            {
+                "config_id": "config",
+                "game_id": "game",
+                "world_seed": 10_000,
+                "completed": True,
+                "reason": "game_over",
+                "winner": "RED",
+                "rounds": 1,
+                "turns": 1,
+                "steps": 1,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+
+    with pytest.raises(ValueError, match="winner_side"):
+        module._read_checkpoint(checkpoint)
+
+
 def test_resume_reconciles_empty_aggregate_from_an_old_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -427,7 +457,7 @@ def test_resume_reconciles_empty_aggregate_from_an_old_config(
 
     def incomplete_run(*_args: Any, **kwargs: Any) -> RunResult:
         runs.append(kwargs["seed"])
-        return RunResult(None, 1, 2, 123, "max_steps")
+        return RunResult(None, 1, 2, 123, "max_steps", winner_side=None)
 
     monkeypatch.setattr(module, "run_game", incomplete_run)
     out, checkpoint = tmp_path / "joint.jsonl.zst", tmp_path / "checkpoint.jsonl"
@@ -441,6 +471,7 @@ def test_resume_reconciles_empty_aggregate_from_an_old_config(
             completed=True,
             reason="game_over",
             winner="RED",
+            winner_side="RED",
             rounds=1,
             turns=2,
             steps=3,
@@ -465,7 +496,7 @@ def test_incomplete_games_do_not_publish_an_empty_aggregate(
     monkeypatch.setattr(
         module,
         "run_game",
-        lambda *_args, **_kwargs: RunResult(None, 1, 2, 123, "max_steps"),
+        lambda *_args, **_kwargs: RunResult(None, 1, 2, 123, "max_steps", winner_side=None),
     )
     out, checkpoint = tmp_path / "joint.jsonl.zst", tmp_path / "checkpoint.jsonl"
     provenance = module.generator_provenance_path(out)
@@ -510,7 +541,7 @@ def test_real_heuristic_decision_records_exact_v4_one_hot_row(tmp_path: Path) ->
     )
     observer = module.HeuristicJointObserver(recorder)
     observer.record_decision(state, decision)
-    observer.record_outcome(winner="RED", rounds=1, reason="game_over")
+    observer.record_outcome(winner_side="RED", rounds=1, reason="game_over")
 
     [row] = load_joint_dataset(path).rows
     assert row.observation.schema_version == 4
@@ -577,7 +608,7 @@ def test_observer_preserves_finish_and_skip_selections(
             selection="SKIP",
         ),
     )
-    observer.record_outcome(winner="RED", rounds=1, reason="game_over")
+    observer.record_outcome(winner_side="RED", rounds=1, reason="game_over")
 
     rows = load_joint_dataset(path).rows
     assert [row.selected_selection for row in rows] == [None, "SKIP"]
@@ -626,7 +657,7 @@ def test_observer_preserves_numeric_engine_selection(tmp_path: Path) -> None:
             selection=2,
         ),
     )
-    observer.record_outcome(winner="RED", rounds=1, reason="game_over")
+    observer.record_outcome(winner_side="RED", rounds=1, reason="game_over")
 
     [row] = load_joint_dataset(path).rows
     assert row.selected_selection == 2

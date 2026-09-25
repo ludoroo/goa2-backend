@@ -17,13 +17,16 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, TracebackType
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import zstandard
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictInt, model_validator
 
 from automata.models.contracts import CandidateID, DecisionObservation, canonical_json_bytes
 from automata.training.search_targets import SearchActionTarget, SearchPolicyTarget
+
+if TYPE_CHECKING:
+    from automata.runtime.outcomes import WinnerSide
 
 SCHEMA_VERSION: Literal[2] = 2
 PolicySource = Literal[
@@ -387,7 +390,7 @@ class JointDatasetRecorder:
         writer.flush(zstandard.FLUSH_BLOCK)
         self._decision_count += 1
 
-    def record_outcome(self, *, winner: str | None, rounds: int, reason: str) -> None:
+    def record_outcome(self, *, winner_side: WinnerSide | None, rounds: int, reason: str) -> None:
         """Publish only a normal terminal game; all other outcomes are discarded."""
         del rounds
         if self._closed:
@@ -395,12 +398,14 @@ class JointDatasetRecorder:
         self._closed = True
         try:
             self._close_spool_writer()
+            if winner_side not in {None, "RED", "BLUE"}:
+                raise ValueError("winner_side must be RED, BLUE, or None for a draw")
+            if reason != "game_over" and winner_side is not None:
+                raise ValueError("nonterminal outcome must have winner_side=None")
             if reason != "game_over" or not self._decision_count:
                 return
-            if winner not in {None, "RED", "BLUE"}:
-                raise ValueError("terminal winner must be RED, BLUE, or None for a draw")
             self._publish(
-                self._build_row(item, index, terminal_winner=winner)
+                self._build_row(item, index, terminal_winner=winner_side)
                 for index, item in enumerate(self._iter_pending())
             )
         finally:
