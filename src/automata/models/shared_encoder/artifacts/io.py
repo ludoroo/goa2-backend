@@ -10,12 +10,13 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import torch
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 from ...contracts import (
+    CURRENT_RUNTIME_COMPATIBILITY_VERSION,
     ArtifactError,
     ArtifactScope,
     RuntimeRequirements,
@@ -57,6 +58,7 @@ def _executable_metadata(
     config: Mapping[str, JsonValue],
     scope: ArtifactScope,
     runtime_compatibility_version: int,
+    serialized_schema: Mapping[str, JsonValue] | None = None,
 ) -> dict[str, JsonValue]:
     return {
         "runtime_compatibility_version": runtime_compatibility_version,
@@ -66,7 +68,7 @@ def _executable_metadata(
         "supported_heroes": list(scope.supported_heroes),
         "supported_maps": list(scope.supported_maps),
         "supported_game_types": list(scope.supported_game_types),
-        "tensor_schema": schema.model_dump(mode="json"),
+        "tensor_schema": dict(serialized_schema or schema.model_dump(mode="json")),
         "architecture_config": dict(config),
     }
 
@@ -128,6 +130,8 @@ def export_model_artifact(
         raise FileExistsError(f"artifact destination already exists: {target}")
     if not target.parent.is_dir():
         raise FileNotFoundError(f"artifact parent directory does not exist: {target.parent}")
+    if runtime_compatibility_version != CURRENT_RUNTIME_COMPATIBILITY_VERSION:
+        raise ArtifactError("only runtime compatibility version 2 is supported")
     if model.config.schema_digest != schema.digest:
         raise ArtifactError("model config and tensor schema are incompatible")
 
@@ -154,7 +158,7 @@ def export_model_artifact(
             model_digest=_model_digest(metadata, state),
             observation_schema_version=schema.observation_schema_version,
             map_schema_version=scope.map_schema_version,
-            runtime_compatibility_version=runtime_compatibility_version,
+            runtime_compatibility_version=cast(Literal[2], runtime_compatibility_version),
             hero_adapter_versions=dict(scope.hero_adapter_versions),
             supported_heroes=scope.supported_heroes,
             supported_maps=scope.supported_maps,
@@ -179,6 +183,13 @@ def _read_manifest(path: Path) -> ModelArtifactManifest:
     try:
         payload = path.read_bytes()
         manifest = from_canonical_json(ModelArtifactManifest, payload)
+    except ValidationError as exc:
+        tensor_identity_fields = {"tensor_schema_id", "tensor_schema_version"}
+        if any(
+            error["loc"] and error["loc"][0] in tensor_identity_fields for error in exc.errors()
+        ):
+            raise ArtifactError("invalid tensor schema identity in artifact manifest") from exc
+        raise ArtifactError("invalid artifact manifest") from exc
     except (OSError, ValueError) as exc:
         raise ArtifactError("invalid artifact manifest") from exc
     if payload != canonical_json_bytes(manifest):
@@ -267,10 +278,13 @@ def load_model_artifact(
     _require_compatible(manifest, requirements)
     try:
         schema_payload = (path / "schema.json").read_bytes()
-        schema = TensorFeatureSchema.model_validate_json(schema_payload)
+        raw_schema = json.loads(schema_payload)
+        if not isinstance(raw_schema, dict):
+            raise ValueError("tensor schema must be an object")
+        schema = TensorFeatureSchema.model_validate(raw_schema)
     except (OSError, ValueError) as exc:
         raise ArtifactError("invalid tensor schema") from exc
-    if schema_payload != canonical_json_bytes(schema):
+    if schema_payload != _canonical_mapping_bytes(raw_schema):
         raise ArtifactError("tensor schema is not canonical")
     if (
         schema.schema_id != manifest.tensor_schema_id
@@ -296,6 +310,7 @@ def load_model_artifact(
         config=manifest.architecture_config,
         scope=scope,
         runtime_compatibility_version=manifest.runtime_compatibility_version,
+        serialized_schema=cast(dict[str, JsonValue], raw_schema),
     )
     if _model_digest(metadata, state) != manifest.model_digest:
         raise ArtifactError("executable model digest mismatch")

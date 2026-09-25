@@ -1,4 +1,4 @@
-from types import SimpleNamespace
+import logging
 from typing import Any, cast
 from unittest.mock import Mock
 
@@ -43,6 +43,54 @@ def test_classic_ismcts_returns_a_legal_root_card() -> None:
     assert planning.card in hero.hand
 
 
+def test_search_suppresses_hypothetical_engine_info_logs(caplog) -> None:
+    state = _state()
+    hero = state.get_hero(HeroID("hero_wasp"))
+    assert hero is not None
+    caplog.clear()
+    caplog.set_level(logging.INFO)
+
+    ISMCTSAgent(
+        SearchConfig(iterations=1, cutoff_limit=0, leaf_mode=LeafMode.IMMEDIATE, seed=4)
+    ).choose_planning(state, hero)
+
+    assert not [
+        record
+        for record in caplog.records
+        if record.name.startswith("goa2.engine") and record.levelno == logging.INFO
+    ]
+
+    logging.getLogger("goa2.engine.phases").info("actual gameplay")
+    assert any(record.message == "actual gameplay" for record in caplog.records)
+
+
+def test_search_does_not_hide_hypothetical_engine_errors(caplog) -> None:
+    class ErrorLoggingPolicy(HeuristicAgent):
+        def choose_planning(self, state, hero):
+            logging.getLogger("goa2.engine.phases").error("hypothetical engine failure")
+            raise RuntimeError("search failed")
+
+    state = _state()
+    hero = state.get_hero(HeroID("hero_wasp"))
+    assert hero is not None
+    caplog.clear()
+    caplog.set_level(logging.INFO)
+    agent = ISMCTSAgent(
+        SearchConfig(iterations=1, cutoff_limit=0, leaf_mode=LeafMode.IMMEDIATE, seed=4),
+        environment_policy=ErrorLoggingPolicy(seed=4),
+    )
+
+    with pytest.raises(RuntimeError, match="search failed"):
+        agent.choose_planning(state, hero)
+
+    assert any(
+        record.name == "goa2.engine.phases"
+        and record.levelno == logging.ERROR
+        and record.message == "hypothetical engine failure"
+        for record in caplog.records
+    )
+
+
 def test_classic_ismcts_is_deterministic_for_a_fixed_budget_and_seed() -> None:
     chosen = []
     for _ in range(2):
@@ -58,21 +106,19 @@ def test_classic_ismcts_is_deterministic_for_a_fixed_budget_and_seed() -> None:
 
 def test_search_checks_its_internal_deadline_between_iterations(monkeypatch) -> None:
     state = _state()
-    target = RootTarget.card(
-        hero_id="hero_wasp", owned_hero_ids=frozenset({"hero_wasp"})
-    )
-    validated = SimpleNamespace(legal_candidates=("card-a", "card-b"))
-    monkeypatch.setattr(engine, "validate_search_root", lambda *_args, **_kwargs: validated)
+    hero = state.get_hero(HeroID("hero_wasp"))
+    assert hero is not None
+    target = RootTarget.card(hero_id="hero_wasp", owned_hero_ids=frozenset({"hero_wasp"}))
     simulate = Mock()
     monkeypatch.setattr(engine, "_simulate", simulate)
-    ticks = iter((10.0, 10.0, 10.0, 10.2))
+    ticks = iter((10.0, 10.0, 10.0, 10.0, 10.2))
     monkeypatch.setattr(engine.time, "monotonic", lambda: next(ticks))
 
     with pytest.raises(SearchDeadlineExceeded, match="deadline"):
         search(
             state,
             TeamColor.RED,
-            ["card-a", "card-b"],
+            [card.id for card in hero.hand],
             HeuristicAgent(seed=1),
             SearchConfig(iterations=3, decision_timeout_seconds=0.1),
             root_target=target,
@@ -108,7 +154,9 @@ def test_deadline_returns_completed_search_visits(monkeypatch) -> None:
     assert result.root.children[result.best_key].visits == 1
 
 
-@pytest.mark.parametrize("failure", [SearchDeadlineExceeded, SearchAdvanceLimitExceeded, ValueError])
+@pytest.mark.parametrize(
+    "failure", [SearchDeadlineExceeded, SearchAdvanceLimitExceeded, ValueError]
+)
 def test_interrupted_iteration_never_hides_non_deadline_failures(failure) -> None:
     state = _state()
     hero = state.get_hero(HeroID("hero_wasp"))
@@ -153,15 +201,15 @@ def test_simulator_advance_has_a_deterministic_step_cap() -> None:
         owned_hero_ids=frozenset({"hero_wasp"}),
         max_advance_steps=3,
     )
-    simulator.session.advance = cast(
-        Any,
-        Mock(
-            return_value=SessionResult(
-                result_type=SessionResultType.ACTION_COMPLETE,
-                current_phase=GamePhase.RESOLUTION,
-            )
-        ),
-    )
+
+    def advancing_result(*_args, **_kwargs):
+        state.turn += 1
+        return SessionResult(
+            result_type=SessionResultType.ACTION_COMPLETE,
+            current_phase=GamePhase.RESOLUTION,
+        )
+
+    simulator.session.advance = cast(Any, Mock(side_effect=advancing_result))
 
     with pytest.raises(SearchAdvanceLimitExceeded, match="advance-step limit"):
         simulator.advance()

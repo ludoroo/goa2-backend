@@ -43,15 +43,23 @@ class Node:
 
     visits: int = 0
     total_value: float = 0.0  # summed rollout value (our perspective), in [0, 1]
+    total_squared_value: float = 0.0
     children: dict[Key, Node] = field(default_factory=dict)
 
     @property
     def q(self) -> float:
         return self.total_value / self.visits if self.visits else 0.0
 
+    @property
+    def value_variance(self) -> float:
+        if not self.visits:
+            return 0.0
+        return max(0.0, self.total_squared_value / self.visits - self.q * self.q)
+
     def update(self, value: float) -> None:
         self.visits += 1
         self.total_value += value
+        self.total_squared_value += value * value
 
     def select(
         self,

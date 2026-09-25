@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -16,7 +17,7 @@ import pytest
 import torch
 
 from automata.decision import DecisionDescriptor as Decision
-from automata.models import (
+from automata.models.contracts import (
     DecisionObservation,
     canonical_json_bytes,
     from_canonical_json,
@@ -81,7 +82,7 @@ def schema() -> TensorFeatureSchema:
 
 def _config(schema: TensorFeatureSchema) -> JointModelConfig:
     return JointModelConfig(
-        model_version=1,
+        model_version=2,
         schema_digest=schema.digest,
         token_width=8,
         state_width=12,
@@ -110,8 +111,8 @@ def _scope(**changes: Any) -> ArtifactScope:
 
 def _requirements(**changes: Any) -> RuntimeRequirements:
     values: dict[str, Any] = {
-        "runtime_compatibility_version": 1,
-        "observation_schema_version": 3,
+        "runtime_compatibility_version": 2,
+        "observation_schema_version": 4,
         "map_schema_version": 1,
         "heroes": frozenset(HEROES),
         "map_id": "forgotten_island",
@@ -134,7 +135,7 @@ def _export(
         model=_model(schema),
         schema=schema,
         scope=scope or _scope(),
-        runtime_compatibility_version=1,
+        runtime_compatibility_version=2,
         provenance=provenance,
     )
 
@@ -187,6 +188,23 @@ def test_export_is_canonical_content_addressed_and_does_not_overwrite(
 
     with pytest.raises(FileExistsError):
         _export(first_path, schema, provenance=provenance)
+
+
+def test_export_rejects_obsolete_runtime_compatibility_version(
+    tmp_path: Path, schema: TensorFeatureSchema
+) -> None:
+    destination = tmp_path / "runtime-v1"
+
+    with pytest.raises(ValueError, match="runtime compatibility version 2"):
+        export_model_artifact(
+            destination,
+            model=_model(schema),
+            schema=schema,
+            scope=_scope(),
+            runtime_compatibility_version=1,
+        )
+
+    assert not destination.exists()
 
 
 def test_provenance_is_non_executable_but_executable_metadata_changes_digest(
@@ -253,8 +271,10 @@ def test_file_byte_or_length_mutation_fails_integrity_check(
         ("architecture_config", {"token_width": 99}, r"digest|config"),
         ("hero_adapter_versions", {"generic": 99}, r"digest|adapter"),
         ("supported_maps", ["vexing_cliffs"], r"digest|map|scope"),
+        ("runtime_compatibility_version", 1, r"manifest|runtime|version"),
+        ("observation_schema_version", 3, r"manifest|observation|version"),
         ("tensor_schema_id", "future-schema", r"digest|schema"),
-        ("tensor_schema_version", 2, r"digest|schema|version"),
+        ("tensor_schema_version", 1, r"digest|schema|version"),
         ("tensor_schema_digest", "0" * 64, r"digest|schema"),
     ],
 )
@@ -275,6 +295,31 @@ def test_executable_manifest_mutation_fails_closed(
     _write_manifest(path, manifest)
 
     with pytest.raises(ValueError, match=message):
+        load_model_artifact(path, requirements=_requirements())
+
+
+def test_incompatible_tensor_artifact_is_rejected_instead_of_reinterpreted(
+    tmp_path: Path, schema: TensorFeatureSchema
+) -> None:
+    path = tmp_path / "incompatible-schema"
+    _export(path, schema)
+    schema_data = json.loads((path / "schema.json").read_bytes())
+    schema_data.update(schema_version=999, schema_id="incompatible-tensor-schema")
+    schema_payload = json.dumps(schema_data, sort_keys=True, separators=(",", ":")).encode()
+    (path / "schema.json").write_bytes(schema_payload)
+
+    manifest = _manifest_data(path)
+    manifest.update(
+        tensor_schema_id="incompatible-tensor-schema",
+        tensor_schema_version=999,
+    )
+    manifest["files"]["schema.json"] = {
+        "length": len(schema_payload),
+        "sha256": hashlib.sha256(schema_payload).hexdigest(),
+    }
+    _write_manifest(path, manifest)
+
+    with pytest.raises(ValueError, match="invalid tensor schema"):
         load_model_artifact(path, requirements=_requirements())
 
 
@@ -347,8 +392,8 @@ def test_unexpected_files_are_rejected_before_any_weight_loading(
 @pytest.mark.parametrize(
     "changes",
     [
-        {"runtime_compatibility_version": 2},
-        {"observation_schema_version": 2},
+        {"runtime_compatibility_version": 1},
+        {"observation_schema_version": 3},
         {"map_schema_version": 2},
         {"heroes": frozenset({*HEROES, "FutureHero"})},
         {"map_id": "vexing_cliffs"},
@@ -376,7 +421,7 @@ def test_runtime_matches_in_memory_model_and_excludes_batch_padding(
         model=model,
         schema=schema,
         scope=_scope(),
-        runtime_compatibility_version=1,
+        runtime_compatibility_version=2,
     )
     observations = (_observation(), _observation(small=True))
     batch = collate_decisions(observations, schema=schema, training=False)

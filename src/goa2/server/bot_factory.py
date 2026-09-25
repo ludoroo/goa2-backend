@@ -13,7 +13,13 @@ from automata.agents.contracts import Agent
 from automata.agents.heuristic_agent import HeuristicAgent
 from automata.agents.ismcts_agent import ISMCTSAgent
 from automata.agents.random_agent import RandomAgent
-from automata.search.config import SearchConfig
+from automata.search.config import (
+    LEARNED_ROOT_PUCT_C,
+    LEARNED_ROOT_WIDENING_ALPHA,
+    LEARNED_ROOT_WIDENING_C,
+    SearchConfig,
+)
+from automata.search.continuation import AgentContinuationPolicy, ArgmaxContinuationPolicy
 from automata.search.contracts import LeafEvaluator, LeafMode, SearchPolicy
 from automata.search.fallback import FallbackLeafEvaluator, FallbackSearchPolicy
 from automata.search.heuristic import HeuristicLeafEvaluator, HeuristicPrior
@@ -41,7 +47,9 @@ def _resolve_artifact_reference(root: Path, reference: str) -> Path:
     resolved_root = root.resolve()
     candidate = (resolved_root / reference).resolve(strict=True)
     if not candidate.is_relative_to(resolved_root) or not candidate.is_dir():
-        raise ValueError("artifact reference must resolve to a directory under artifact root")
+        from automata.models.contracts import ArtifactError
+
+        raise ArtifactError("artifact reference must resolve to a directory under artifact root")
     return candidate
 
 
@@ -91,9 +99,9 @@ def agent_for_spec(
         prior: SearchPolicy = HeuristicPrior(policy)
         leaf: LeafEvaluator = HeuristicLeafEvaluator()
         if settings.artifact is not None:
+            if state is None or artifact_root is None:
+                raise ValueError("learned ISMCTS requires game state and artifact root")
             try:
-                if state is None or artifact_root is None:
-                    raise ValueError("learned ISMCTS requires game state and artifact root")
                 artifact = _resolve_artifact_reference(
                     Path(artifact_root), settings.artifact.reference
                 )
@@ -117,6 +125,15 @@ def agent_for_spec(
                     )
                 from automata.search.learned import LearnedLeafEvaluator, LearnedSearchPolicy
             except (ImportError, OSError, ValueError) as exc:
+                if isinstance(exc, ValueError):
+                    # ArtifactError intentionally stays behind the learned
+                    # configuration boundary so classic H/H startup remains
+                    # model-package neutral. Other ValueErrors are programmer
+                    # misuse and must not silently become heuristic fallback.
+                    from automata.models.contracts import ArtifactError
+
+                    if not isinstance(exc, ArtifactError):
+                        raise
                 # Invalid/missing artifacts and an unavailable optional Torch
                 # runtime are deployment availability failures, not reasons to
                 # make the game unavailable. Do not construct a learned adapter
@@ -134,6 +151,7 @@ def agent_for_spec(
                     prior = FallbackSearchPolicy(LearnedSearchPolicy(runtime), prior)
                 if settings.value_source == "learned":
                     leaf = FallbackLeafEvaluator(LearnedLeafEvaluator(runtime), leaf)
+        learned_root = settings.policy_source == "learned"
         config = SearchConfig(
             iterations=settings.iterations,
             decision_timeout_seconds=settings.decision_timeout_seconds,
@@ -144,12 +162,21 @@ def agent_for_spec(
                 if settings.leaf_mode == "immediate"
                 else LeafMode.BOUNDED_CONTINUATION
             ),
+            root_puct_c=LEARNED_ROOT_PUCT_C if learned_root else None,
+            root_widening_c=LEARNED_ROOT_WIDENING_C if learned_root else None,
+            root_widening_alpha=LEARNED_ROOT_WIDENING_ALPHA if learned_root else None,
+        )
+        continuation = (
+            ArgmaxContinuationPolicy(prior)
+            if settings.policy_source == "learned"
+            else AgentContinuationPolicy(policy)
         )
         return ISMCTSAgent(
             config,
             environment_policy=policy,
             prior=prior,
             leaf_evaluator=leaf,
+            continuation_policy=continuation,
         )
     raise ValueError(f"unsupported bot kind: {spec.kind!r}")
 

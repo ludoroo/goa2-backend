@@ -12,6 +12,7 @@ from automata.search.contracts import (
     LeafEvaluation,
     LeafMode,
     PolicyScores,
+    PolicyScoreSource,
     ScoreSemantics,
     SearchContext,
     score_policy,
@@ -105,7 +106,9 @@ def test_h_l_components_compose_independently(environment, continuation, leaf, e
 def test_component_fallbacks_only_catch_declared_failures(failure: Exception) -> None:
     policy = FallbackSearchPolicy(_Policy("L", failure), _Policy("H"))
     leaf = FallbackLeafEvaluator(_Leaf(0.0, failure), _Leaf(0.5))
-    assert score_policy(policy, _context(), object(), ["x", "y"]).scores == (2.0, 1.0)
+    fallback_scores = score_policy(policy, _context(), object(), ["x", "y"])
+    assert fallback_scores.scores == (2.0, 1.0)
+    assert fallback_scores.source is PolicyScoreSource.FALLBACK
     assert leaf.evaluate(_context(), object()).value == 0.5
 
     with pytest.raises(RuntimeError):
@@ -119,7 +122,12 @@ def test_component_fallbacks_only_catch_declared_failures(failure: Exception) ->
 
 def test_leaf_evaluation_and_modes_have_exact_score_semantics() -> None:
     assert LeafEvaluation(value=-0.4).value == -0.4
-    assert {LeafMode.IMMEDIATE, LeafMode.BOUNDED_CONTINUATION} == set(LeafMode)
+    assert {
+        LeafMode.IMMEDIATE,
+        LeafMode.IMMEDIATE_ACTION,
+        LeafMode.STABLE_TURN,
+        LeafMode.BOUNDED_CONTINUATION,
+    } == set(LeafMode)
     assert {CutoffUnit.ROUNDS, CutoffUnit.DECISIONS} == set(CutoffUnit)
     with pytest.raises(ValueError, match=r"\[-1, 1\]"):
         LeafEvaluation(value=2.0)

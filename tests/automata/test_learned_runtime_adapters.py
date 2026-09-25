@@ -6,6 +6,7 @@ from automata.agents.heuristic_agent import HeuristicAgent
 from automata.agents.ismcts_agent import ISMCTSAgent
 from automata.decision import DecisionDescriptor
 from automata.models.contracts.inference import LearnedModelOutput
+from automata.runtime.clone import clone_state
 from automata.runtime.effects import register_all_effects
 from automata.search.config import SearchConfig
 from automata.search.contracts import (
@@ -133,6 +134,92 @@ def test_learned_leaf_uses_same_runtime_and_rejects_out_of_contract_value() -> N
         LearnedLeafEvaluator(runtime).evaluate(context, state)
 
 
+def test_input_policy_encodes_canonical_order_then_realigns_noncanonical_caller_order() -> None:
+    state = _state()
+    request = InputRequest(
+        id="noncanonical-input",
+        request_type=InputRequestType.SELECT_OPTION,
+        player_id="hero_razzle",
+        options=[InputOption.from_value("a"), InputOption.from_value("b")],
+    )
+    state.input_stack.append(request)
+    runtime = RecordingRuntime((1.0, 3.0))
+    context = SearchContext(
+        "hero_razzle",
+        TeamColor.RED,
+        "hero_razzle",
+        decision=DecisionDescriptor("INPUT", request=request),
+    )
+
+    scores = LearnedSearchPolicy(runtime).score(context, state, ("b", "a"))
+
+    assert tuple(candidate.selection for candidate in runtime.observations[0].candidates) == (
+        "a",
+        "b",
+    )
+    assert scores.actions == ("b", "a")
+    assert scores.scores == (3.0, 1.0)
+
+
+def test_policy_scores_the_exact_descendant_decision_instead_of_stale_input_stack() -> None:
+    state = _state()
+    state.input_stack.append(
+        InputRequest(
+            id="stale-root",
+            request_type=InputRequestType.SELECT_OPTION,
+            player_id="hero_razzle",
+            options=[InputOption.from_value("root_a"), InputOption.from_value("root_b")],
+        )
+    )
+    descendant = InputRequest(
+        id="descendant",
+        request_type=InputRequestType.SELECT_OPTION,
+        player_id="team:BLUE",
+        options=[InputOption.from_value("descendant_a"), InputOption.from_value("descendant_b")],
+    )
+    legal = ("descendant_a", "descendant_b")
+    runtime = RecordingRuntime((1.0, 0.0))
+    context = SearchContext(
+        "hero_arien",
+        TeamColor.BLUE,
+        "hero_arien",
+        decision=DecisionDescriptor("INPUT", request=descendant),
+    )
+
+    scores = LearnedSearchPolicy(runtime).score(context, state, legal)
+
+    assert scores.actions == legal
+    assert runtime.observations[0].decision_kind == "INPUT"
+    assert tuple(candidate.selection for candidate in runtime.observations[0].candidates) == legal
+
+
+def test_leaf_encodes_explicit_team_scoped_decision_without_state_input_stack() -> None:
+    state = _state()
+    request = InputRequest(
+        id="team-descendant",
+        request_type=InputRequestType.SELECT_OPTION,
+        player_id="team:BLUE",
+        options=[InputOption.from_value("a"), InputOption.from_value("b")],
+    )
+    runtime = RecordingRuntime((0.0, 0.0), value=-0.2)
+    context = SearchContext(
+        "hero_arien",
+        TeamColor.BLUE,
+        "hero_arien",
+        decision=DecisionDescriptor("INPUT", request=request),
+    )
+
+    assert LearnedLeafEvaluator(runtime).evaluate(context, state).value == -0.2
+    observation = runtime.observations[0]
+    assert observation.decision_kind == "INPUT"
+    owner = next(
+        token
+        for token in observation.state.tokens
+        if token.kind == "HERO" and token.features["hero_id"] == "hero_arien"
+    )
+    assert owner.features["is_decision_owner"] is True
+
+
 def test_changed_card_owner_keeps_root_viewer_and_candidate_alignment() -> None:
     state = _state()
     owner = state.get_hero(HeroID("hero_razzle"))
@@ -220,9 +307,7 @@ def test_heuristic_prior_scores_the_explicit_live_input_without_input_stack() ->
         "hero_razzle",
         DecisionDescriptor("INPUT", request=request),
     )
-    scores = HeuristicPrior(ExplicitScores(seed=1)).score(
-        context, state, ["LOW", "HIGH"]
-    )
+    scores = HeuristicPrior(ExplicitScores(seed=1)).score(context, state, ["LOW", "HIGH"])
 
     assert not state.input_stack
     assert scores.scores == (-2.0, 3.0)
@@ -317,7 +402,23 @@ def test_team_scoped_live_session_input_uses_eligible_root_viewer_for_learned_se
             assert owner.features["is_decision_owner"] is True
 
 
-def test_learned_leaf_advances_past_an_owned_hero_forced_zero_hand_pass() -> None:
+@pytest.mark.parametrize(
+    ("leaf_mode", "cutoff_limit"),
+    [
+        (LeafMode.IMMEDIATE, 2),
+        (LeafMode.IMMEDIATE_ACTION, 2),
+        (LeafMode.STABLE_TURN, 2),
+        (LeafMode.BOUNDED_CONTINUATION, 0),
+        (LeafMode.BOUNDED_CONTINUATION, 1),
+    ],
+)
+def test_learned_leaf_advances_past_an_owned_hero_forced_zero_hand_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    leaf_mode: LeafMode,
+    cutoff_limit: int,
+) -> None:
+    from automata.search.ismcts import engine
+
     register_all_effects()
     state = GameSetup.create_game(
         MAP,
@@ -330,10 +431,23 @@ def test_learned_leaf_advances_past_an_owned_hero_forced_zero_hand_pass() -> Non
     wasp = state.get_hero(HeroID("hero_wasp"))
     assert razzle is not None and wasp is not None
     wasp.hand.clear()
+    # Keep the forced pass in every determinization. The normal planning
+    # determinizer can redeal an empty hidden hand, making this regression
+    # vacuous instead of exercising the candidate-free engine transition.
+    monkeypatch.setattr(
+        engine,
+        "determinize",
+        lambda source, _viewer_id, _rng: clone_state(source),
+    )
     runtime = DynamicRecordingRuntime(value=0.1)
     heuristic = HeuristicAgent(seed=1)
     agent = ISMCTSAgent(
-        SearchConfig(iterations=1, leaf_mode=LeafMode.IMMEDIATE, seed=2),
+        SearchConfig(
+            iterations=1,
+            cutoff_limit=cutoff_limit,
+            leaf_mode=leaf_mode,
+            seed=2,
+        ),
         environment_policy=heuristic,
         prior=HeuristicPrior(heuristic),
         leaf_evaluator=LearnedLeafEvaluator(runtime),

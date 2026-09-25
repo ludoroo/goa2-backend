@@ -10,7 +10,12 @@ import torch
 from torch import Tensor
 
 from ..contracts import CandidateID, DecisionObservation
-from .schema import RecordFeatureSchema, TensorFeatureSchema, VectorizedDecision
+from .schema import (
+    RecordFeatureSchema,
+    TensorFeatureSchema,
+    VectorizedDecision,
+    expanded_numeric_width,
+)
 
 
 @dataclass(frozen=True)
@@ -55,6 +60,7 @@ class DecisionBatch:
 
     tokens: dict[str, FeatureTable]
     relationships: dict[str, RelationshipTable]
+    decision_context: FeatureTable | None
     candidates: CandidateTable
     candidate_ids: tuple[tuple[CandidateID, ...], ...]
     token_kinds: tuple[str, ...]
@@ -200,7 +206,7 @@ def _empty_feature_table(batch_size: int, rows: int, schema: RecordFeatureSchema
     return _empty_table(
         batch_size,
         rows,
-        len(schema.numeric),
+        expanded_numeric_width(schema),
         len(schema.categorical),
         len(schema.references),
     )
@@ -225,6 +231,23 @@ def collate_decisions(
         raise ValueError("candidate records and IDs must be aligned")
 
     batch_size = len(vectorized)
+    decision_context: FeatureTable | None = None
+    if schema.decision_context is not None:
+        decision_context = _empty_feature_table(batch_size, 1, schema.decision_context)
+        for batch_index, decision in enumerate(vectorized):
+            context = decision.decision_context
+            if context is None:
+                raise ValueError("tensor schema requires one decision-context row")
+            decision_context.mask[batch_index, 0] = True
+            decision_context.numeric[batch_index, 0] = torch.tensor(
+                context.numeric, dtype=torch.float32
+            )
+            decision_context.numeric_valid[batch_index, 0] = torch.tensor(
+                context.numeric_valid, dtype=torch.bool
+            )
+            decision_context.categorical[batch_index, 0] = torch.tensor(
+                context.categorical, dtype=torch.int64
+            )
     token_kinds = tuple(item.kind for item in schema.tokens)
     token_kind_index = {kind: index for index, kind in enumerate(token_kinds)}
     token_tables: dict[str, FeatureTable] = {}
@@ -312,7 +335,7 @@ def collate_decisions(
     base = _empty_table(
         batch_size,
         max_candidates,
-        max(len(item.numeric) for item in schema.candidates),
+        max(expanded_numeric_width(item) for item in schema.candidates),
         max(len(item.categorical) for item in schema.candidates),
         max(len(item.references) for item in schema.candidates),
     )
@@ -358,6 +381,7 @@ def collate_decisions(
     return DecisionBatch(
         tokens=token_tables,
         relationships=relationship_tables,
+        decision_context=decision_context,
         candidates=candidates,
         candidate_ids=tuple(item.candidate_ids for item in vectorized),
         token_kinds=token_kinds,

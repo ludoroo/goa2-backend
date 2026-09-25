@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import torch
@@ -59,6 +60,14 @@ class SharedEncoderRuntime:
 
     def evaluate_batch(
         self, observations: tuple[DecisionObservation, ...] | list[DecisionObservation]
+    ) -> tuple[LearnedModelOutput, ...]:
+        if self.schema.observation_schema_version != 4:
+            raise ArtifactError("runtime requires decision-observation schema v4")
+        return self._evaluate_batch(observations)
+
+    def _evaluate_batch(
+        self,
+        observations: Sequence[DecisionObservation],
     ) -> tuple[LearnedModelOutput, ...]:
         for observation in observations:
             self._validate_observation(observation)

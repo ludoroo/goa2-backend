@@ -29,8 +29,8 @@ ADAPTERS = {"generic": 1, "Arien": 1, "Razzle": 1}
 
 def _requirements() -> RuntimeRequirements:
     return RuntimeRequirements(
-        runtime_compatibility_version=1,
-        observation_schema_version=3,
+        runtime_compatibility_version=2,
+        observation_schema_version=4,
         map_schema_version=1,
         heroes=frozenset(HEROES),
         map_id="forgotten_island",
@@ -69,7 +69,7 @@ def test_pytorch_serving_cache_preserves_exported_model_output_and_identity(tmp_
     model = JointPolicyValueModel(
         schema=schema,
         config=JointModelConfig(
-            model_version=1,
+            model_version=2,
             schema_digest=schema.digest,
             token_width=8,
             state_width=12,
@@ -91,7 +91,7 @@ def test_pytorch_serving_cache_preserves_exported_model_output_and_identity(tmp_
             hero_adapter_versions=ADAPTERS,
             map_schema_version=1,
         ),
-        runtime_compatibility_version=1,
+        runtime_compatibility_version=2,
     )
     observation = _observation()
     with torch.inference_mode():
