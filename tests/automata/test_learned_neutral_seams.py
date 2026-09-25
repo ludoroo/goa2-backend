@@ -4,6 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from automata.decision import DecisionDescriptor
 from automata.search.contracts import (
     ComponentInferenceError,
     ComponentUnavailableError,
@@ -47,15 +48,18 @@ def _context() -> SearchContext:
         root_viewer_id="hero_wasp",
         perspective_team=TeamColor.RED,
         current_owner_id="hero_wasp",
+        decision=DecisionDescriptor("CARD"),
     )
 
 
-def test_search_context_keeps_root_identity_when_owner_changes() -> None:
+def test_search_context_keeps_root_identity_when_decision_changes() -> None:
     context = _context()
-    moved = context.for_owner("hero_arien")
+    decision = DecisionDescriptor("INPUT")
+    moved = context.for_decision(decision, owner_id="hero_arien")
     assert moved.root_viewer_id == "hero_wasp"
     assert moved.perspective_team is TeamColor.RED
     assert moved.current_owner_id == "hero_arien"
+    assert moved.decision is decision
     with pytest.raises(FrozenInstanceError):
         context.current_owner_id = "hero_arien"  # type: ignore[misc]
 

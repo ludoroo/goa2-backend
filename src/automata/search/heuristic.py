@@ -21,7 +21,7 @@ import math
 from collections.abc import Sequence
 
 from goa2.domain.input import selection_value
-from goa2.domain.models import GamePhase, TeamColor
+from goa2.domain.models import TeamColor
 from goa2.domain.models.card import Card
 from goa2.domain.state import GameState
 from goa2.domain.types import HeroID
@@ -43,16 +43,18 @@ class HeuristicPrior:
     ) -> PolicyScores:
         legal = list(legal_actions)
         scores: dict[Key, float] = {}
-        hero = state.get_hero(HeroID(context.current_owner_id))
-        if state.phase == GamePhase.PLANNING and hero is not None:
-            by_id: dict[Key, Card] = {c.id: c for c in hero.hand}
-            scores = {
-                key: self._h.score_card(state, hero, card)
-                for key in legal
-                if (card := by_id.get(key)) is not None
-            }
-        elif state.input_stack:
-            request = state.input_stack[-1]
+        decision = context.decision
+        if decision.kind == "CARD":
+            hero = state.get_hero(HeroID(context.current_owner_id))
+            if hero is not None:
+                by_id: dict[Key, Card] = {c.id: c for c in hero.hand}
+                scores = {
+                    key: self._h.score_card(state, hero, card)
+                    for key in legal
+                    if (card := by_id.get(key)) is not None
+                }
+        elif decision.kind == "INPUT" and decision.request is not None:
+            request = decision.request
             for option in request.options:
                 key = action_key(selection_value(option))
                 if key in legal and key not in scores:
