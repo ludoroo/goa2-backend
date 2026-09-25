@@ -538,7 +538,14 @@ async def _handle_set_ready(
     ready = data.get("ready")
     if not isinstance(ready, bool):
         raise ValueError("ready must be a boolean")
-    set_player_ready(game, hero_id, ready, now_ms())
+    timestamp = now_ms()
+    set_player_ready(game, hero_id, ready, timestamp)
+    if ready:
+        # Local import avoids the bots -> ws broadcast dependency at import
+        # time while sharing the same ready transition as REST.
+        from goa2.server.bots import auto_ready_bot_heroes
+
+        auto_ready_bot_heroes(game, at_ms=timestamp)
     return {
         "type": "READY_UPDATED",
         "hero_id": hero_id,
