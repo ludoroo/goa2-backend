@@ -759,16 +759,49 @@ class _Simulator:
 # --------------------------------------------------------------------------- #
 
 
-def terminal_reward(winner: str | None, our_team: TeamColor) -> float:
+def terminal_reward(
+    winner: str | None,
+    our_team: TeamColor,
+    *,
+    state: GameState,
+) -> float:
     """Reward for a terminal game outcome, from ``our_team``'s perspective.
 
-    Public helper — the terminal branch of :func:`_rollout` and any offline
-    training / evaluation code MUST go through this so wins/draws/losses stay
-    on the same 1.0 / 0.5 / 0.0 scale as the mapped value estimate.
+    Team names are accepted case-insensitively. Individual hero winners are
+    resolved through the authoritative team rosters in ``state``; piece IDs are
+    not hero winner identities and are rejected. Any other
+    non-null value is invalid and fails closed rather than becoming a loss for
+    both perspectives.
     """
     if winner is None:
-        return 0.5  # draw / undecided
-    return 1.0 if winner.upper() == our_team.value.upper() else 0.0
+        return 0.5
+    if our_team not in state.teams:
+        raise ValueError(f"perspective team {our_team.value!r} is not present in game state")
+
+    normalized = winner.upper()
+    winning_team = next(
+        (team for team in TeamColor if normalized == team.value.upper()),
+        None,
+    )
+    if winning_team is not None:
+        if winning_team not in state.teams:
+            raise ValueError(f"winning team {winning_team.value!r} is not present in game state")
+    else:
+        hero = state.get_hero(HeroID(winner))
+        if hero is None or str(hero.id) != winner:
+            raise ValueError(f"unknown terminal winner {winner!r}")
+        winning_team = hero.team
+        if winning_team is None:
+            raise ValueError(f"terminal winner {winner!r} has no team")
+        roster = state.teams.get(winning_team)
+        if roster is None:
+            raise ValueError(f"winning team {winning_team.value!r} is not present in game state")
+        if not any(str(member.id) == winner for member in roster.heroes):
+            raise ValueError(
+                f"terminal winner {winner!r} is not listed on team {winning_team.value!r}"
+            )
+
+    return 1.0 if winning_team == our_team else 0.0
 
 
 def _value_to_reward(value: float) -> float:
@@ -1149,7 +1182,7 @@ def _rollout(
         decision = _apply_ours(sim, decision, None, action_boundary)
 
     if decision.is_terminal:
-        return terminal_reward(decision.winner, sim.our_team)
+        return terminal_reward(decision.winner, sim.our_team, state=sim.state)
     if decision.kind == "BOUNDARY":
         boundary_kind = decision.action_boundary_kind
         if boundary_kind is None:
@@ -1441,7 +1474,7 @@ def _simulate(
         decision = sim.apply_ours(decision, key)
 
     if value is None:
-        value = terminal_reward(decision.winner, our_team)
+        value = terminal_reward(decision.winner, our_team, state=sim.state)
 
     for n in path:
         n.update(value)

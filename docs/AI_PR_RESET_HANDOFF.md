@@ -10,11 +10,33 @@ draft replacements **#8 → #9 → #10**; their source branches remain intact.
 The original recommendation was a scope/dependency assessment, not a merge
 approval. Fresh verification of the merged foundation is recorded below. Neither
 PR reports GitHub status checks, so the passing local test run is the evidence;
-it does not replace testing the forthcoming combined reset branch.
+the integration and later search-slice checks below are separate evidence.
 
 The experiment history and reset direction are in
 [AI_EXPERIMENT_JOURNAL.md](AI_EXPERIMENT_JOURNAL.md). The active implementation
 checklist is in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md).
+
+## Current search-parity work — 2026-09-25
+
+Local branch `ai-gen1-search-parity` starts from published checkpoint `3eef358`.
+The #8/#9/#10 foundation heads remain unchanged. The first slice fixes search
+terminal rewards for individual hero winners using authoritative team membership;
+unknown non-null winners now raise rather than counting as losses for both teams.
+Both rollout and tree terminal paths bypass leaf evaluation.
+
+Independent review found no blockers; follow-up tests cover losing tree backup,
+missing perspective team, and rejection of piece IDs as hero winner identities.
+Verification: **4,844 full-suite tests pass**, including 23 new terminal tests;
+source Ruff/Black/mypy and dependency-identity checks pass. The next implementation
+is opt-in `STABLE_TRANSITION`, with candidate-free heuristic value, shared live/
+search boundaries, explicit owned/foreign routing, and bounded failure semantics.
+Learned-value use remains unsupported until the candidate-free runtime exists.
+Historical `STABLE_TURN` is deliberately unchanged.
+
+**Remaining offline outcome gap:** the generic matchup evaluator counts hero-ID
+winners as draws; retained joint training and the learned arena reject those IDs.
+That is not fixed by the search helper. Align these paths before using individual-
+victory games for Gen1 evidence, without changing historical results or artifacts.
 
 ## Published replacement stack — 2026-09-25
 

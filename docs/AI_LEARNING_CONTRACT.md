@@ -140,20 +140,47 @@ as operational failures/censored evidence, not strategic draws or losses.
    `851f96a`; no historical chain was blindly replayed. Independent reviews and
    all combined tests/source checks pass. These are published draft checkpoints,
    not merged replacements or a completed Gen1 pipeline.
-3. **Next — search parity.** All Gen1 root types reach the same boundaries;
+3. **In progress — search parity.** Work is on `ai-gen1-search-parity`, based on
+   publication checkpoint `3eef358`; the published foundation drafts stay fixed.
+   All Gen1 root types must reach the same boundaries;
    exact terminal orientation, explicit owned/foreign continuation, and fail-closed
    watchdogs. Prove search/live encodings agree for the same state/viewer/boundary.
    Live-bot deadline recovery must not silently authorize incomplete teacher
    evidence or convert an interrupted transition into a stable value leaf.
 4. **Pending — data and model.** Discriminated policy/value rows, atomic complete-
    game publication, bounded indexing, per-head masks/weights, candidate-free value
-   batching and runtime. Replace the retained joint-data path and resolve source/
-   seed identity portability without relabeling old datasets or checkpoints.
+   batching and runtime. Align offline winner normalization too: the generic
+   matchup evaluator currently counts hero-ID winners as draws, whereas joint
+   training and the learned arena reject them. Neither behavior is the Gen1 team-
+   outcome contract. Replace the retained joint-data path and resolve source/seed
+   identity portability without relabeling old datasets or checkpoints.
 5. **Pending — executable iteration, then fresh generation.** Bootstrap → train →
    paired evaluation → parent initialization/replay, with persistent split/seed
    isolation. Start only after the preceding steps and behavior/engine/server
    tests pass. The first fresh Gen1 run is a small diagnostic, not a large
    historical-style experiment.
+
+### Current search slice: implementation choices
+
+- **Implemented locally:** exact search terminal scoring resolves hero-ID winners
+  through authoritative team membership and rejects unknown non-null winners.
+  Both terminal paths bypass leaf evaluators. Independent review found no blockers;
+  verification after follow-up coverage: 4,844 full-suite tests pass (23 new cases),
+  with source Ruff/Black/mypy clean.
+- Add opt-in `STABLE_TRANSITION`, not a silent change to `STABLE_TURN`. It uses the
+  shared transition anchor/detector for planning, actor, reaction, tie, and cleanup
+  roots. Historical request schedules must not downgrade this explicit horizon.
+- Introduce a separate candidate-free boundary-value context/evaluator seam;
+  initially implement it only for heuristic value. Reject incompatible learned
+  and blended evaluators explicitly, including singleton configurations. Do not
+  silently substitute heuristic values or synthesize policy candidates.
+- Route owned continuation through the controlled policy with fixed root viewer
+  and team. Simultaneous `UPGRADE_PHASE` needs a documented explicit environment
+  fallback until policy encoding supports that request; it must not be mistaken
+  for an ordinary foreign-owner prompt.
+- Keep the old synthetic-context path operational until the data/model slice
+  supplies its replacement. This search slice alone does not open the generation
+  gate or change client APIs, training schemas, dependencies, or old artifacts.
 
 Artifact deletion is a separate inventoried task. No reset command may delete
 `runs/` or mutate historical results as a side effect.

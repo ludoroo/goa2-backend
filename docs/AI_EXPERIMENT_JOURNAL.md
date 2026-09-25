@@ -360,7 +360,31 @@ still exist at `a0f8181` and `5c844f3`; no branches or artifacts were deleted.
 The new PRs remain drafts and were not merged. Their descriptions explicitly
 separate the tested foundation from the still-missing Gen1 learning loop.
 
-**Next action:** shared Gen1 search/live boundary parity and exact team-oriented
-terminal handling, then candidate-free value runtime/data integration. Keep the
-active checklist in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md) and evidence
-in [AI_PR_RESET_HANDOFF.md](AI_PR_RESET_HANDOFF.md) current at each checkpoint.
+## First search-parity slice: terminal orientation — 2026-09-25
+
+Continued locally on `ai-gen1-search-parity` from publication checkpoint `3eef358`,
+leaving the draft foundation heads unchanged. The old search helper compared a
+winner string only with `RED`/`BLUE`; an individual hero winner therefore scored
+as a loss for both teams. It now requires the authoritative game state, resolves
+hero/team roster membership, and rejects unknown non-null winners. Genuine
+terminal draws remain 0.5 in search reward space; terminals bypass leaf evaluation.
+
+Added 23 regression cases, including real engine terminals through rollout and
+tree backup. Independent review cleared the first 20; three follow-up cases pin
+losing tree backup, missing perspective team, and piece-ID rejection. **4,844
+full-suite tests pass**; source Ruff/Black/mypy, diff checks, and unchanged
+dependency identity also pass. The earlier 1,035-test Automata run and reviewer's
+109-test focused run overlap; they are not additional independent tests.
+
+The audit found a separate old-lineage inconsistency: generic matchup evaluation
+counts hero-ID winners as draws, while joint training and learned-arena evaluation
+reject them. These paths are unchanged in this bounded search fix. Offline team-
+outcome normalization remains a gate before individual-victory games contribute
+Gen1 evidence; no old outcomes or artifacts were reinterpreted.
+
+**Next action:** implement opt-in `STABLE_TRANSITION` using shared search/live
+boundary recognition and a candidate-free heuristic-value interface. Reject
+learned-value configurations until their runtime exists; retain historical
+`STABLE_TURN` for now. Keep the active checklist in
+[AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md) and evidence in
+[AI_PR_RESET_HANDOFF.md](AI_PR_RESET_HANDOFF.md) current at each checkpoint.
