@@ -38,8 +38,13 @@ def save_game(
     rollback_snapshot: dict[str, Any] | None = None,
     rollback_actor_id: str | None = None,
     replay_log: list[dict[str, Any]] | None = None,
+    bot_specs: dict[str, Any] | None = None,
 ) -> Path:
     """Serialize game data to a JSON file with atomic write."""
+    serialized_specs = {
+        hero_id: spec.model_dump(mode="json") if hasattr(spec, "model_dump") else spec
+        for hero_id, spec in (bot_specs or {}).items()
+    }
     payload: dict[str, Any] = {
         "version": SAVE_VERSION,
         "game_id": game_id,
@@ -51,6 +56,7 @@ def save_game(
         "state": state.model_dump(mode="json"),
         "rollback_snapshot": rollback_snapshot,
         "rollback_actor_id": rollback_actor_id,
+        "bot_specs": serialized_specs,
     }
     if replay_log is not None:
         payload["replay_log"] = replay_log
@@ -129,6 +135,7 @@ def load_game(file_path: str) -> dict[str, Any]:
         # Absent from saves written before the save carried the replay log, and
         # from games whose log was already damaged when it would have been adopted.
         "replay_log": payload.get("replay_log"),
+        "bot_specs": payload.get("bot_specs", {}) or {},
     }
 
 

@@ -675,6 +675,10 @@ def finalize_timed_mutation(
     reconcile_game_clock(game, timestamp)
     registry.save_game(game.game_id)
     schedule_deadline(game, registry)
+    if game.bot_specs and not game.removed:
+        from goa2.server.bots import schedule_bot_drive
+
+        schedule_bot_drive(game, registry)
 
 
 @asynccontextmanager
@@ -748,8 +752,12 @@ async def _deadline_worker(
 ) -> None:
     try:
         await asyncio.sleep(delay_ms / 1000)
+        if game.removed:
+            return
         async with game.outbound_lock:
             async with game.lock:
+                if game.removed:
+                    return
                 clock = game.session.state.clock
                 if clock is None or clock.revision != revision:
                     return
@@ -775,6 +783,10 @@ async def _deadline_worker(
             from goa2.server.ws import _send_captured_broadcast
 
             await _send_captured_broadcast(game, messages)
+        if emitted and game.bot_specs and not game.removed:
+            from goa2.server.bots import schedule_bot_drive
+
+            schedule_bot_drive(game, registry)
     except asyncio.CancelledError:
         raise
     except Exception:

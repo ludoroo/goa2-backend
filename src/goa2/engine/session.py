@@ -45,9 +45,15 @@ class GameSession:
     - advance() during RESOLUTION and other phases
     """
 
-    def __init__(self, state: GameState):
+    def __init__(
+        self,
+        state: GameState,
+        *,
+        create_rollback_snapshots: bool = True,
+    ) -> None:
         self.state = state
         self._last_phase = state.phase
+        self._create_rollback_snapshots = create_rollback_snapshots
         self._rollback_snapshot: dict | None = None
         self._rollback_actor_id: str | None = None
 
@@ -260,9 +266,12 @@ class GameSession:
         if self._rollback_snapshot is None:
             if is_confirm_only:
                 return
-            # Owner actionable prompt: satisfy any pending re-anchor and
-            # take a fresh snapshot.
+            # Owner actionable prompt: satisfy any pending re-anchor. Search
+            # simulations preserve this boundary/control-flow behavior but
+            # disable snapshot creation because their sessions are disposable.
             self.state.execution_context.pop("rollback_reanchor_pending", None)
+            if not self._create_rollback_snapshots:
+                return
             self._rollback_snapshot = self._make_snapshot()
             self._rollback_actor_id = owner_id
 

@@ -169,6 +169,63 @@ def test_rest_timed_game_ready_check_gates_gameplay(client: TestClient) -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        ClockStatus.WAITING_FOR_PLAYERS,
+        ClockStatus.SUSPENDED_FOR_INACTIVITY,
+        ClockStatus.PAUSED,
+    ],
+)
+@pytest.mark.parametrize("transport", ["rest", "websocket"])
+def test_human_ready_auto_readies_bot_for_every_ready_check(
+    client: TestClient,
+    status: ClockStatus,
+    transport: str,
+) -> None:
+    created = client.post(
+        "/games",
+        json={
+            "map_name": "forgotten_island",
+            "red_heroes": ["Arien"],
+            "blue_heroes": ["Wasp"],
+            "bots": {"hero_wasp": {"kind": "random"}},
+            "time_control": _api_config(),
+        },
+    ).json()
+    game_id = created["game_id"]
+    arien_token = _api_token(created, "hero_arien")
+    game = client.app.state.registry.get(game_id)
+    clock = game.session.state.clock
+    assert clock is not None
+    clock.status = status
+    clock.ready_hero_ids = []
+    clock.active_kind = None
+    clock.active_hero_ids = []
+    clock.active_decision_hero_ids = []
+    if status == ClockStatus.PAUSED:
+        clock.pause_requested_by = "hero_wasp"
+        clock.paused_at_ms = 123
+
+    if transport == "rest":
+        response = client.post(
+            f"/games/{game_id}/ready",
+            json={"ready": True},
+            headers=_auth(arien_token),
+        )
+        assert response.status_code == 200, response.text
+        view = response.json()["view"]
+    else:
+        with client.websocket_connect(f"/games/{game_id}/ws?token={arien_token}") as ws:
+            assert ws.receive_json()["view"]["clock"]["status"] == status.value
+            ws.send_json({"type": "SET_READY", "ready": True})
+            assert ws.receive_json()["type"] == "READY_UPDATED"
+            view = ws.receive_json()["view"]
+
+    assert view["clock"]["status"] == ClockStatus.RUNNING.value
+    assert set(view["clock"]["ready_hero_ids"]) == {"hero_arien", "hero_wasp"}
+
+
 def test_draft_time_control_can_be_configured_and_explicitly_disabled(
     client: TestClient,
 ) -> None:
