@@ -14,6 +14,7 @@ from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from automata.decision import DecisionDescriptor
 from goa2.domain.models import TeamColor
 from goa2.domain.state import GameState
 
@@ -27,9 +28,12 @@ class SearchContext:
     root_viewer_id: str
     perspective_team: TeamColor
     current_owner_id: str
+    decision: DecisionDescriptor
 
-    def for_owner(self, owner_id: str) -> SearchContext:
-        return replace(self, current_owner_id=owner_id)
+    def for_decision(
+        self, decision: DecisionDescriptor, *, owner_id: str
+    ) -> SearchContext:
+        return replace(self, current_owner_id=owner_id, decision=decision)
 
 
 class ScoreSemantics(StrEnum):

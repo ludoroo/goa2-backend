@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from automata.agents.contracts import Agent
@@ -68,6 +69,7 @@ from goa2.domain.types import HeroID
 from goa2.engine.phases import planning_open_for_second_card
 from goa2.engine.session import GameSession, SessionResult, SessionResultType
 from goa2.server import bot_factory, bounded_compute
+from goa2.server.errors import GameNotFoundError
 from goa2.server.registry import GameRegistry, ManagedGame
 from goa2.server.time_control import (
     finalize_timed_mutation,
@@ -431,6 +433,29 @@ async def _pace_before_next_bot_mutation(game: ManagedGame) -> None:
 # --------------------------------------------------------------------------- #
 
 
+@dataclass
+class _AgentBuildGame:
+    """Detached input for synchronous agent construction.
+
+    ``get_or_build_agents`` writes its cache onto this snapshot, never onto the
+    live ``ManagedGame``. The worker publishes the completed mapping only after
+    reacquiring ``game.lock`` and revalidating game ownership/configuration.
+    """
+
+    game_id: str
+    bot_specs: dict[str, Any]
+    session: Any
+    _bot_agents: dict[str, Agent] | None = None
+
+
+def _registry_still_owns(game: ManagedGame, registry: GameRegistry) -> bool:
+    """Reject a worker whose game object was removed or replaced in the registry."""
+    try:
+        return registry.get(game.game_id) is game
+    except GameNotFoundError:
+        return False
+
+
 async def _bot_drive_worker(game: ManagedGame, registry: GameRegistry) -> None:
     """Drive bot decisions until the next work belongs to a human or the game ends.
 
@@ -466,7 +491,7 @@ async def _bot_drive_worker(game: ManagedGame, registry: GameRegistry) -> None:
         # exit cleanly. Every subsequent locked section re-checks this so a
         # remove landing mid-iteration halts progress before any side
         # effect leaks past the tombstone.
-        if game.removed:
+        if game.removed or not _registry_still_owns(game, registry):
             return
         # Defense-in-depth: even though :func:`schedule_bot_drive` gates
         # spawning on the runnable-state invariant, the state may have
@@ -480,9 +505,12 @@ async def _bot_drive_worker(game: ManagedGame, registry: GameRegistry) -> None:
         # ------------------------------------------------------------------ #
         # 1. Snapshot under game.lock.
         # ------------------------------------------------------------------ #
+        build_game: _AgentBuildGame | None = None
+        build_session: GameSession | None = None
+        build_specs: dict[str, Any] | None = None
         try:
             async with game.lock:
-                if game.removed:
+                if game.removed or not _registry_still_owns(game, registry):
                     return
                 if not _is_runnable_for_bots(game):
                     return
@@ -490,13 +518,57 @@ async def _bot_drive_worker(game: ManagedGame, registry: GameRegistry) -> None:
                     return
                 cloned_state = clone_state(game.session.state)
                 cloned_last_result = _snapshot_last_result(game.last_result)
-                # Snapshot the agents mapping too — a mid-drive reconfig of
-                # ``bot_specs`` would rebuild ``_bot_agents`` on
-                # the next call, but this iteration operates on the map we
-                # saw under the lock so the stale-check has a fixed target.
-                agents = dict(bot_factory.get_or_build_agents(game))
+                if game._bot_agents is None:
+                    # Loading a learned runtime may inspect files and import
+                    # Torch. Build against detached snapshots after releasing
+                    # the lock; never let get_or_build_agents mutate the live
+                    # game before publication checks run.
+                    build_session = game.session
+                    build_specs = dict(game.bot_specs)
+                    build_game = _AgentBuildGame(
+                        game_id=game.game_id,
+                        bot_specs=build_specs,
+                        session=SimpleNamespace(state=cloned_state),
+                    )
+                else:
+                    # Snapshot the mapping so this iteration has a fixed
+                    # ownership target for stale decision validation.
+                    agents = dict(game._bot_agents)
         except asyncio.CancelledError:
             raise
+
+        if build_game is not None:
+            try:
+                built_agents = await asyncio.to_thread(
+                    bot_factory.get_or_build_agents, build_game
+                )
+            except asyncio.CancelledError:
+                # The detached build may continue in its executor thread, but
+                # it has no reference to the live game and cannot publish an
+                # orphan cache after removal/shutdown.
+                raise
+            except Exception:
+                logger.exception(
+                    "Bot agent construction failed for game %s; halting drive",
+                    game.game_id,
+                )
+                return
+
+            async with game.lock:
+                if game.removed or not _registry_still_owns(game, registry):
+                    return
+                if not _is_runnable_for_bots(game):
+                    return
+                if game.session is not build_session or game.bot_specs != build_specs:
+                    # A restore/reconfiguration replaced the construction
+                    # snapshot. Discard it and rebuild from the current game.
+                    continue
+                if game._bot_agents is None:
+                    game._bot_agents = dict(built_agents)
+            # Agent loading may have taken long enough for normal game state
+            # to move. Resnapshot before asking the newly published agents to
+            # decide; never compute from the pre-load clone.
+            continue
 
         # ------------------------------------------------------------------ #
         # 2. Compute decision outside locks, on isolated snapshot objects.

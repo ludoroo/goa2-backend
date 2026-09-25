@@ -1,0 +1,201 @@
+# AI search and learned runtime architecture
+
+## Implementation status
+
+- **PR1 complete:** classic runtime, ISMCTS contracts, fallback wrappers, and
+  bounded server lifecycle.
+- **PR2 implemented:** information-safe observations; architecture-neutral
+  `automata.models.contracts` and shared-encoder tensor schemas;
+  joint model, batching, artifact, `SharedEncoderRuntime`, and serving cache;
+  `LearnedSearchPolicy` and `LearnedLeafEvaluator`; independent
+  `policy_source`/`value_source` server composition.
+- **PR3 deferred:** alternative policy-only, shallow, and multiply algorithms,
+  plus all evaluation, training, generation, replay, self-play, arena,
+  promotion, curriculum, CLI, and harness work.
+
+## Scope
+
+This plan defines the product runtime for classic bots and the stable seams a
+later Learned component can implement. Public architecture is
+**Learned-model-neutral** and uses **Learned**
+(`L`), not a framework or model-family name. PR1 contains no training,
+trajectory, model, observation-encoding, or ML framework dependency.
+
+## Module boundaries
+
+| Boundary | Contract/protocol home | Concrete implementation home |
+|---|---|---|
+| Agents | `automata.agents.contracts` | `random_agent`, `heuristic_agent`, `ismcts_agent` |
+| Learned models | `automata.models.contracts.{observation,candidates,inference,artifacts,compatibility,serialization}` | `automata.models.shared_encoder` |
+| Shared-encoder artifacts | neutral errors, scope, and runtime requirements in `automata.models.contracts.artifacts` | manifest and IO in `automata.models.shared_encoder.artifacts` |
+| Tensor schema/vectorizer | — | `automata.models.shared_encoder.schema.feature_schema` |
+| Observations | `automata.decision.DecisionDescriptor` | `automata.observation.graph.encoder`, `automata.observation.decision_encoder`, `automata.observation.projector` |
+| Hero adapters | `automata.observation.hero_adapters.protocol` | `automata.observation.hero_adapters.registry` |
+| Search components | `automata.search.contracts` | `automata.search.heuristic`, `fallback`, `learned`, `ismcts` |
+
+Artifact errors, scope, and runtime requirements are model contracts. The concrete
+manifest, tensor/file inventory, and artifact export/loading are specific to the
+shared-encoder implementation. Observation code consumes the neutral decision descriptor and
+does not import the concrete ISMCTS implementation.
+
+## Product closure in PR1
+
+- `automata.agents`: the `Agent` protocol plus Random and Heuristic agents.
+- `automata.runtime`: isolated clone, information-safe determinization, effect
+  registration, and the decision driver.
+- `automata.search`: classic single-perspective ISMCTS with strict
+  `RootTarget` and canonical legal-root validation.
+- `goa2.server`: persisted Random/Heuristic/ISMCTS bot specs, bounded compute,
+  one coordinator per game, and the ordinary save/log/replay/clock/broadcast
+  mutation paths.
+- Permanent public card-reveal knowledge sufficient to sample hidden upgraded
+  loadouts without inspecting an opponent's private cards.
+
+In PR1, the package boundary deliberately excluded `automata.models`,
+`automata.observation`, learned policy/value implementations, Torch, and other
+ML dependencies. PR2 adds those runtime pieces while still excluding
+evaluation/training harnesses.
+
+## Stable search context
+
+`SearchContext` is immutable. It has:
+
+- `root_viewer_id`: fixed for an entire search and used as the information-set
+  viewer;
+- `perspective_team`: fixed score perspective;
+- `current_owner_id`: concrete hero representing the current decision owner;
+- `decision`: the live `DecisionDescriptor`, including the exact pending
+  `InputRequest` or planning hero and second-card eligibility.
+
+Tree traversal uses `context.for_decision(...)`, producing a new context with
+the live decision and its owner. It never reconstructs pending input from
+`state.input_stack`, which the engine does not populate. Team-scoped requests
+use an eligible hero as their owner without widening the root viewer's access.
+It never changes the root viewer or score perspective. This prevents
+allied/opponent decisions from accidentally changing what hidden information
+the search may observe or which side a value favors.
+
+## Policy contract
+
+`SearchPolicy.score(context, state, legal_actions)` returns `PolicyScores`:
+
+- actions exactly equal the supplied legal actions, in the same order;
+- one finite score per action;
+- explicit `LOGITS` or `PROBABILITIES` semantics;
+- probabilities are non-negative and sum to one.
+
+The policy cannot add, remove, deduplicate, or reorder legality. Classic
+Heuristic policy and a future Learned policy therefore share one checked
+boundary. The search may rank a copy for expansion but retains canonical legal
+order for result alignment and tie breaking.
+
+## Leaf contract
+
+`LeafEvaluator.evaluate(context, state)` returns a `LeafEvaluation` containing
+a finite normalized value in `[-1, 1]`, positive for
+`context.perspective_team`. The Pydantic model validates this contract at every
+evaluator boundary.
+
+`LeafMode` is explicit:
+
+- `IMMEDIATE`: evaluate the state reached by expansion;
+- `BOUNDED_CONTINUATION`: advance with `continuation_policy` to the configured
+  round bound, then evaluate.
+
+`environment_policy` and `continuation_policy` are separate. The environment
+policy resolves decisions outside the controlled information set. The
+continuation policy chooses controlled actions only during bounded leaf
+continuation. They may be configured independently.
+
+## Composition matrix
+
+`H` means the classic Heuristic component and `L` means a Learned component.
+The server exposes the following matrix without coupling policy and value. In
+L/L, both adapters share one `SharedEncoderRuntime`:
+
+| `policy_source` | `value_source` | Purpose |
+|---|---|---|
+| H | H | fully classic baseline |
+| L | H | Learned expansion/ranking with heuristic leaf |
+| H | L | heuristic policy with Learned leaf |
+| L | L | shared-runtime Learned policy and value |
+
+The environment remains H in this first product architecture so opponent
+behavior is a fixed search assumption. PR1 used a fake L implementation in
+contract tests; PR2 ships the Learned runtime adapters described above.
+
+## Availability and fallback
+
+Optional components declare only two recoverable failures:
+
+- `ComponentUnavailableError`: component/artifact/runtime is unavailable;
+- `ComponentInferenceError`: an otherwise available component cannot score the
+  request.
+
+`FallbackSearchPolicy` and `FallbackLeafEvaluator` catch exactly those errors.
+Programming errors, invalid candidate alignment, non-finite values, and other
+exceptions propagate. This prevents fallback from concealing correctness bugs.
+
+Server-level bounded compute separately protects the whole expensive agent
+call with a process-wide concurrency limit, queue timeout, decision timeout,
+output revalidation, and a cached Heuristic fallback. Search also checks its
+monotonic deadline cooperatively between iterations and engine advances and
+caps the advances within a simulation. A cooperative deadline reserves a small
+margin before the coordinator's hard timeout: if any iterations completed,
+search returns the most-visited fully evaluated legal move rather than discarding
+that work. With no completed visits, the normal heuristic fallback still applies;
+advance-limit and contract failures are not suppressed. Simulation sessions skip rollback
+snapshot serialization without changing rollback boundary or confirmation rules.
+
+Artifact construction failures (missing optional dependencies, missing or
+invalid artifacts, and unsafe resolved paths) are logged and replace the
+unavailable learned components with heuristics before observation encoding.
+The requested bot specification remains persisted for a future restart.
+
+## Statistics
+
+`RunningStatistics` is a model-independent online accumulator for count, mean,
+and population variance. Search statistics remain in the classic package and
+do not depend on observation or inference code.
+
+## Information safety
+
+Determinization clones the authoritative state and samples only facts unknown
+to the fixed root viewer. The viewer's own commitment is retained. Opponent
+facedown commitments and loadout hypotheses are sampled from legal candidates
+consistent with permanent public reveals, public item aggregates, and public
+card lifecycle. Revelation, public discard, direct hand reveal, and card-guess
+resolution are the authoritative reveal hooks. Unsupported/nonstandard
+loadouts fail closed rather than reading private card identity.
+
+## Server lifecycle
+
+`BotSpec` is persisted; live agents, tasks, fallback agents, and futures are
+runtime-only. The coordinator:
+
+1. clones state and result under the game lock;
+2. builds agents/runtimes in a worker thread outside locks, publishing the cache
+   only if the game/session/configuration still matches, then resnapshots state
+   and computes decisions outside locks;
+3. revalidates ownership, request identity, and legality on live state;
+4. applies one decision through `GameSession` under the established lock order;
+5. reuses ordinary clock finalization, save, log, replay, and scoped broadcast;
+6. schedules idempotently from create/restore, REST, WebSocket, and timeout
+   completion paths.
+
+ISMCTS exposes bounded iterations and wall-clock timeout, independent
+policy/value sources, leaf mode, and continuation horizon. The default leaf mode
+remains `bounded_continuation`; `immediate` must be requested explicitly.
+Search constants, widening, and exploration remain internal.
+
+Observation projection uses a shallow neutral-topology view rather than cloning
+the entire game. Hex adjacency uses six-neighbor lookup instead of an all-pairs
+scan. No map-ID-only cache is used: geometry and moving topology effects are
+read from each snapshot.
+
+## Future PRs
+
+PR2 provides the implementation-specific `SharedEncoderRuntime`, observation encoder,
+artifact loading, and batching. They adapt through `LearnedSearchPolicy` and
+`LearnedLeafEvaluator` and do not alter root identity, legality, score
+semantics, fallback rules, or server lifecycle. Training remains out of scope.

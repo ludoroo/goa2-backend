@@ -139,12 +139,36 @@ def _branchable(request: InputRequest) -> bool:
     return bool(request.options)
 
 
-def _decision_owner_id(decision: DecisionDescriptor, fallback: str) -> str:
+def _decision_owner_id(
+    state: GameState, decision: DecisionDescriptor, context: SearchContext
+) -> str:
+    """Resolve the concrete hero making ``decision`` without changing visibility."""
     if decision.hero is not None:
         return str(decision.hero.id)
-    if decision.request is not None:
-        return decision.request.player_id
-    return fallback
+    if decision.request is None:
+        return context.current_owner_id
+
+    player_id = decision.request.player_id
+    if not player_id.startswith("team:"):
+        return player_id
+
+    addressed_team = _team_of_player(state, player_id)
+    if addressed_team is None:
+        raise ValueError(f"unknown team-scoped request owner {player_id!r}")
+    for candidate_id in (context.root_viewer_id, context.current_owner_id):
+        candidate = state.get_hero(HeroID(candidate_id))
+        if candidate is not None and candidate.team == addressed_team:
+            return candidate_id
+    raise ValueError(f"no eligible decision owner for team-scoped request {player_id!r}")
+
+
+def _context_for_decision(
+    context: SearchContext, state: GameState, decision: DecisionDescriptor
+) -> SearchContext:
+    return context.for_decision(
+        decision,
+        owner_id=_decision_owner_id(state, decision, context),
+    )
 
 
 def legal_keys(decision: DecisionDescriptor) -> list[Key]:
@@ -426,7 +450,16 @@ def _rollout(
         decisions += 1
     if decision.is_terminal:
         return terminal_reward(decision.winner, sim.our_team)
-    leaf_context = context.for_owner(_decision_owner_id(decision, context.current_owner_id))
+
+    # Forced planning passes are engine transitions, not model decisions. Move
+    # through them before evaluating so a learned leaf always receives at least
+    # one real candidate rather than fabricating an empty observation.
+    while not decision.is_terminal and not legal_keys(decision):
+        decision = sim.apply_ours(decision, None)
+    if decision.is_terminal:
+        return terminal_reward(decision.winner, sim.our_team)
+
+    leaf_context = _context_for_decision(context, sim.state, decision)
     active_value = leaf_evaluator.evaluate(leaf_context, sim.state).value
     reward = _value_to_reward(active_value)
     if cutoff_observer is not None:
@@ -475,6 +508,7 @@ def _simulate(
         root_viewer_id=root_target.decision_owner_hero_id,
         perspective_team=our_team,
         current_owner_id=root_target.decision_owner_hero_id,
+        decision=decision,
     )
 
     node = root
@@ -490,8 +524,7 @@ def _simulate(
 
         # One policy call per node visit: its ordering drives expansion, its
         # (normalized) weights drive PUCT selection.
-        owner_id = _decision_owner_id(decision, context.current_owner_id)
-        current_context = context.for_owner(owner_id)
+        current_context = _context_for_decision(context, sim.state, decision)
         pol = score_policy(prior, current_context, sim.state, legal) if prior is not None else None
         weights = dict(zip(legal, pol.scores, strict=True)) if pol is not None else None
 
@@ -616,8 +649,11 @@ def search(
     # ``root_legal`` against the canonical legal set. The clone is discarded
     # after — the multi-key path builds fresh determinized worlds per
     # iteration inside ``_simulate``.
+    # Leave a cooperative grace margin for the last engine/inference call and
+    # result delivery before the coordinator's hard timeout. Calls themselves
+    # cannot be preempted; the outer bound remains the final safety net.
     deadline = (
-        time.monotonic() + cfg.decision_timeout_seconds
+        time.monotonic() + cfg.decision_timeout_seconds * 0.9
         if cfg.decision_timeout_seconds is not None
         else None
     )
@@ -641,22 +677,29 @@ def search(
     evaluator = leaf_evaluator or HeuristicLeafEvaluator()
     continuation = continuation_policy or environment_policy
     rng = random.Random(cfg.seed)
-    for _ in range(cfg.iterations):
-        _check_deadline(deadline)
-        _simulate(
-            root,
-            state,
-            root_target,
-            our_team,
-            environment_policy,
-            cfg,
-            rng,
-            continuation,
-            evaluator,
-            prior,
-            cutoff_observer=cutoff_observer,
-            deadline=deadline,
-        )
+    try:
+        for _ in range(cfg.iterations):
+            _check_deadline(deadline)
+            _simulate(
+                root,
+                state,
+                root_target,
+                our_team,
+                environment_policy,
+                cfg,
+                rng,
+                continuation,
+                evaluator,
+                prior,
+                cutoff_observer=cutoff_observer,
+                deadline=deadline,
+            )
+    except SearchDeadlineExceeded:
+        # Back-propagation only happens after a complete evaluation. An
+        # interrupted iteration may add an unvisited child, but must not
+        # discard the useful, fully evaluated visits already in the tree.
+        if root.visits == 0:
+            raise
 
     # Robust child: most-visited legal root action (ties -> highest Q).
     # ``max`` iterates in the caller's order, so ties break toward earlier

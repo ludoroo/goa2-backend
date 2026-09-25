@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -12,6 +13,10 @@ from goa2.domain.models import GamePhase
 from goa2.engine.session import SessionResult, SessionResultType
 from goa2.server import app as app_module
 from goa2.server import bots, replay
+
+
+def _registry_for(game):
+    return SimpleNamespace(get=lambda _game_id: game)
 
 
 def test_bot_winner_result_verifies_the_recorded_replay_once(monkeypatch, tmp_path) -> None:
@@ -44,6 +49,7 @@ def test_stale_apply_resnapshots_instead_of_losing_the_bot_wakeup(monkeypatch) -
             lock=asyncio.Lock(),
             session=SimpleNamespace(state=state),
             last_result=None,
+            _bot_agents=None,
         )
         agents = {"hero_wasp": object()}
         decision = object()
@@ -69,7 +75,7 @@ def test_stale_apply_resnapshots_instead_of_losing_the_bot_wakeup(monkeypatch) -
         monkeypatch.setattr(bots, "_apply_bot_decision", apply)
         monkeypatch.setattr(bots, "_pace_before_next_bot_mutation", AsyncMock())
 
-        await bots._bot_drive_worker(cast(Any, game), cast(Any, object()))
+        await bots._bot_drive_worker(cast(Any, game), cast(Any, _registry_for(game)))
 
         assert inspect.await_count == 2
         assert apply.await_count == 2
@@ -87,6 +93,7 @@ def test_failed_apply_still_stops_instead_of_tight_looping(monkeypatch) -> None:
             lock=asyncio.Lock(),
             session=SimpleNamespace(state=state),
             last_result=None,
+            _bot_agents=None,
         )
         inspect = AsyncMock(return_value=object())
         apply = AsyncMock(return_value=bots._ApplyDecisionOutcome.failed())
@@ -103,10 +110,186 @@ def test_failed_apply_still_stops_instead_of_tight_looping(monkeypatch) -> None:
         )
         monkeypatch.setattr(bots, "_apply_bot_decision", apply)
 
-        await bots._bot_drive_worker(cast(Any, game), cast(Any, object()))
+        await bots._bot_drive_worker(cast(Any, game), cast(Any, _registry_for(game)))
 
         assert inspect.await_count == 1
         assert apply.await_count == 1
+
+    asyncio.run(scenario())
+
+
+def test_slow_agent_loader_does_not_block_the_event_loop_or_game_lock(monkeypatch) -> None:
+    async def scenario() -> None:
+        state = SimpleNamespace(phase=GamePhase.PLANNING, clock=None)
+        game = SimpleNamespace(
+            game_id="slow-loader",
+            bot_specs={"hero_wasp": object()},
+            removed=False,
+            lock=asyncio.Lock(),
+            session=SimpleNamespace(state=state),
+            last_result=None,
+            _bot_agents=None,
+        )
+        agents = {"hero_wasp": object()}
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        timed_out = False
+
+        def slow_loader(build_game):
+            nonlocal timed_out
+            loop.call_soon_threadsafe(started.set)
+            if not release.wait(timeout=5):
+                timed_out = True
+            build_game._bot_agents = agents
+            return agents
+
+        terminal = SessionResult(
+            result_type=SessionResultType.GAME_OVER,
+            current_phase=GamePhase.GAME_OVER,
+            winner="RED",
+        )
+        monkeypatch.setattr(bots, "clone_state", lambda value: value)
+        monkeypatch.setattr(bots.bot_factory, "get_or_build_agents", slow_loader)
+        monkeypatch.setattr(
+            bots.bounded_compute,
+            "bounded_inspect_next_decision",
+            AsyncMock(return_value=object()),
+        )
+        monkeypatch.setattr(
+            bots,
+            "_apply_bot_decision",
+            AsyncMock(return_value=bots._ApplyDecisionOutcome.success(terminal)),
+        )
+        monkeypatch.setattr(bots, "_pace_before_next_bot_mutation", AsyncMock())
+
+        worker = asyncio.create_task(
+            bots._bot_drive_worker(cast(Any, game), cast(Any, _registry_for(game)))
+        )
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            assert not game.lock.locked()
+        finally:
+            release.set()
+        await worker
+
+        assert not timed_out
+        assert game._bot_agents is not None
+
+    asyncio.run(scenario())
+
+
+def test_removed_game_does_not_publish_agents_built_from_orphan_snapshot(monkeypatch) -> None:
+    async def scenario() -> None:
+        state = SimpleNamespace(phase=GamePhase.PLANNING, clock=None)
+        game = SimpleNamespace(
+            game_id="removed-during-load",
+            bot_specs={"hero_wasp": object()},
+            removed=False,
+            lock=asyncio.Lock(),
+            session=SimpleNamespace(state=state),
+            last_result=None,
+            _bot_agents=None,
+        )
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        built = {"hero_wasp": object()}
+
+        def slow_loader(build_game):
+            loop.call_soon_threadsafe(started.set)
+            release.wait(timeout=5)
+            build_game._bot_agents = built
+            return built
+
+        inspect = AsyncMock()
+        monkeypatch.setattr(bots, "clone_state", lambda value: value)
+        monkeypatch.setattr(bots.bot_factory, "get_or_build_agents", slow_loader)
+        monkeypatch.setattr(
+            bots.bounded_compute,
+            "bounded_inspect_next_decision",
+            inspect,
+        )
+
+        worker = asyncio.create_task(
+            bots._bot_drive_worker(cast(Any, game), cast(Any, _registry_for(game)))
+        )
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            game.removed = True
+        finally:
+            release.set()
+        await worker
+
+        assert game._bot_agents is None
+        inspect.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
+def test_reconfigured_game_discards_stale_agent_build_before_publication(monkeypatch) -> None:
+    async def scenario() -> None:
+        state = SimpleNamespace(phase=GamePhase.PLANNING, clock=None)
+        old_spec = object()
+        new_spec = object()
+        old_agents = {"hero_wasp": object()}
+        new_agents = {"hero_wasp": object()}
+        game = SimpleNamespace(
+            game_id="reconfigured-during-load",
+            bot_specs={"hero_wasp": old_spec},
+            removed=False,
+            lock=asyncio.Lock(),
+            session=SimpleNamespace(state=state),
+            last_result=None,
+            _bot_agents=None,
+        )
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+
+        def loader(build_game):
+            if build_game.bot_specs["hero_wasp"] is old_spec:
+                loop.call_soon_threadsafe(started.set)
+                release.wait(timeout=5)
+                built = old_agents
+            else:
+                built = new_agents
+            build_game._bot_agents = built
+            return built
+
+        terminal = SessionResult(
+            result_type=SessionResultType.GAME_OVER,
+            current_phase=GamePhase.GAME_OVER,
+            winner="RED",
+        )
+        inspect = AsyncMock(return_value=object())
+        monkeypatch.setattr(bots, "clone_state", lambda value: value)
+        monkeypatch.setattr(bots.bot_factory, "get_or_build_agents", loader)
+        monkeypatch.setattr(
+            bots.bounded_compute,
+            "bounded_inspect_next_decision",
+            inspect,
+        )
+        monkeypatch.setattr(
+            bots,
+            "_apply_bot_decision",
+            AsyncMock(return_value=bots._ApplyDecisionOutcome.success(terminal)),
+        )
+        monkeypatch.setattr(bots, "_pace_before_next_bot_mutation", AsyncMock())
+
+        worker = asyncio.create_task(
+            bots._bot_drive_worker(cast(Any, game), cast(Any, _registry_for(game)))
+        )
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            game.bot_specs = {"hero_wasp": new_spec}
+        finally:
+            release.set()
+        await worker
+
+        assert game._bot_agents is not old_agents
+        assert game._bot_agents == new_agents
+        assert inspect.await_args.args[2] == new_agents
 
     asyncio.run(scenario())
 
