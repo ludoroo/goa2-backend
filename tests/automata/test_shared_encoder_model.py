@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from automata.decision import DecisionDescriptor as Decision
-from automata.models import DecisionObservation
+from automata.models.contracts import DecisionObservation
 from automata.models.shared_encoder.batching import DecisionBatch, collate_decisions, masked_softmax
 from automata.models.shared_encoder.model import JointModelConfig, JointPolicyValueModel
 from automata.models.shared_encoder.schema import TensorFeatureSchema
@@ -131,7 +131,7 @@ def schema() -> TensorFeatureSchema:
 
 def _config(schema: TensorFeatureSchema, **changes: Any) -> JointModelConfig:
     values = {
-        "model_version": 1,
+        "model_version": 2,
         "schema_digest": schema.digest,
         "token_width": 16,
         "state_width": 24,
@@ -206,6 +206,29 @@ def test_train_mode_for_all_candidate_families_has_finite_forward_and_backward(
         and torch.count_nonzero(parameter.grad)
         for parameter in model.parameters()
     )
+
+
+def test_batched_model_can_distinguish_open_world_option_candidate_ids(
+    schema: TensorFeatureSchema,
+) -> None:
+    state = _state()
+    observations = [
+        _encode(
+            state,
+            Decision(
+                "INPUT",
+                request=_request(InputRequestType.SELECT_OPTION, [candidate_id]),
+            ),
+        )
+        for candidate_id in ("hold", "future-extension:teleport")
+    ]
+    batch = _batch(schema, observations)
+
+    output = _model(schema)(batch)
+
+    assert batch.candidate_ids[0] != batch.candidate_ids[1]
+    assert not torch.equal(batch.candidates.numeric[0, 0], batch.candidates.numeric[1, 0])
+    assert not torch.isclose(output.policy_logits[0, 0], output.policy_logits[1, 0])
 
 
 def test_candidate_permutation_only_permutes_logits(schema: TensorFeatureSchema) -> None:
@@ -487,13 +510,45 @@ def test_eval_initialization_is_seed_deterministic(schema: TensorFeatureSchema) 
     assert torch.equal(first.value, second.value)
 
 
+def test_decision_context_is_one_shared_row_and_reaches_both_heads(
+    schema: TensorFeatureSchema,
+) -> None:
+    observation = _unit_observation()
+    batch = _batch(schema, [observation])
+    assert batch.decision_context is not None
+    assert batch.decision_context.mask.shape == (1, 1)
+    assert batch.decision_context.mask.all()
+
+    model = _model(schema)
+    groups = model.parameter_groups()
+    decision_parameter_ids = {id(parameter) for parameter in model.decision_encoder.parameters()}
+    assert decision_parameter_ids <= {id(parameter) for parameter in groups["shared"]}
+
+    for loss_name in ("policy", "value"):
+        model.zero_grad(set_to_none=True)
+        output = model(batch)
+        loss = output.policy_logits.sum() if loss_name == "policy" else output.value.sum()
+        loss.backward()
+        assert any(
+            parameter.grad is not None and parameter.grad.abs().sum().item() > 0
+            for parameter in model.decision_encoder.parameters()
+        )
+
+
 def test_config_is_versioned_and_rejects_invalid_dimensions_or_schema(
     schema: TensorFeatureSchema,
 ) -> None:
     config = _config(schema)
-    assert config.model_version == 1
+    assert config.model_version == 2
     assert config.schema_digest == schema.digest
 
+    with pytest.raises(ValueError, match="unsupported model/tensor schema identity"):
+        _config(
+            schema,
+            model_version=1,
+            schema_id="goa2-tensor-features-v1",
+            schema_version=1,
+        )
     for field in ("token_width", "state_width", "candidate_width"):
         with pytest.raises(ValueError):
             _config(schema, **{field: 0})

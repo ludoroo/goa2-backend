@@ -21,7 +21,8 @@ from collections.abc import Sequence
 from typing import Any
 
 from automata.search.config import PROD_DEFAULT_DECISION_TIMEOUT_SECONDS, SearchConfig
-from automata.search.contracts import LeafEvaluator, SearchPolicy
+from automata.search.continuation import AgentContinuationPolicy, as_continuation_policy
+from automata.search.contracts import ContinuationPolicy, LeafEvaluator, SearchPolicy
 from automata.search.heuristic import HeuristicLeafEvaluator, HeuristicPrior
 from automata.search.ismcts.engine import (
     CutoffObserver,
@@ -61,7 +62,7 @@ class ISMCTSAgent:
         config: SearchConfig | None = None,
         *,
         environment_policy: Agent | None = None,
-        continuation_policy: Agent | None = None,
+        continuation_policy: ContinuationPolicy | Agent | None = None,
         leaf_evaluator: LeafEvaluator | None = None,
         cutoff_observer: CutoffObserver | None = None,
         prior: SearchPolicy | None = None,
@@ -71,9 +72,13 @@ class ISMCTSAgent:
         if prior is not None and not self._cfg.use_prior:
             raise ValueError("an explicit prior cannot be used when use_prior=False")
         self._policy: Agent = environment_policy or HeuristicAgent(self._cfg.seed)
-        self._continuation_policy = continuation_policy or self._policy
+        self._continuation_policy = (
+            AgentContinuationPolicy(self._policy)
+            if continuation_policy is None
+            else as_continuation_policy(continuation_policy)
+        )
         # Leaf value estimate at the rollout cutoff. Swappable for a learned
-        # value model (Rung 2) without touching the search loop.
+        # value model without touching the search loop.
         self._leaf_evaluator: LeafEvaluator = leaf_evaluator or HeuristicLeafEvaluator()
         self._cutoff_observer = cutoff_observer
         # Expansion prior reuses the heuristic scorers so widening surfaces
@@ -260,6 +265,7 @@ class ISMCTSAgent:
             player_id=pid,
             owned_hero_ids=owned_hero_ids,
             decision_owner_hero_id=decision_owner_hero_id,
+            request=request,
         )
         strategy_result = self._select(state, owner.team, target, legal)
         selected_key = strategy_result.selected_candidate

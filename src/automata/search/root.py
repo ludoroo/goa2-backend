@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from goa2.domain.input import InputRequest
@@ -29,12 +29,20 @@ class RootDecision(Protocol):
 
 @dataclass(frozen=True)
 class RootTarget:
+    """Identity anchor for a search root, plus its surfaced INPUT payload.
+
+    ``request`` is optional for backwards-compatible manual targets. Simulation
+    matching remains based on ``request_id`` and ``player_id``; consumers that
+    need the exact predecision payload must fail closed when it is unavailable.
+    """
+
     kind: RootKind
     owned_hero_ids: frozenset[str]
     decision_owner_hero_id: str
     hero_id: str | None = None
     request_id: str | None = None
     player_id: str | None = None
+    request: InputRequest | None = field(default=None, compare=False, hash=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.owned_hero_ids:
@@ -46,13 +54,21 @@ class RootTarget:
         if self.kind == "CARD":
             if self.hero_id is None or self.hero_id not in self.owned_hero_ids:
                 raise ValueError("CARD RootTarget requires an owned hero_id")
-            if self.request_id is not None or self.player_id is not None:
-                raise ValueError("CARD RootTarget must not carry request_id/player_id")
+            if (
+                self.request_id is not None
+                or self.player_id is not None
+                or self.request is not None
+            ):
+                raise ValueError("CARD RootTarget must not carry request data")
         elif self.kind == "INPUT":
             if self.request_id is None or self.player_id is None:
                 raise ValueError("INPUT RootTarget requires request_id and player_id")
             if self.hero_id is not None:
                 raise ValueError("INPUT RootTarget must not carry hero_id")
+            if self.request is not None and (
+                self.request.id != self.request_id or self.request.player_id != self.player_id
+            ):
+                raise ValueError("INPUT RootTarget request does not match request_id/player_id")
         else:
             raise ValueError(f"Unknown RootTarget kind: {self.kind!r}")
 
@@ -68,6 +84,7 @@ class RootTarget:
         player_id: str,
         owned_hero_ids: frozenset[str],
         decision_owner_hero_id: str | None = None,
+        request: InputRequest | None = None,
     ) -> RootTarget:
         if decision_owner_hero_id is None:
             raise ValueError("INPUT RootTarget requires a decision owner")
@@ -77,6 +94,7 @@ class RootTarget:
             decision_owner_hero_id,
             request_id=request_id,
             player_id=player_id,
+            request=request,
         )
 
     def matches(self, decision: RootDecision) -> bool:
