@@ -232,7 +232,10 @@ def test_rollout_uses_policy_key_through_apply_ours_for_synthetic_skip() -> None
 
     class Simulator:
         def __init__(self) -> None:
-            self.state = SimpleNamespace(round=1)
+            self.state = SimpleNamespace(
+                round=1,
+                teams={TeamColor.RED: object(), TeamColor.BLUE: object()},
+            )
             self.our_team = TeamColor.RED
             self.applied = []
 
