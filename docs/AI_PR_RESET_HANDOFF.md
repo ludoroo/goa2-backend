@@ -3,9 +3,9 @@
 ## Recommendation
 
 PRs **#3 and #4 are merged**. The verified integration base is
-`851f96a480dd0fcd48c21a95dec30c3536110b2f`. **Hold #6 for rework** around the clean
-Gen1 learning contract. **Replace #7**, retaining its useful correctness and
-operational work rather than merging its historical recipe unchanged.
+`851f96a480dd0fcd48c21a95dec30c3536110b2f`. PRs **#6 and #7 are closed as
+superseded, not merged**. Their useful code and engine fixes are preserved in
+draft replacements **#8 → #9 → #10**; their source branches remain intact.
 
 The original recommendation was a scope/dependency assessment, not a merge
 approval. Fresh verification of the merged foundation is recorded below. Neither
@@ -16,16 +16,35 @@ The experiment history and reset direction are in
 [AI_EXPERIMENT_JOURNAL.md](AI_EXPERIMENT_JOURNAL.md). The active implementation
 checklist is in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md).
 
-## Current checkpoint — 2026-09-25
+## Published replacement stack — 2026-09-25
 
-**Integration complete locally:** `ai-gen1-integration` is based directly on
+| Draft | Branch → base | Scope |
+|---|---|---|
+| [#8](https://github.com/ludoroo/goa2-backend/pull/8) | `ai-gen1-engine-foundation` → `main` | Engine progression, boundary hooks, registry and replay safety |
+| [#9](https://github.com/ludoroo/goa2-backend/pull/9) | `ai-gen1-runtime-foundation` → `ai-gen1-engine-foundation` | Native model/runtime, explicit context, guarded search |
+| [#10](https://github.com/ludoroo/goa2-backend/pull/10) | `ai-gen1-integration` → `ai-gen1-runtime-foundation` | Offline foundations, evidence safeguards, reset documentation |
+
+Review/merge in dependency order; none was merged or marked ready automatically.
+#6/#7 were closed only after all three replacement links existed, with explanatory
+comments on both old PRs. Remote `ai-learned-harness` remains at `5c844f3`, and
+remote `ai-learned-self-play` remains at `a0f8181`. No branch or artifact was deleted.
+The first draft's exact source snapshot additionally passes **4,090 tests** on its
+own; runtime/model isolation and combined results are recorded below.
+
+This is published foundation salvage, **not a completed Gen1 learning loop**.
+Further Gen1 features follow these checkpoints rather than silently changing the
+meaning of the historical experiments.
+
+## Integration checkpoint — 2026-09-25
+
+**Integration complete and published as drafts:** `ai-gen1-integration` is based directly on
 `851f96a`; `ai-learned-self-play-next` preserves the reviewed source at `fc20bb9`.
-No worktree was moved and no published ref was changed. An explicit three-way
+No worktree was moved and no existing published history was rewritten. An explicit three-way
 source boundary (`2dd1772f8519`, the original #4 tree) carried the retained delta
 forward, rather than replaying the rewritten history. Thirteen conflicting files
 and the mechanically merged engine/server changes were reconciled and reviewed.
 
-| Local commit | Scope |
+| Integration commit | Scope |
 |---|---|
 | `f26d9a6` | Engine progression/boundaries, live-card rebinding, replay safety, and registry ownership |
 | `2af43f5` | Native model/runtime, explicit decision context, guarded search, and strict offline preset |
@@ -65,10 +84,10 @@ The following records the verified input checkpoints, not a combined-tree verdic
   `src/automata/search/contracts.py` and `src/goa2/server/bots.py`; no files were
   reformatted during verification. Existing untracked `data/evaluations/` in the
   primary checkout was left untouched; tracked files stayed clean.
-- #6 remains open at `5c844f3` (now targeting `main`); #7 remains open at `a0f8181`
-  (targeting `ai-learned-harness`). Their published heads and source refs are
-  preserved. The merged #3/#4 remote branches have been removed by the merge
-  thread. No push, shared-ref mutation, or integration was performed in this verification.
+- At the foundation verification, #6/#7 were still open at `5c844f3` / `a0f8181`.
+  They have since been closed as superseded; those source heads remain preserved.
+  The merged #3/#4 remote branches were removed by the merge thread. The original
+  verification itself did not push, mutate shared refs, or integrate changes.
 - **Identity caveat:** both merge commits have the private `ludoroo` author but a
   personal-email committer. Published history was not rewritten here. Changing
   those existing identities would require a separate explicit history decision;
@@ -138,8 +157,8 @@ into `ai-gen1-integration`; it does **not** rewrite the live #6/#7 PR branches.
 Feature implementation was paused for this cleanup. That source checkpoint passed
 **4,631 tests**, source Ruff/Black/mypy, and all seven
 documented CLI help checks. Production code is a net 1,940 lines smaller than
-the pre-tidy working tree. Changes are local commits listed above; none have
-been pushed from this thread.
+the pre-tidy working tree. The retained changes are now published through the
+replacement draft stack above; original source checkpoints remain preserved.
 
 | Group | Action | Preserved behavior |
 |---|---|---|
