@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import goa2.engine.step_types as _step_types  # noqa: F401 — patches model annotations
@@ -44,8 +45,12 @@ def submit_input(state: GameState, response: InputResponse | dict) -> None:
     current_step.pending_request_id = None
 
 
-def process_stack(state: GameState) -> StackResult:
-    """Process the execution stack, returning StackResult with events."""
+def process_stack(
+    state: GameState,
+    *,
+    stop_before_step: Callable[[GameState, GameStep], bool] | None = None,
+) -> StackResult:
+    """Process the stack, optionally stopping before an internal boundary step."""
     safety_counter = 0
     MAX_STEPS = 1000
     collected_events: list[GameEvent] = []
@@ -54,6 +59,8 @@ def process_stack(state: GameState) -> StackResult:
         return StackResult()
 
     while state.execution_stack:
+        if stop_before_step is not None and stop_before_step(state, state.execution_stack[-1]):
+            return StackResult(events=collected_events)
         safety_counter += 1
         if safety_counter > MAX_STEPS:
             raise RuntimeError("Infinite Loop detected in Engine Resolution Stack")

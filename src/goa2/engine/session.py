@@ -7,6 +7,7 @@ without touching execution_stack or calling internal functions.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
 
@@ -61,21 +62,32 @@ class GameSession:
     def current_phase(self) -> GamePhase:
         return self.state.phase
 
-    def commit_card(self, hero_id: HeroID, card: Card) -> SessionResult:
+    def commit_card(
+        self,
+        hero_id: HeroID,
+        card: Card,
+        *,
+        stop_before_step: Callable[[GameState, Any], bool] | None = None,
+    ) -> SessionResult:
         if self.state.phase != GamePhase.PLANNING:
             raise ValueError(f"Cannot commit card in {self.state.phase} phase")
         from goa2.engine.phases import commit_card as _commit_card
 
         _commit_card(self.state, hero_id, card)
-        return self._check_after_planning()
+        return self._check_after_planning(stop_before_step=stop_before_step)
 
-    def pass_turn(self, hero_id: HeroID) -> SessionResult:
+    def pass_turn(
+        self,
+        hero_id: HeroID,
+        *,
+        stop_before_step: Callable[[GameState, Any], bool] | None = None,
+    ) -> SessionResult:
         if self.state.phase != GamePhase.PLANNING:
             raise ValueError(f"Cannot pass in {self.state.phase} phase")
         from goa2.engine.phases import pass_turn as _pass_turn
 
         _pass_turn(self.state, hero_id)
-        return self._check_after_planning()
+        return self._check_after_planning(stop_before_step=stop_before_step)
 
     def uncommit_card(self, hero_id: HeroID) -> SessionResult:
         """Take a committed card back into hand during Planning (LIFO for a
@@ -87,7 +99,12 @@ class GameSession:
         _uncommit_card(self.state, hero_id)
         return self._check_after_planning()
 
-    def finish_planning(self, hero_id: HeroID) -> SessionResult:
+    def finish_planning(
+        self,
+        hero_id: HeroID,
+        *,
+        stop_before_step: Callable[[GameState, Any], bool] | None = None,
+    ) -> SessionResult:
         """Done-signal for a hero who may play two cards (Emmitt's ultimate)
         but chooses to play only one this turn."""
         if self.state.phase != GamePhase.PLANNING:
@@ -95,9 +112,14 @@ class GameSession:
         from goa2.engine.phases import finish_planning as _finish_planning
 
         _finish_planning(self.state, hero_id)
-        return self._check_after_planning()
+        return self._check_after_planning(stop_before_step=stop_before_step)
 
-    def advance(self, response: InputResponse | dict[str, Any] | None = None) -> SessionResult:
+    def advance(
+        self,
+        response: InputResponse | dict[str, Any] | None = None,
+        *,
+        stop_before_step: Callable[[GameState, Any], bool] | None = None,
+    ) -> SessionResult:
         if self.state.phase == GamePhase.PLANNING:
             raise ValueError("Cannot advance() during PLANNING. Use commit_card() or pass_turn().")
         from goa2.engine.handler import process_stack, submit_input
@@ -105,7 +127,22 @@ class GameSession:
         if response is not None:
             submit_input(self.state, response)
 
-        stack_result = process_stack(self.state)
+        stack_result = (
+            process_stack(self.state)
+            if stop_before_step is None
+            else process_stack(self.state, stop_before_step=stop_before_step)
+        )
+
+        if (
+            stack_result.input_request is None
+            and self.state.phase == GamePhase.RESOLUTION
+            and self.state.current_actor_id is None
+            and not self.state.execution_stack
+        ):
+            raise RuntimeError(
+                "RESOLUTION invariant violated: execution stack drained without "
+                "selecting an actor or transitioning phase"
+            )
 
         # Snapshot & rollback flag management
         self._manage_rollback(stack_result)
@@ -335,12 +372,20 @@ class GameSession:
         owner_id = self._resolution_owner_id()
         return owner_id is not None and self._rollback_actor_id == owner_id
 
-    def _check_after_planning(self) -> SessionResult:
+    def _check_after_planning(
+        self,
+        *,
+        stop_before_step: Callable[[GameState, Any], bool] | None = None,
+    ) -> SessionResult:
         """After a planning action, check if phase transitioned."""
         if self.state.phase != self._last_phase:
             from goa2.engine.handler import process_stack
 
-            stack_result = process_stack(self.state)
+            stack_result = (
+                process_stack(self.state)
+                if stop_before_step is None
+                else process_stack(self.state, stop_before_step=stop_before_step)
+            )
             self._manage_rollback(stack_result)
             result = self._build_result(stack_result.input_request, events=stack_result.events)
             self._last_phase = self.state.phase

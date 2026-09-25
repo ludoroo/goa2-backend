@@ -1,0 +1,11 @@
+{"v":1,"type":"setup","game_id":"a4d127776809","map":"forgotten_island","red":["Wasp","Xargatha"],"blue":["Brogan","Arien"],"game_type":"QUICK","cheats":false,"seed":219079381826483548378396946375625300547,"tie_breaker_team":null,"player_names":{},"time_control":null,"engine":"5c844f3","created_at":1789200374.612446,"ts":1789200374.612457}
+{"type":"commit","r":1,"t":1,"hero":"hero_xargatha","card":"threatening_slash","ts":1789200377.4304562}
+{"type":"commit","r":1,"t":1,"hero":"hero_brogan","card":"mad_dash","ts":1789200379.4552698}
+{"type":"commit","r":1,"t":1,"hero":"hero_arien","card":"dangerous_current","ts":1789200382.016334}
+{"type":"commit","r":1,"t":1,"hero":"hero_wasp","card":"stop_projectiles","ts":1789200391.0168161}
+{"type":"input","r":1,"t":1,"hero":"hero_arien","sel":"ATTACK","ts":1789200391.157534}
+{"type":"input","r":1,"t":1,"hero":"hero_xargatha","sel":"ATTACK","ts":1789200391.816352}
+{"type":"input","r":1,"t":1,"hero":"hero_brogan","sel":"ATTACK","ts":1789200392.51325}
+{"type":"input","r":1,"t":1,"hero":"hero_wasp","sel":"FAST_TRAVEL","ts":1789200404.954149}
+{"type":"input","r":1,"t":1,"hero":"hero_wasp","sel":{"q":4,"r":-10,"s":6},"ts":1789200410.2863722}
+{"type":"input","r":1,"t":1,"hero":"hero_wasp","sel":"CONFIRM","ts":1789200411.780129}

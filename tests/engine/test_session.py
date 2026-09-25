@@ -9,6 +9,7 @@ import pytest
 import goa2.scripts.arien_effects
 import goa2.scripts.wasp_effects  # noqa: F401
 from goa2.domain.board import Board
+from goa2.domain.events import GameEventType
 from goa2.domain.hex import Hex
 from goa2.domain.input import InputRequest, InputRequestType, InputResponse
 from goa2.domain.models import GamePhase, Team, TeamColor
@@ -19,7 +20,12 @@ from goa2.domain.types import HeroID
 from goa2.engine.handler import process_stack, push_steps, submit_input
 from goa2.engine.session import GameSession, SessionResult, SessionResultType
 from goa2.engine.setup import GameSetup
-from goa2.engine.steps import AskConfirmationStep, LogMessageStep, SelectStep
+from goa2.engine.steps import (
+    AskConfirmationStep,
+    FlipTieBreakerCoinStep,
+    LogMessageStep,
+    SelectStep,
+)
 
 
 @pytest.fixture
@@ -121,6 +127,20 @@ class TestProcessStack:
         stack_result = process_stack(empty_state)
         assert stack_result.input_request is None
 
+    def test_stop_before_step_retains_events_and_boundary_top(self, empty_state):
+        empty_state.tie_breaker_team = TeamColor.RED
+        boundary = LogMessageStep(message="boundary")
+        push_steps(empty_state, [FlipTieBreakerCoinStep(), boundary])
+
+        result = process_stack(
+            empty_state,
+            stop_before_step=lambda _state, step: step is boundary,
+        )
+
+        assert [event.event_type for event in result.events] == [GameEventType.TIE_BREAKER_FLIPPED]
+        assert empty_state.execution_stack == [boundary]
+        assert boundary.pending_input is None
+
 
 # =============================================================================
 # Task 2: SessionResult and GameSession
@@ -203,6 +223,39 @@ class TestGameSessionInit:
             SessionResultType.INPUT_NEEDED,
             SessionResultType.PHASE_CHANGED,
         )
+
+    def test_stop_before_step_retains_events_and_boundary_top(self, empty_state):
+        empty_state.tie_breaker_team = TeamColor.RED
+        boundary = LogMessageStep(message="boundary")
+        push_steps(empty_state, [FlipTieBreakerCoinStep(), boundary])
+
+        result = GameSession(empty_state).advance(
+            stop_before_step=lambda _state, step: step is boundary
+        )
+
+        assert [event.event_type for event in result.events] == [GameEventType.TIE_BREAKER_FLIPPED]
+        assert empty_state.execution_stack == [boundary]
+        assert boundary.pending_input is None
+
+    def test_pending_input_boundary_can_consume_response(self, empty_state):
+        boundary = AskConfirmationStep(
+            player_id="hero_a",
+            prompt="Continue?",
+            output_key="confirmed",
+        )
+        push_steps(empty_state, [boundary])
+        session = GameSession(empty_state)
+        request = session.advance().input_request
+        assert request is not None
+
+        result = session.advance(
+            InputResponse(request_id=request.id, selection="YES"),
+            stop_before_step=lambda _state, step: (step is boundary and step.pending_input is None),
+        )
+
+        assert result.input_request is None
+        assert empty_state.execution_stack == []
+        assert empty_state.execution_context["confirmed"] is True
 
 
 # =============================================================================

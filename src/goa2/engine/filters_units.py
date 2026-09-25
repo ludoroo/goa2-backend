@@ -244,6 +244,38 @@ class AdjacencyFilter(FilterCondition):
         return False
 
 
+def is_attack_immune_to_actor(
+    candidate_id: str,
+    state: GameState,
+    *,
+    actor_id: str,
+    attack_is_basic: bool,
+) -> bool:
+    """Pure ATTACK_IMMUNITY check for one explicit attacker/target pair."""
+    from goa2.domain.models.effect import EffectType
+    from goa2.engine.stats import _is_effect_active
+
+    candidate_owner = state.hero_owner_id(candidate_id)
+    actor_ids = {actor_id, state.hero_owner_id(actor_id)}
+    for effect in state.active_effects:
+        if (
+            effect.effect_type != EffectType.ATTACK_IMMUNITY
+            or not effect.is_active
+            or not _is_effect_active(effect, state)
+        ):
+            continue
+        if state.hero_owner_id(effect.protected_unit_id) != candidate_owner:
+            continue
+        if effect.basic_attacks_only and not attack_is_basic:
+            continue
+        if effect.non_basic_attacks_only and attack_is_basic:
+            continue
+        if actor_ids.intersection(effect.except_attacker_ids):
+            continue
+        return True
+    return False
+
+
 class ImmunityFilter(FilterCondition):
     """
     Filters out candidates that are Immune.
@@ -256,7 +288,6 @@ class ImmunityFilter(FilterCondition):
     type: FilterType = FilterType.IMMUNITY
 
     def apply(self, candidate: Any, state: GameState, context: dict) -> bool:
-        from goa2.domain.models.effect import EffectType
         from goa2.engine import rules  # Import inside to be safe
 
         target = state.get_entity(BoardEntityID(candidate)) if isinstance(candidate, str) else None
@@ -277,40 +308,20 @@ class ImmunityFilter(FilterCondition):
         if isinstance(target, Unit) and rules.is_immune(target, state):
             return False  # Immune = fails filter
 
-        # Check 2: ATTACK_IMMUNITY effects
-        # Only applies when current action is ATTACK
+        # Check 2: ATTACK_IMMUNITY effects. The pure helper also serves
+        # evaluators that must pin an explicit attacker rather than consulting
+        # mutable current_actor_id.
         current_action = context.get("current_action_type")
-        if current_action == ActionType.ATTACK:
-            current_actor_id = str(state.current_actor_id) if state.current_actor_id else None
-
-            # Look for ATTACK_IMMUNITY effects where target is the protected unit
-            for effect in state.active_effects:
-                if effect.effect_type != EffectType.ATTACK_IMMUNITY:
-                    continue
-                if not effect.is_active:
-                    continue
-
-                # The effect protects its source_id (the hero who played the defense card)
-                if effect.source_id != candidate:
-                    continue
-
-                # Some immunities protect only against basic (Gold/Silver)
-                # attacks. AttackSequenceStep writes this source-card
-                # classification for every attack, including nested performed
-                # card actions, so a missing/false flag is non-basic here.
-                if effect.basic_attacks_only and not context.get("attack_is_basic", False):
-                    continue
-                if effect.non_basic_attacks_only and context.get("attack_is_basic", False):
-                    continue
-
-                # Check if current attacker is in the exception list
-                if current_actor_id and current_actor_id in effect.except_attacker_ids:
-                    continue  # This attacker is allowed to target
-
-                # Target is immune to this attack
-                return False
-
-        return True  # Passes filter (not immune)
+        current_actor_id = str(state.current_actor_id) if state.current_actor_id else ""
+        return not (
+            current_action == ActionType.ATTACK
+            and is_attack_immune_to_actor(
+                str(candidate),
+                state,
+                actor_id=current_actor_id,
+                attack_is_basic=bool(context.get("attack_is_basic", False)),
+            )
+        )
 
 
 class UnitOnSpawnPointFilter(FilterCondition):

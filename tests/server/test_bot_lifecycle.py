@@ -7,12 +7,14 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from fastapi import FastAPI
 
 from goa2.domain.models import GamePhase
 from goa2.engine.session import SessionResult, SessionResultType
 from goa2.server import app as app_module
 from goa2.server import bots, replay
+from goa2.server.registry import GameRegistry
 
 
 def _registry_for(game):
@@ -175,6 +177,145 @@ def test_slow_agent_loader_does_not_block_the_event_loop_or_game_lock(monkeypatc
 
         assert not timed_out
         assert game._bot_agents is not None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("registry_state", ["missing", "replaced"])
+def test_actual_registry_rejects_apply_for_orphaned_game(monkeypatch, registry_state: str) -> None:
+    async def scenario() -> None:
+        state = SimpleNamespace(
+            phase=GamePhase.PLANNING,
+            clock=None,
+            round=1,
+            turn=1,
+        )
+        game = SimpleNamespace(
+            game_id="orphaned-during-compute",
+            bot_specs={"hero_wasp": object()},
+            removed=False,
+            lock=asyncio.Lock(),
+            outbound_lock=asyncio.Lock(),
+            session=SimpleNamespace(state=state),
+            last_result=None,
+        )
+        registry = GameRegistry()
+        if registry_state == "replaced":
+            registry._games[game.game_id] = cast(Any, object())
+
+        apply = Mock(
+            return_value=SessionResult(
+                result_type=SessionResultType.ACTION_COMPLETE,
+                current_phase=GamePhase.PLANNING,
+            )
+        )
+        monkeypatch.setattr(bots, "_is_decision_still_valid", lambda *_args: True)
+        monkeypatch.setattr(bots, "_stop_clock_for_decision", lambda *_args: None)
+        monkeypatch.setattr(bots, "_freeze_rollback_for_bot_input", lambda *_args: None)
+        monkeypatch.setattr(bots, "apply_decision", apply)
+        monkeypatch.setattr(bots, "_record_replay", lambda *_args: None)
+        monkeypatch.setattr(bots, "_log_action_specific", lambda *_args: None)
+        monkeypatch.setattr(bots, "_log_result", lambda *_args: None)
+        monkeypatch.setattr(bots, "_capture_broadcast_for_result", lambda *_args: [])
+        monkeypatch.setattr(bots, "finalize_timed_mutation", lambda *_args: None)
+
+        outcome = await bots._apply_bot_decision(
+            cast(Any, game),
+            registry,
+            cast(Any, object()),
+            {"hero_wasp": cast(Any, object())},
+        )
+
+        assert outcome == bots._ApplyDecisionOutcome.failed()
+        apply.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("registry_state", ["missing", "replaced"])
+def test_actual_registry_rejects_idle_advance_for_orphaned_game(
+    registry_state: str,
+) -> None:
+    async def scenario() -> None:
+        advance = Mock()
+        game = SimpleNamespace(
+            game_id="orphaned-idle-progression",
+            removed=False,
+            lock=asyncio.Lock(),
+            outbound_lock=asyncio.Lock(),
+            session=SimpleNamespace(
+                state=SimpleNamespace(phase=GamePhase.RESOLUTION, clock=None),
+                advance=advance,
+            ),
+            last_result=None,
+        )
+        registry = GameRegistry()
+        if registry_state == "replaced":
+            registry._games[game.game_id] = cast(Any, object())
+
+        progressed = await bots._maybe_plain_advance(
+            cast(Any, game),
+            registry,
+            {"hero_wasp": cast(Any, object())},
+        )
+
+        assert progressed is False
+        advance.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("registry_state", ["missing", "replaced"])
+def test_actual_registry_rejects_agent_publication_for_orphaned_game(
+    monkeypatch, registry_state: str
+) -> None:
+    async def scenario() -> None:
+        state = SimpleNamespace(phase=GamePhase.PLANNING, clock=None)
+        game = SimpleNamespace(
+            game_id="orphaned-during-load",
+            bot_specs={"hero_wasp": object()},
+            removed=False,
+            lock=asyncio.Lock(),
+            session=SimpleNamespace(state=state),
+            last_result=None,
+            _bot_agents=None,
+        )
+        registry = GameRegistry()
+        registry._games[game.game_id] = cast(Any, game)
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        built = {"hero_wasp": object()}
+
+        def slow_loader(build_game):
+            loop.call_soon_threadsafe(started.set)
+            release.wait(timeout=5)
+            build_game._bot_agents = built
+            return built
+
+        inspect = AsyncMock()
+        monkeypatch.setattr(bots, "clone_state", lambda value: value)
+        monkeypatch.setattr(bots.bot_factory, "get_or_build_agents", slow_loader)
+        monkeypatch.setattr(
+            bots.bounded_compute,
+            "bounded_inspect_next_decision",
+            inspect,
+        )
+
+        worker = asyncio.create_task(bots._bot_drive_worker(cast(Any, game), registry))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            if registry_state == "missing":
+                registry._games.pop(game.game_id)
+            else:
+                registry._games[game.game_id] = cast(Any, object())
+        finally:
+            release.set()
+        await worker
+
+        assert game.removed is False
+        assert game._bot_agents is None
+        inspect.assert_not_awaited()
 
     asyncio.run(scenario())
 
