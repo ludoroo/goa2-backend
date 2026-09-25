@@ -20,6 +20,11 @@ class _Contract(BaseModel, Generic[VersionT]):
         def check(value: object) -> None:
             if isinstance(value, float) and not math.isfinite(value):
                 raise ValueError("serialized contract numbers must be finite")
+            if isinstance(value, _Contract):
+                # Nested contracts run this validator when they are built.
+                # Re-walking their complete subtrees at every parent level made
+                # graph observation construction quadratic in nesting depth.
+                return
             if isinstance(value, BaseModel):
                 for field_value in value.__dict__.values():
                     check(field_value)
@@ -93,10 +98,18 @@ class LearnedObservation(_Contract[Literal[2]]):
         return self
 
 
+class StableValueObservation(_Contract[Literal[1]]):
+    """Candidate-free graph state at a stable value-evaluation boundary."""
+
+    state: LearnedObservation
+    boundary_kind: Literal["ACTOR_READY", "PLANNING_READY"]
+
+
 __all__ = [
     "LearnedObservation",
     "ObservationRelationship",
     "ObservationToken",
     "PublicSnapshot",
+    "StableValueObservation",
     "Viewer",
 ]

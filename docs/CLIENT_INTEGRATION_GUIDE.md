@@ -221,8 +221,12 @@ giving H/H, L/H, H/L, and L/L compositions. `leaf_mode` is
 `"immediate"`; `horizon` is 0–10 (default 2).
 
 If either source is learned, `artifact` is required with a server-local
-relative `reference` and pinned lowercase SHA-256 `digest`. H/H rejects an
-artifact and does not load Torch. There is intentionally no separate neural bot
+relative `reference` and pinned lowercase SHA-256 `digest`. With
+`leaf_mode: "bounded_continuation"`, a learned policy also controls owned rollout
+follow-ups with stable first-argmax over canonical legal actions; the
+`"immediate"` mode does not enter continuation. Opponent and foreign
+rollout decisions remain heuristic. H/H rejects an artifact and does not load
+Torch. There is intentionally no separate learned-model bot
 kind or persisted model-family discriminator. `search` is rejected for
 random and heuristic bots. Every bot key must identify a hero in this game's
 roster. Bot configuration is supported only by direct `POST /games` creation,

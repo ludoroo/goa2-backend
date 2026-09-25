@@ -9,7 +9,12 @@ from typing import Any
 
 import pytest
 
-from automata.models import LearnedObservation, PublicSnapshot, Viewer, canonical_json_bytes
+from automata.models.contracts import (
+    LearnedObservation,
+    PublicSnapshot,
+    Viewer,
+    canonical_json_bytes,
+)
 from automata.observation import encode_snapshot, project_snapshot
 from goa2.domain.models import TeamColor
 from goa2.domain.state import GameState

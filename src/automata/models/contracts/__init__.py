@@ -20,6 +20,7 @@ from .candidates import (
     UnitCandidateID,
 )
 from .compatibility import (
+    CURRENT_DECISION_OBSERVATION_SCHEMA_VERSION,
     CURRENT_MAP_SCHEMA_VERSION,
     CURRENT_RUNTIME_COMPATIBILITY_VERSION,
     INITIAL_RELATIONSHIP_NAMES,
@@ -30,11 +31,13 @@ from .observation import (
     ObservationRelationship,
     ObservationToken,
     PublicSnapshot,
+    StableValueObservation,
     Viewer,
 )
 from .serialization import canonical_json_bytes, from_canonical_json
 
 __all__ = [
+    "CURRENT_DECISION_OBSERVATION_SCHEMA_VERSION",
     "CURRENT_MAP_SCHEMA_VERSION",
     "CURRENT_RUNTIME_COMPATIBILITY_VERSION",
     "INITIAL_RELATIONSHIP_NAMES",
@@ -60,6 +63,7 @@ __all__ = [
     "RuntimeRequirements",
     "SearchOutcome",
     "SkipCandidateID",
+    "StableValueObservation",
     "UnitCandidateID",
     "Viewer",
     "canonical_json_bytes",
