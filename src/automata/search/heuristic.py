@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from automata.runtime.value_boundary import detect_stable_value_boundary
 from goa2.domain.input import InputRequestType, selection_value
 from goa2.domain.models import TeamColor
 from goa2.domain.models.card import Card
@@ -22,7 +23,13 @@ from goa2.domain.types import HeroID
 from ..agents.heuristic_agent import HeuristicAgent
 from ..decision import DecisionDescriptor
 from .contextual_noop import ContextualNoopKind, contextual_noop_shape, request_action_keys
-from .contracts import LeafEvaluation, PolicyScores, ScoreSemantics, SearchContext
+from .contracts import (
+    LeafEvaluation,
+    PolicyScores,
+    ScoreSemantics,
+    SearchContext,
+    StableValueContext,
+)
 from .node import Key, action_key
 from .public_consequence import PublicConsequenceSnapshot, public_material
 
@@ -85,9 +92,21 @@ class HeuristicLeafEvaluator:
     def evaluate(self, context: SearchContext, state: GameState) -> LeafEvaluation:
         if state.winner is not None:
             return LeafEvaluation(value=1.0 if state.winner == context.perspective_team else -1.0)
-        return LeafEvaluation(
-            value=math.tanh(self._public_material(state, context.perspective_team) / 5.0)
-        )
+        return self._evaluate_public_material(state, context.perspective_team)
+
+    def evaluate_stable_value(
+        self, context: StableValueContext, state: GameState
+    ) -> LeafEvaluation:
+        """Evaluate public material only at the boundary named by the caller."""
+        actual = detect_stable_value_boundary(state)
+        if actual is None or actual != context.boundary:
+            raise ValueError("stable value boundary does not match the actual game state")
+        if state.winner is not None or state.individual_winner_id is not None:
+            raise ValueError("terminal states must bypass stable value evaluation")
+        return self._evaluate_public_material(state, context.perspective_team)
+
+    def _evaluate_public_material(self, state: GameState, perspective: TeamColor) -> LeafEvaluation:
+        return LeafEvaluation(value=math.tanh(self._public_material(state, perspective) / 5.0))
 
     @staticmethod
     def _public_material(state: GameState, perspective: TeamColor) -> float:

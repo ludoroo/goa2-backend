@@ -6,9 +6,11 @@ API remain intact. Historical AI artifact compatibility is not a requirement.
 
 This is the target contract and current execution plan. Boundary recognition,
 actual-play observation, candidate-free value encoding, and the first source
-cleanup are implemented and published in the replacement draft stack. Search, dataset publication,
-model batching/losses, and the learning loop must adopt the contract before any
-fresh Gen1 generation. Existing commands are not yet Gen1 commands.
+cleanup are implemented and published in the replacement draft stack. Opt-in
+heuristic-valued search now uses the shared transition contract on the local
+search-parity branch. Learned-value inference, dataset publication, model
+batching/losses, and the learning loop must adopt it before any fresh Gen1
+generation. Existing commands are not yet Gen1 commands.
 
 **Status verified 2026-09-25:** #3 is merged at `7e75671`; #4 is merged at
 `851f96a480dd0fcd48c21a95dec30c3536110b2f`. GitHub `main`, `origin/main`, and local
@@ -140,20 +142,53 @@ as operational failures/censored evidence, not strategic draws or losses.
    `851f96a`; no historical chain was blindly replayed. Independent reviews and
    all combined tests/source checks pass. These are published draft checkpoints,
    not merged replacements or a completed Gen1 pipeline.
-3. **Next — search parity.** All Gen1 root types reach the same boundaries;
-   exact terminal orientation, explicit owned/foreign continuation, and fail-closed
-   watchdogs. Prove search/live encodings agree for the same state/viewer/boundary.
-   Live-bot deadline recovery must not silently authorize incomplete teacher
-   evidence or convert an interrupted transition into a stable value leaf.
+3. **Complete locally and reviewed — heuristic search parity.** Work is
+   on `ai-gen1-search-parity`, based on publication checkpoint `3eef358`; published
+   foundation drafts stay fixed. `STABLE_TRANSITION` uses shared boundaries for
+   planning and INPUT roots, exact terminal orientation, owned/foreign routing,
+   and fail-closed bounds. Search/live candidate-free encodings agree byte-for-byte
+   for the same world/viewer/boundary. Current verification: 4,879 full-suite tests
+   pass, including 35 new-mode tests, plus source Ruff/Black/mypy. Independent
+   review and correction/gap-test follow-up found no blockers. Unsupported
+   learned/fallback evaluators are rejected, even for singleton roots. Live-bot
+   deadline recovery still cannot authorize incomplete teacher evidence or turn
+   an interrupted transition into a stable value leaf.
 4. **Pending — data and model.** Discriminated policy/value rows, atomic complete-
    game publication, bounded indexing, per-head masks/weights, candidate-free value
-   batching and runtime. Replace the retained joint-data path and resolve source/
-   seed identity portability without relabeling old datasets or checkpoints.
+   batching and runtime. Align offline winner normalization too: the generic
+   matchup evaluator currently counts hero-ID winners as draws, whereas joint
+   training and the learned arena reject them. Neither behavior is the Gen1 team-
+   outcome contract. Replace the retained joint-data path and resolve source/seed
+   identity portability without relabeling old datasets or checkpoints.
 5. **Pending — executable iteration, then fresh generation.** Bootstrap → train →
    paired evaluation → parent initialization/replay, with persistent split/seed
    isolation. Start only after the preceding steps and behavior/engine/server
    tests pass. The first fresh Gen1 run is a small diagnostic, not a large
    historical-style experiment.
+
+### Current search slice: implementation choices
+
+- **Implemented locally (`d66682e`):** exact search terminal scoring resolves hero-ID winners
+  through authoritative team membership and rejects unknown non-null winners.
+  Both terminal paths bypass leaf evaluators. Independent review found no blockers;
+  verification after follow-up coverage: 4,844 full-suite tests pass (23 new cases),
+  with source Ruff/Black/mypy clean.
+- Opt-in `STABLE_TRANSITION` leaves `STABLE_TURN` unchanged. It uses the shared
+  transition anchor/detector for planning, actor, reaction, tie, and cleanup roots.
+  Historical request schedules 1/2 are rejected with this mode rather than
+  silently downgrading its horizon; the unscheduled/adaptive-HEX path is supported.
+- `StableValueContext` and `StableValueEvaluator.evaluate_stable_value` are the
+  candidate-free seam, implemented by the heuristic evaluator using public
+  material only. Incompatible learned/fallback evaluators fail before inference;
+  no synthetic policy candidates or heuristic substitution are permitted.
+- Owned continuation uses the controlled policy with fixed root viewer/team and
+  persistent latest eligible owner. `UPGRADE_PHASE` has an explicit environment
+  fallback until policy encoding supports simultaneous upgrades; other unknown
+  simultaneous requests fail. Noncanonical selections are rejected rather than
+  silently treated as planning finish or input skip; absent boundaries fail too.
+- Keep the old synthetic-context path operational until the data/model slice
+  supplies its replacement. This search slice alone does not open the generation
+  gate or change client APIs, training schemas, dependencies, or old artifacts.
 
 Artifact deletion is a separate inventoried task. No reset command may delete
 `runs/` or mutate historical results as a side effect.
