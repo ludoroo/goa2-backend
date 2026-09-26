@@ -17,11 +17,12 @@ and checkpointed in focused local commits (see final sections). #3/#4 have merge
 the final foundation at `851f96a` passes a fresh 4,046-test run. Integration is
 published in draft stack #8/#9/#10 on `ai-gen1-integration`, with 4,821 reviewed
 tests passing. #6/#7 are closed as superseded with their source branches preserved.
-The local `ai-gen1-search-parity` follow-up now implements reviewed terminal-team
+The `ai-gen1-search-parity` follow-up now implements reviewed terminal-team
 scoring and candidate-free heuristic `STABLE_TRANSITION` at `02b3cce`; 4,879 tests
 and source checks pass. Offline outcome normalization is implemented on
 `ai-gen1-outcome-normalization`: 4,936 full-suite tests and source checks pass;
-independent review is complete. Native Gen1 data/model integration remains pending.
+independent review is complete. The search/outcome follow-ups are now published
+as drafts #11 → #12 above #10. Native Gen1 data/model integration remains pending.
 No new generation has started and no run artifacts were removed.
 The historical code checkpoint before reset implementation is
 `88b85d0c1b57c30a31be5fd00a0320236008924a`.
@@ -475,3 +476,22 @@ actual-boundary publication, followed by candidate-free model/runtime and bounde
 index/trainer integration. This correctness slice does not itself open generation.
 Keep [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md) and
 [AI_PR_RESET_HANDOFF.md](AI_PR_RESET_HANDOFF.md) current at each checkpoint.
+
+## Search/outcome follow-ups published
+
+With the owner's approval, published the existing branches as two stacked drafts:
+
+- [#11 — Stable-transition heuristic search](https://github.com/ludoroo/goa2-backend/pull/11):
+  `ai-gen1-search-parity` → `ai-gen1-integration`, reviewed implementation at
+  `02b3cce` (4,879 passing tests).
+- [#12 — Offline outcome normalization](https://github.com/ludoroo/goa2-backend/pull/12):
+  `ai-gen1-outcome-normalization` → `ai-gen1-search-parity`, reviewed implementation
+  at `c78a4ca` (4,936 passing tests), followed only by publication documentation.
+
+The full review/merge order is **#8 → #9 → #10 → #11 → #12**. Foundation heads and
+draft states were reverified unchanged before publication. Both new PRs are drafts;
+no merge, ready transition, force push, or history rewrite occurred. Descriptions
+record the actual checkpoint verification, review scope, dependencies, and fresh
+checkpoint/summary-version operational changes. No GitHub CI result is inferred
+from local tests. No generation or historical artifact change accompanied these
+PRs. Native data/model work remains the next distinct implementation seam.

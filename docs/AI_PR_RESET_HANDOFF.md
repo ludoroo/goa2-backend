@@ -6,6 +6,8 @@ PRs **#3 and #4 are merged**. The verified integration base is
 `851f96a480dd0fcd48c21a95dec30c3536110b2f`. PRs **#6 and #7 are closed as
 superseded, not merged**. Their useful code and engine fixes are preserved in
 draft replacements **#8 → #9 → #10**; their source branches remain intact.
+Reviewed search and outcome follow-ups are now published as drafts **#11 → #12**
+on top of that foundation. Review/merge order is **#8 → #9 → #10 → #11 → #12**.
 
 The original recommendation was a scope/dependency assessment, not a merge
 approval. Fresh verification of the merged foundation is recorded below. Neither
@@ -15,6 +17,20 @@ the integration and later search-slice checks below are separate evidence.
 The experiment history and reset direction are in
 [AI_EXPERIMENT_JOURNAL.md](AI_EXPERIMENT_JOURNAL.md). The active implementation
 checklist is in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md).
+
+## Published search/outcome follow-ups
+
+| Draft | Branch → base | Reviewed implementation |
+|---|---|---|
+| [#11](https://github.com/ludoroo/goa2-backend/pull/11) | `ai-gen1-search-parity` → `ai-gen1-integration` | `d66682e` + `02b3cce`: terminal-team scoring and stable-transition heuristic search; 4,879 tests |
+| [#12](https://github.com/ludoroo/goa2-backend/pull/12) | `ai-gen1-outcome-normalization` → `ai-gen1-search-parity` | `c78a4ca`: offline outcome normalization, censoring, and resume correctness; 4,936 tests |
+
+Both branches were pushed with the owner's approval; both PRs are drafts and
+cross-linked. Foundation #8/#9/#10 remain drafts at their prior heads. Nothing
+was merged, marked ready, or force-pushed. Publication adds only documentation
+on top of the reviewed outcome implementation. Source/test verification remains
+at the checkpoints above; these local results are not a claim of GitHub CI success.
+No generation, training, arena experiment, or artifact conversion was performed.
 
 ## Current offline-outcome checkpoint — 2026-09-25
 
@@ -65,7 +81,7 @@ in `AI_LEARNING_CONTRACT.md`. Iteration and fresh-generation gates remain closed
 
 ## Reviewed search-parity checkpoint — 2026-09-25
 
-Local branch `ai-gen1-search-parity` starts from published checkpoint `3eef358`.
+Published branch `ai-gen1-search-parity` (draft #11) starts from checkpoint `3eef358`.
 The #8/#9/#10 foundation heads remain unchanged. Terminal checkpoint `d66682e`
 fixes search rewards for individual hero winners using authoritative team membership;
 unknown non-null winners now raise rather than counting as losses for both teams.
@@ -373,8 +389,8 @@ local Git configuration alone does not rewrite existing commits.
   checkpoint `02b3cce`; the published foundation remains `ai-gen1-integration`
   on merged #4 at `851f96a`.
 - Preserved source branch: `ai-learned-self-play-next` at `fc20bb9`.
-- Preserve the local search/outcome checkpoints and their contract/journal/handoff
-  documents; these follow-ups are not yet integrated into the published draft PRs.
+- Preserve the reviewed search/outcome checkpoints and their contract/journal/handoff
+  documents; these follow-ups are published in drafts #11/#12, not merged.
 - `runs/` is ignored and now lives in this checkout, not the removed Herdr one.
   Do not delete or clean this worktree as a side effect of restacking PRs.
 - Historical artifact retirement is a separate cleanup decision; it is not

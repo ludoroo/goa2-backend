@@ -7,9 +7,11 @@ API remain intact. Historical AI artifact compatibility is not a requirement.
 This is the target contract and current execution plan. Boundary recognition,
 actual-play observation, candidate-free value encoding, and the first source
 cleanup are implemented and published in the replacement draft stack. Opt-in
-heuristic-valued search now uses the shared transition contract on the local
-search-parity branch. Offline outcomes are normalized on the local outcome branch;
+heuristic-valued search now uses the shared transition contract on
+`ai-gen1-search-parity`. Offline outcomes are normalized on
+`ai-gen1-outcome-normalization`;
 4,936 full-suite tests and source checks pass, with independent review complete.
+Search and outcome checkpoints are published as drafts #11 → #12 above #10.
 Learned-value inference, Gen1 dataset publication, model batching/losses, and the
 learning loop must adopt the transition contract before any fresh Gen1
 generation. Existing commands are not yet Gen1 commands.
@@ -147,8 +149,8 @@ as operational failures/censored evidence, not strategic draws or losses.
    `851f96a`; no historical chain was blindly replayed. Independent reviews and
    all combined tests/source checks pass. These are published draft checkpoints,
    not merged replacements or a completed Gen1 pipeline.
-3. **Complete locally and reviewed — heuristic search parity.** Work is
-   on `ai-gen1-search-parity`, based on publication checkpoint `3eef358`; published
+3. **Complete, reviewed, and published as draft #11 — heuristic search parity.**
+   `ai-gen1-search-parity` is based on publication checkpoint `3eef358`; published
    foundation drafts stay fixed. `STABLE_TRANSITION` uses shared boundaries for
    planning and INPUT roots, exact terminal orientation, owned/foreign routing,
    and fail-closed bounds. Search/live candidate-free encodings agree byte-for-byte
@@ -158,7 +160,7 @@ as operational failures/censored evidence, not strategic draws or losses.
    learned/fallback evaluators are rejected, even for singleton roots. Live-bot
    deadline recovery still cannot authorize incomplete teacher evidence or turn
    an interrupted transition into a stable value leaf.
-4. **Complete locally and reviewed — offline outcomes; data/model next.**
+4. **Complete, reviewed, and published as draft #12 — offline outcomes; data/model next.**
    `ai-gen1-outcome-normalization` starts from reviewed search checkpoint `02b3cce`.
    Search and actual play share authoritative terminal-team resolution; raw
    individual-winner diagnostics survive even rejected outcomes. Censored games
