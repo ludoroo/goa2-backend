@@ -57,8 +57,9 @@ def test_recording_does_not_change_the_game() -> None:
     plain = run_game(RED, BLUE, _agents(), seed=5, max_steps=400)
     rec = InMemoryRecorder()
     recorded = run_game(RED, BLUE, _agents(), seed=5, max_steps=400, recorder=rec)
-    assert (plain.winner, plain.rounds, plain.steps) == (
+    assert (plain.winner, plain.winner_side, plain.rounds, plain.steps) == (
         recorded.winner,
+        recorded.winner_side,
         recorded.rounds,
         recorded.steps,
     )

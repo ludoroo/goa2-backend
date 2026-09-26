@@ -250,7 +250,7 @@ def test_recorder_publishes_complete_game_atomically_with_contiguous_indexes(
     assert not path.exists()
     [spool] = list(tmp_path.glob(".*.pending.jsonl.zst"))
 
-    recorder.record_outcome(winner="RED", rounds=4, reason="game_over")
+    recorder.record_outcome(winner_side="RED", rounds=4, reason="game_over")
 
     dataset = load_joint_dataset(path)
     assert [row.decision_index for row in dataset.rows] == [0, 1]
@@ -269,10 +269,28 @@ def test_recorder_discards_every_incomplete_game(tmp_path: Path, reason: str) ->
     _record_one(recorder)
     [spool] = list(tmp_path.glob(".*.pending.jsonl.zst"))
 
-    recorder.record_outcome(winner=None, rounds=2, reason=reason)
+    recorder.record_outcome(winner_side=None, rounds=2, reason=reason)
 
     assert not path.exists()
     assert not spool.exists()
+
+
+@pytest.mark.parametrize(
+    ("winner_side", "reason"),
+    [("hero_wasp", "game_over"), ("hero_wasp", "max_steps"), ("RED", "max_steps")],
+)
+def test_recorder_rejects_invalid_outcomes_and_discards_provisional_data(
+    tmp_path: Path, winner_side: str, reason: str
+) -> None:
+    recorder = _recorder(tmp_path / "invalid.jsonl")
+    _record_one(recorder)
+
+    with pytest.raises(ValueError, match="winner_side"):
+        recorder.record_outcome(  # type: ignore[arg-type]
+            winner_side=winner_side, rounds=2, reason=reason
+        )
+    assert list(tmp_path.iterdir()) == []
+    recorder.close()
 
 
 def test_recorder_context_exception_and_close_discard_without_publication(tmp_path: Path) -> None:
@@ -295,7 +313,7 @@ def test_recorder_refuses_overwrite_and_equal_input_produces_equal_bytes(tmp_pat
     for path in paths:
         recorder = _recorder(path)
         _record_one(recorder)
-        recorder.record_outcome(winner="RED", rounds=1, reason="game_over")
+        recorder.record_outcome(winner_side="RED", rounds=1, reason="game_over")
     assert paths[0].read_bytes() == paths[1].read_bytes()
 
     with pytest.raises(FileExistsError):
@@ -308,7 +326,7 @@ def test_compressed_recorder_round_trip_is_deterministic_and_atomic(tmp_path: Pa
         recorder = _recorder(path)
         _record_one(recorder)
         assert not path.exists()
-        recorder.record_outcome(winner="RED", rounds=1, reason="game_over")
+        recorder.record_outcome(winner_side="RED", rounds=1, reason="game_over")
 
     assert paths[0].read_bytes() == paths[1].read_bytes()
     assert load_joint_dataset(paths[0]).rows == load_joint_dataset(paths[1]).rows
@@ -454,7 +472,7 @@ def test_loader_rejects_candidate_policy_tampering_and_exposes_canonical_digest(
     valid = tmp_path / "valid.jsonl"
     recorder = _recorder(valid)
     _record_one(recorder)
-    recorder.record_outcome(winner=None, rounds=5, reason="game_over")
+    recorder.record_outcome(winner_side=None, rounds=5, reason="game_over")
     dataset = load_joint_dataset(valid)
 
     assert dataset.canonical_bytes() == valid.read_bytes()

@@ -46,6 +46,7 @@ from automata.agents.contracts import Agent, PlanningKind
 from automata.decision import ActionBoundaryKind, DecisionDescriptor, DecisionSemanticRole
 from automata.runtime.clone import clone_state
 from automata.runtime.determinize import determinize
+from automata.runtime.outcomes import resolve_terminal_winner_side
 from automata.runtime.value_boundary import (
     StableValueBoundary,
     capture_transition_anchor,
@@ -1053,38 +1054,14 @@ def terminal_reward(
     Team names are accepted case-insensitively. Individual hero winners are
     resolved through the authoritative team rosters in ``state``; piece IDs are
     not hero winner identities and are rejected. Any other
-    non-null value is invalid and fails closed rather than becoming a loss for
-    both perspectives.
+    value (including a missing winner) is invalid and fails closed rather
+    than becoming a loss for both perspectives or an unproven draw.
     """
-    if winner is None:
-        return 0.5
     if our_team not in state.teams:
         raise ValueError(f"perspective team {our_team.value!r} is not present in game state")
 
-    normalized = winner.upper()
-    winning_team = next(
-        (team for team in TeamColor if normalized == team.value.upper()),
-        None,
-    )
-    if winning_team is not None:
-        if winning_team not in state.teams:
-            raise ValueError(f"winning team {winning_team.value!r} is not present in game state")
-    else:
-        hero = state.get_hero(HeroID(winner))
-        if hero is None or str(hero.id) != winner:
-            raise ValueError(f"unknown terminal winner {winner!r}")
-        winning_team = hero.team
-        if winning_team is None:
-            raise ValueError(f"terminal winner {winner!r} has no team")
-        roster = state.teams.get(winning_team)
-        if roster is None:
-            raise ValueError(f"winning team {winning_team.value!r} is not present in game state")
-        if not any(str(member.id) == winner for member in roster.heroes):
-            raise ValueError(
-                f"terminal winner {winner!r} is not listed on team {winning_team.value!r}"
-            )
-
-    return 1.0 if winning_team == our_team else 0.0
+    winning_side = resolve_terminal_winner_side(state, winner)
+    return 1.0 if winning_side == our_team.value else 0.0
 
 
 def _value_to_reward(value: float) -> float:

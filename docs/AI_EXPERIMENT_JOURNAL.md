@@ -18,8 +18,10 @@ the final foundation at `851f96a` passes a fresh 4,046-test run. Integration is
 published in draft stack #8/#9/#10 on `ai-gen1-integration`, with 4,821 reviewed
 tests passing. #6/#7 are closed as superseded with their source branches preserved.
 The local `ai-gen1-search-parity` follow-up now implements reviewed terminal-team
-scoring and candidate-free heuristic `STABLE_TRANSITION`; 4,879 tests and source
-checks pass. Offline outcome normalization and Gen1 data/model integration are next.
+scoring and candidate-free heuristic `STABLE_TRANSITION` at `02b3cce`; 4,879 tests
+and source checks pass. Offline outcome normalization is implemented on
+`ai-gen1-outcome-normalization`: 4,936 full-suite tests and source checks pass;
+independent review is complete. Native Gen1 data/model integration remains pending.
 No new generation has started and no run artifacts were removed.
 The historical code checkpoint before reset implementation is
 `88b85d0c1b57c30a31be5fd00a0320236008924a`.
@@ -420,7 +422,56 @@ Follow-up review verified the corrections and new coverage (127 focused tests,
 overlapping the full suite), with no blockers. No fresh generation, artifact
 conversion, push, or merge occurred.
 
-**Next action:** align offline terminal outcomes, then implement candidate-free
-data/model support. The heuristic search slice does not itself open generation.
+## Offline outcome normalization and session recovery — 2026-09-25
+
+Started `ai-gen1-outcome-normalization` from reviewed search checkpoint `02b3cce`.
+Confirmed replacement drafts #8/#9/#10 remained open drafts with unchanged heads
+before the slice. The implementation separates raw diagnostic winners from
+normalized team labels, shares authoritative roster resolution with search, and
+removes all censored games from draw/strength accounting. Generic matchup fails
+on censored outcomes; paired statistics reject them; strict arena retains them
+as operational records and stops without promotion metrics or a promotion verdict.
+Generation receipts/identities explicitly pin the new outcome contract; old
+receipts missing normalized sides are rejected rather than inferred or converted.
+
+The interrupted session left its implementation intact and a **4,923-test passing
+log**. Recovered its independent review and fixed the two outcome findings:
+missing engine winners now raise rather than inventing draws, and raw diagnostic
+outcomes are written before normalization can fail. The engine has no terminal
+draw rule; abstract nullable draw support in evaluation/data is not proof of a
+real draw. Invalid recorder outcomes now clean provisional data immediately.
+Type-only imports avoid newly coupling protocol/dataset loading to runtime setup.
+New learned-arena summaries call non-timeout cost averages `average_non_timeout`
+instead of claiming those averages include only completed games; the summary
+schema is now version 2. Bootstrap requires fresh checkpoint paths: incompatible
+old rows invalidate a checkpoint file rather than being silently skipped.
+
+Added durable sequential-arena regressions for fresh execution, fully cached
+replay, and partial censored-pair resume. These fail against the pre-fix arena and
+pass now. Actual-engine outcome tests exercise both team perspectives, raw hero
+winners, real played decisions, normalized labels, and complete spool discard for
+max-step or invalid/missing-winner failure. No counterfactual leaf gets a label.
+
+Parent-written resume regressions additionally caught a rejected result/fragment
+winner mismatch leaving a recoverable fragment, and resume accepting a contradictory
+checkpoint winner. Rejected new fragments are now removed; cached receipt winners
+must match dataset labels. Valid crash-orphan recovery remains covered and intact.
+
+Final verification: **4,936 full-suite tests pass**, source Ruff/Black/mypy pass
+(283 files), and dependency files remain byte-identical to `fc20bb9`. Independent
+review found no production blockers and separately verified the resume corrections.
+The final review caught a test defect: a lazy identity property was first read only
+after monkeypatching its version constant. Captured baseline IDs before the patch,
+then reran the focused tests and full suite successfully. No generation, training,
+arena experiment, push, merge, client API change, or historical report/artifact
+mutation occurred.
+
+A separate arena halt marker remains optional hardening; observation reasons
+already identify censorship. The disconnected exploratory search-boundary evaluator
+needs an outcome-contract audit before any later reuse as Gen1 evidence.
+
+**Next action:** implement native discriminated policy/value records and atomic
+actual-boundary publication, followed by candidate-free model/runtime and bounded
+index/trainer integration. This correctness slice does not itself open generation.
 Keep [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md) and
 [AI_PR_RESET_HANDOFF.md](AI_PR_RESET_HANDOFF.md) current at each checkpoint.

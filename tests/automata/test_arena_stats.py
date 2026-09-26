@@ -76,6 +76,21 @@ def test_pairing_rejects_unknown_winner_side() -> None:
         pair_seed_scores([_observation(7, "RED", "GREEN"), _observation(7, "BLUE", "BLUE")])
 
 
+def test_pairing_rejects_nonterminal_observations_before_scoring() -> None:
+    censored = EvaluationGameResult(
+        case_id="7-RED",
+        world_seed=7,
+        a_side="RED",
+        winner_side=None,
+        rounds=2,
+        steps=20,
+        reason="max_rounds",
+    )
+
+    with pytest.raises(ValueError, match="nonterminal"):
+        pair_seed_scores([censored, _observation(7, "BLUE", "BLUE")])
+
+
 def test_paired_confidence_interval_matches_hoeffding_reference_calculation() -> None:
     rows: list[EvaluationGameResult] = []
     for seed in range(100):

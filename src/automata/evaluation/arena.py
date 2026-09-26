@@ -301,6 +301,24 @@ def _completed_prefix_count(config: ArenaStageConfig) -> int:
     return last_observed + int(sides_by_seed[seeds[last_observed]] == {"RED", "BLUE"})
 
 
+def _has_censored_outcome(observations: tuple[EvaluationGameResult, ...]) -> bool:
+    return any(observation.reason != "game_over" for observation in observations)
+
+
+def _stage_result_with_no_strength_evidence(
+    config: ArenaStageConfig,
+    observations: tuple[EvaluationGameResult, ...],
+) -> ArenaStageResult:
+    """Keep diagnostic rows without treating a partial game as pair evidence."""
+    return ArenaStageResult(
+        stage=config.stage,
+        protocol_identity=config.protocol.identity_digest(),
+        observations=observations,
+        pairs=(),
+        sequential=None,
+    )
+
+
 def _run_stage(
     config: ArenaStageConfig,
     run_case: Callable[[GameCase], EvaluationGameResult],
@@ -318,6 +336,8 @@ def _run_stage(
                 progress_description=f"Arena {config.stage.value.lower()}",
             )
         )
+        if _has_censored_outcome(complete_observations):
+            return _stage_result_with_no_strength_evidence(config, complete_observations)
         return ArenaStageResult(
             stage=config.stage,
             protocol_identity=config.protocol.identity_digest(),
@@ -342,11 +362,15 @@ def _run_stage(
                 progress_description=f"Arena {config.stage.value.lower()}",
             )
         )
+        if _has_censored_outcome(observations):
+            return _stage_result_with_no_strength_evidence(config, observations)
         result = evaluate_sequential(observations, plan)
         if result.decision is not SequentialDecision.CONTINUE:
             break
     if result is None:
         observations = _valid_cached_observations(config)
+        if _has_censored_outcome(observations):
+            return _stage_result_with_no_strength_evidence(config, observations)
         result = evaluate_sequential(observations, plan)
     return ArenaStageResult(
         stage=config.stage,
@@ -395,6 +419,16 @@ def run_arena(
             raise ValueError(f"missing runner for stage {stage_config.stage.value}") from exc
         result = _run_stage(stage_config, runner, show_progress=show_progress)
         stage_results.append(result)
+        if _has_censored_outcome(result.observations):
+            return ArenaResult(
+                candidate=config.candidate,
+                champion=config.champion,
+                stages=tuple(stage_results),
+                promotion_gate_config=config.promotion_gates,
+                promotion_metrics=None,
+                promotion_gates=None,
+                promoted=False,
+            )
         sequential = result.sequential
         if sequential is not None and sequential.decision is SequentialDecision.REJECT:
             return ArenaResult(

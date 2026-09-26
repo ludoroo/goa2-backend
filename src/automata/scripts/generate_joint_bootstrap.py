@@ -20,7 +20,7 @@ from itertools import groupby
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, StrictInt
+from pydantic import BaseModel, ConfigDict, StrictInt, model_validator
 from tqdm import tqdm
 
 from automata.agents import HeuristicAgent, PlanningKind
@@ -31,6 +31,7 @@ from automata.harness.game_runner import DEFAULT_MAP, RunResult, run_game
 from automata.models.contracts import DecisionObservation, canonical_json_bytes
 from automata.observation import encode_decision, legal_keys_for_decision
 from automata.runtime.driver import BotDecision, DecisionKind
+from automata.runtime.outcomes import WinnerSide
 from automata.training.dataset import (
     JointDatasetRecorder,
     JointDatasetRow,
@@ -48,6 +49,7 @@ from goa2.engine.phases import planning_open_for_second_card
 TARGET_RECIPE = "one-hot-exact-choice"
 SOFT_CARD_TARGET_RECIPE = "softmax-heuristic-card"
 SEED_DERIVATION = "sha256(world_seed,side,phase0-heuristic-bootstrap-v1)"
+OUTCOME_CONTRACT = "raw-winner+canonical-side-v1"
 
 _DEFAULT_PILOT_MODE = "heuristic"
 _DIVERSE_PILOT_MODE = "diverse"
@@ -93,9 +95,25 @@ class CheckpointRow(BaseModel):
     completed: bool
     reason: str
     winner: str | None
+    winner_side: WinnerSide | None
     rounds: StrictInt | None
     turns: StrictInt | None
     steps: StrictInt | None
+
+    @model_validator(mode="after")
+    def _validate_outcome(self) -> CheckpointRow:
+        if self.completed and self.reason == "game_over":
+            if (self.winner is None) != (self.winner_side is None):
+                raise ValueError("terminal winner and winner_side must have matching nullability")
+            if (
+                self.winner is not None
+                and self.winner.upper() in {"RED", "BLUE"}
+                and self.winner.upper() != self.winner_side
+            ):
+                raise ValueError("raw team winner disagrees with winner_side")
+        elif self.winner is not None or self.winner_side is not None:
+            raise ValueError("incomplete checkpoint rows cannot declare a winner")
+        return self
 
 
 class GeneratorSeedRange(BaseModel):
@@ -331,8 +349,8 @@ class HeuristicJointObserver:
             selected_selection=candidate.selection,
         )
 
-    def record_outcome(self, *, winner: str | None, rounds: int, reason: str) -> None:
-        self.recorder.record_outcome(winner=winner, rounds=rounds, reason=reason)
+    def record_outcome(self, *, winner_side: WinnerSide | None, rounds: int, reason: str) -> None:
+        self.recorder.record_outcome(winner_side=winner_side, rounds=rounds, reason=reason)
 
 
 def _positive(value: str) -> int:
@@ -437,6 +455,7 @@ def generator_config(
         "source_revision": source_revision,
         "dirty_tree_hash": dirty_tree_hash,
         "seed_derivation": SEED_DERIVATION,
+        "outcome_contract": OUTCOME_CONTRACT,
         "max_steps": args.max_steps,
         "timeout_seconds": args.timeout_seconds,
         "target_source": args.target_source,
@@ -727,6 +746,7 @@ def _checkpoint_row(
         completed=result is not None and result.reason == "game_over",
         reason=reason,
         winner=result.winner if result else None,
+        winner_side=result.winner_side if result else None,
         rounds=result.rounds if result else None,
         turns=result.turns if result else None,
         steps=result.steps if result else None,
@@ -790,8 +810,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     requested_seeds = range(args.seed_start, args.seed_end)
     resumed = sum(seed in requested_seeds for seed in successful.values())
-    outcomes = Counter(
-        row.winner or "draw"
+    outcomes: Counter[str] = Counter(
+        row.winner_side or "draw"
         for row in rows
         if row.config_id == config_id
         and row.completed
@@ -869,7 +889,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _append_checkpoint(checkpoint, row)
             if row.completed:
                 successful[game_id] = world_seed
-                outcomes[row.winner or "draw"] += 1
+                outcomes[row.winner_side or "draw"] += 1
             else:
                 outcomes[row.reason] += 1
             progress.set_postfix(dict(outcomes))

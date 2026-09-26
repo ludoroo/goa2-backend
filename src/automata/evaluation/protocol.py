@@ -31,12 +31,15 @@ from dataclasses import dataclass, field
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from tqdm import tqdm
 
+if TYPE_CHECKING:
+    from automata.runtime.outcomes import WinnerSide
+
 # Sides used by the schedule; the engine uses upper-case colour names.
-_SIDES: tuple[str, str] = ("RED", "BLUE")
+_SIDES: tuple[WinnerSide, WinnerSide] = ("RED", "BLUE")
 
 # Wilson score interval z for 95% confidence.
 _WILSON_Z = 1.96
@@ -106,20 +109,33 @@ class GameCase:
 
     case_id: str
     world_seed: int
-    a_side: str
+    a_side: WinnerSide
 
 
 @dataclass(frozen=True)
 class EvaluationGameResult:
-    """Outcome of one completed :class:`GameCase`."""
+    """One observed case outcome, including censored operational terminations.
+
+    ``winner_side`` is a normalized board side, never a hero ID. A
+    ``game_over`` observation may have no winner (a genuine terminal draw).
+    Every other reason is censored and must not carry a winner.
+    """
 
     case_id: str
     world_seed: int
-    a_side: str
-    winner_side: str | None
+    a_side: WinnerSide
+    winner_side: WinnerSide | None
     rounds: int
     steps: int
     reason: str
+
+    def __post_init__(self) -> None:
+        if self.a_side not in _SIDES:
+            raise ValueError(f"invalid a_side {self.a_side!r}")
+        if self.winner_side not in (None, *_SIDES):
+            raise ValueError(f"invalid winner_side {self.winner_side!r}")
+        if self.reason != "game_over" and self.winner_side is not None:
+            raise ValueError("nonterminal observation must have winner_side=None")
 
     def to_json(self) -> str:
         payload = {
@@ -142,8 +158,10 @@ class EvaluationGameResult:
         return cls(
             case_id=str(row["case_id"]),
             world_seed=int(row["world_seed"]),
-            a_side=str(row["a_side"]),
-            winner_side=None if row["winner_side"] is None else str(row["winner_side"]),
+            a_side=cast("WinnerSide", str(row["a_side"])),
+            winner_side=(
+                None if row["winner_side"] is None else cast("WinnerSide", str(row["winner_side"]))
+            ),
             rounds=int(row["rounds"]),
             steps=int(row["steps"]),
             reason=str(row["reason"]),
@@ -159,6 +177,7 @@ class EvaluationSummary:
     draws: int = 0
     max_step_terminations: int = 0
     timeout_terminations: int = 0
+    censored_terminations: int = 0
     avg_rounds: float = 0.0
     avg_steps: float = 0.0
 
@@ -183,20 +202,16 @@ class EvaluationSummary:
         return (max(0.0, center - half), min(1.0, center + half))
 
     def screening_passes(self) -> bool:
-        """Point-estimate gate: decisive A-rate > 50%, no max_step, no timeout."""
-        if self.max_step_terminations > 0:
-            return False
-        if self.timeout_terminations > 0:
+        """Point-estimate gate requiring no censored operational outcomes."""
+        if self.censored_terminations > 0:
             return False
         if self.decisive == 0:
             return False
         return self.decisive_a_rate > 0.5
 
     def promotion_passes(self) -> bool:
-        """Statistical gate: Wilson lower bound > 50%, no max_step, no timeout."""
-        if self.max_step_terminations > 0:
-            return False
-        if self.timeout_terminations > 0:
+        """Wilson gate requiring no censored operational outcomes."""
+        if self.censored_terminations > 0:
             return False
         if self.decisive == 0:
             return False
@@ -745,44 +760,41 @@ def _is_wall_clock_timeout(obs: EvaluationGameResult) -> bool:
 
 
 def summarize(observations: Iterable[EvaluationGameResult]) -> EvaluationSummary:
-    """Aggregate observations into an :class:`EvaluationSummary`.
+    """Aggregate terminal strength results and censored operational outcomes.
 
-    Winner mapping:
-    - ``winner_side is None`` → draw.
-    - ``winner_side == a_side`` → A win.
-    - otherwise → B win.
+    Only ``reason == "game_over"`` rows contribute to wins or draws. A terminal
+    row with ``winner_side is None`` is a genuine draw; every nonterminal row
+    is censored regardless of its reason. ``max_step_terminations`` and
+    ``timeout_terminations`` remain diagnostic subsets of all censored rows.
 
-    ``max_step_terminations`` counts rows with ``reason == "max_steps"``.
-    ``timeout_terminations`` counts rows with ``reason == "wall_clock_timeout"``.
-    Both kinds also contribute to ``draws`` (winner_side is None by contract).
-
-    ``avg_rounds`` / ``avg_steps`` are computed over *completed* rows only;
-    partial timeout progress is diagnostic and does not affect averages. When
-    every row is a timeout, both averages are 0.0. Ordering does not affect
-    the output.
+    ``avg_rounds`` / ``avg_steps`` preserve the observed operational cost of
+    non-timeout rows, including other censored terminations. Synthetic timeout
+    progress remains diagnostic and is excluded from these averages. Ordering
+    does not affect the output.
     """
     summary = EvaluationSummary()
     total_rounds = 0
     total_steps = 0
-    completed = 0
+    observed = 0
     for obs in observations:
         is_timeout = _is_wall_clock_timeout(obs)
         if _is_max_steps(obs):
             summary.max_step_terminations += 1
         if is_timeout:
             summary.timeout_terminations += 1
-        if obs.winner_side is None:
+        if obs.reason != "game_over":
+            summary.censored_terminations += 1
+        elif obs.winner_side is None:
             summary.draws += 1
         elif obs.winner_side == obs.a_side:
             summary.a_wins += 1
         else:
             summary.b_wins += 1
-        # Partial timeout progress must not affect completed-game averages.
         if not is_timeout:
             total_rounds += obs.rounds
             total_steps += obs.steps
-            completed += 1
-    if completed:
-        summary.avg_rounds = total_rounds / completed
-        summary.avg_steps = total_steps / completed
+            observed += 1
+    if observed:
+        summary.avg_rounds = total_rounds / observed
+        summary.avg_steps = total_steps / observed
     return summary

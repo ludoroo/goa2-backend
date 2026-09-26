@@ -61,8 +61,9 @@ def test_terminal_reward_resolves_team_and_individual_winners(
     assert terminal_reward(winner, perspective, state=state) == expected
 
 
-def test_terminal_reward_preserves_a_genuine_draw() -> None:
-    assert terminal_reward(None, TeamColor.RED, state=_state()) == 0.5
+def test_terminal_reward_rejects_a_missing_engine_winner() -> None:
+    with pytest.raises(ValueError, match="missing a winner"):
+        terminal_reward(None, TeamColor.RED, state=_state())
 
 
 @pytest.mark.parametrize("winner", ["GREEN", "hero_missing", "not-a-winner"])
@@ -148,6 +149,21 @@ def test_rollout_terminal_path_bypasses_leaf_evaluation(
     )
 
     assert reward == expected
+
+
+def test_rollout_rejects_a_missing_winner_without_consulting_leaf_evaluation() -> None:
+    state = _state()
+    context = SearchContext("hero_wasp", TeamColor.RED, "hero_wasp", DecisionDescriptor("CARD"))
+
+    with pytest.raises(ValueError, match="missing a winner"):
+        _rollout(
+            _TerminalSim(state, TeamColor.RED),  # type: ignore[arg-type]
+            DecisionDescriptor("OVER", winner=None),
+            SearchConfig(leaf_mode=LeafMode.IMMEDIATE),
+            HeuristicAgent(0),
+            _FailingLeafEvaluator(),  # type: ignore[arg-type]
+            context,
+        )
 
 
 def _terminal_input_root(winner: str) -> tuple[Any, InputRequest, tuple[Any, ...]]:

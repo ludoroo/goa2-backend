@@ -14,7 +14,7 @@ server bot coordinator.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -28,6 +28,7 @@ from automata.runtime.driver import (
     inspect_next_decision,
 )
 from automata.runtime.effects import register_all_effects
+from automata.runtime.outcomes import WinnerSide, resolve_terminal_winner_side
 from goa2.domain.input import selection_value
 from goa2.domain.models import GamePhase, TeamColor
 from goa2.domain.state import GameState
@@ -46,6 +47,23 @@ class RunResult:
     turns: int
     steps: int
     reason: str
+    winner_side: WinnerSide | None = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        if self.winner_side not in {None, "RED", "BLUE"}:
+            raise ValueError("winner_side must be RED, BLUE, or None")
+        if self.reason != "game_over":
+            if self.winner is not None or self.winner_side is not None:
+                raise ValueError("non-game-over runs cannot declare a winner")
+            return
+        if (self.winner is None) != (self.winner_side is None):
+            raise ValueError("terminal raw winner and winner_side must both be null or non-null")
+        if (
+            self.winner is not None
+            and self.winner.upper() in {"RED", "BLUE"}
+            and self.winner.upper() != self.winner_side
+        ):
+            raise ValueError("raw team winner disagrees with winner_side")
 
 
 class DecisionObserver(Protocol):
@@ -53,7 +71,9 @@ class DecisionObserver(Protocol):
 
     def record_decision(self, state: GameState, decision: BotDecision) -> None: ...
 
-    def record_outcome(self, *, winner: str | None, rounds: int, reason: str) -> None: ...
+    def record_outcome(
+        self, *, winner_side: WinnerSide | None, rounds: int, reason: str
+    ) -> None: ...
 
 
 def _team_of_request(state: GameState, player_id: str) -> str | None:
@@ -270,18 +290,27 @@ def continue_game(
             progress_callback(state.round, steps)
 
     def finish(winner: str | None, reason: str) -> RunResult:
+        # Diagnostic evidence must survive even when terminal normalization
+        # rejects a malformed engine outcome. Learning observers stay gated.
         rec.record_outcome(winner=winner, rounds=state.round, reason=reason)
-        if decision_observer is not None:
-            decision_observer.record_outcome(winner=winner, rounds=state.round, reason=reason)
-        if boundary_observer is not None:
-            boundary_observer.record_outcome(winner=winner, rounds=state.round, reason=reason)
-        return RunResult(
+        winner_side = resolve_terminal_winner_side(state, winner) if reason == "game_over" else None
+        run_result = RunResult(
             winner=winner,
             rounds=state.round,
             turns=state.turn,
             steps=steps,
             reason=reason,
+            winner_side=winner_side,
         )
+        if decision_observer is not None:
+            decision_observer.record_outcome(
+                winner_side=winner_side, rounds=state.round, reason=reason
+            )
+        if boundary_observer is not None:
+            boundary_observer.record_outcome(
+                winner_side=winner_side, rounds=state.round, reason=reason
+            )
+        return run_result
 
     report_progress()
     while steps < max_steps:
