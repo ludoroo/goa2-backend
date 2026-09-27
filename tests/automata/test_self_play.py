@@ -1676,7 +1676,7 @@ def test_self_play_builtin_lh_preset_constructs_resolved_seeded_strategy(
     assert spec.config.source_config["strategy_preset"] == {
         "name": "learned-policy-heuristic-value",
         "matrix_cell": "L/H",
-        "continuation_policy": "learned-argmax-v1",
+        "continuation_policy": "learned-prior-sampling-v1",
         "value_recipe": HeuristicLeafEvaluator.recipe_id,
         "search_config": dict(spec.config.search_config),
     }

@@ -19,7 +19,10 @@ from automata.search.config import (
     LEARNED_ROOT_WIDENING_C,
     SearchConfig,
 )
-from automata.search.continuation import AgentContinuationPolicy, ArgmaxContinuationPolicy
+from automata.search.continuation import (
+    AgentContinuationPolicy,
+    PriorSamplingContinuationPolicy,
+)
 from automata.search.contracts import LeafEvaluator, LeafMode, SearchPolicy
 from automata.search.fallback import FallbackLeafEvaluator, FallbackSearchPolicy
 from automata.search.heuristic import HeuristicLeafEvaluator, HeuristicPrior
@@ -167,7 +170,7 @@ def agent_for_spec(
             root_widening_alpha=LEARNED_ROOT_WIDENING_ALPHA if learned_root else None,
         )
         continuation = (
-            ArgmaxContinuationPolicy(prior)
+            PriorSamplingContinuationPolicy(prior)
             if settings.policy_source == "learned"
             else AgentContinuationPolicy(policy)
         )

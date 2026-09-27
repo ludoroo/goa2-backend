@@ -70,7 +70,11 @@ from goa2.engine.session import GameSession, SessionResult, SessionResultType
 
 from ..config import SearchConfig
 from ..contextual_noop import ContextualNoopKind, contextual_noop_shape
-from ..continuation import AgentContinuationPolicy, as_continuation_policy
+from ..continuation import (
+    AgentContinuationPolicy,
+    as_continuation_policy,
+    prepare_continuation_policy_for_search,
+)
 from ..contracts import (
     ContinuationPolicy,
     CutoffUnit,
@@ -2000,11 +2004,12 @@ def search(
             else _normalize_weights(root_weights, list(root_legal))
         )
 
-    continuation = (
+    continuation_template = (
         AgentContinuationPolicy(environment_policy)
         if continuation_policy is None
         else as_continuation_policy(continuation_policy)
     )
+    continuation = prepare_continuation_policy_for_search(continuation_template, cfg.seed)
     effective_iterations = root_plan.effective_iterations
     root_coverage_target = root_plan.root_coverage_target
     effective_cfg = replace(

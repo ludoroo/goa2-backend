@@ -1,7 +1,13 @@
 """Model-neutral search contracts and the classic ISMCTS implementation."""
 
 from .config import SearchConfig, parse_learned_lh_search_config
-from .continuation import AgentContinuationPolicy, ArgmaxContinuationPolicy
+from .continuation import (
+    LEARNED_ARGMAX_CONTINUATION_POLICY_ID,
+    LEARNED_PRIOR_SAMPLING_CONTINUATION_POLICY_ID,
+    AgentContinuationPolicy,
+    ArgmaxContinuationPolicy,
+    PriorSamplingContinuationPolicy,
+)
 from .contracts import (
     ContinuationPolicy,
     CutoffUnit,
@@ -30,6 +36,8 @@ from .scheduling import (
 )
 
 __all__ = [
+    "LEARNED_ARGMAX_CONTINUATION_POLICY_ID",
+    "LEARNED_PRIOR_SAMPLING_CONTINUATION_POLICY_ID",
     "LEGACY_SCHEDULE_ID",
     "REQUEST_AWARE_SCHEDULE_V1_ID",
     "REQUEST_AWARE_SCHEDULE_V2_ID",
@@ -41,6 +49,7 @@ __all__ = [
     "LeafEvaluation",
     "LeafEvaluator",
     "LeafMode",
+    "PriorSamplingContinuationPolicy",
     "RootSearchPlan",
     "RootSearchPlanObserver",
     "SearchConfig",

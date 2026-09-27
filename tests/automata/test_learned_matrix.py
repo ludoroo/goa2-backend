@@ -2,9 +2,9 @@ from automata.agents.heuristic_agent import HeuristicAgent
 from automata.evaluation.learned_matrix import LearnedMatrixCell, build_learned_ismcts
 from automata.search.config import SearchConfig
 from automata.search.continuation import (
-    LEARNED_ARGMAX_CONTINUATION_POLICY_ID,
+    LEARNED_PRIOR_SAMPLING_CONTINUATION_POLICY_ID,
     AgentContinuationPolicy,
-    ArgmaxContinuationPolicy,
+    PriorSamplingContinuationPolicy,
 )
 from automata.search.heuristic import HeuristicLeafEvaluator
 from automata.search.learned import LearnedLeafEvaluator, LearnedSearchPolicy
@@ -32,13 +32,19 @@ def test_hh_hl_lh_ll_map_only_to_ismcts_policy_and_leaf_seams() -> None:
             config=SearchConfig(iterations=1, seed=4),
         )
         assert isinstance(strategy._prior, LearnedSearchPolicy) is learned_policy
-        assert isinstance(strategy._continuation_policy, ArgmaxContinuationPolicy) is learned_policy
+        assert (
+            isinstance(strategy._continuation_policy, PriorSamplingContinuationPolicy)
+            is learned_policy
+        )
         assert (
             isinstance(strategy._continuation_policy, AgentContinuationPolicy) is not learned_policy
         )
         if learned_policy:
             assert strategy._continuation_policy.policy is strategy._prior
-            assert strategy._continuation_policy.policy_id == LEARNED_ARGMAX_CONTINUATION_POLICY_ID
+            assert (
+                strategy._continuation_policy.policy_id
+                == LEARNED_PRIOR_SAMPLING_CONTINUATION_POLICY_ID
+            )
         assert isinstance(strategy._leaf_evaluator, LearnedLeafEvaluator) is learned_leaf
         assert isinstance(strategy._leaf_evaluator, HeuristicLeafEvaluator) is not learned_leaf
 

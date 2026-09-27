@@ -80,6 +80,15 @@ continuation choices use the controlled policy; foreign choices use an explicit
 information-safe environment policy. Unsupported simultaneous inputs require an
 explicit fallback rather than silently being treated as foreign.
 
+Learned controlled continuations use `learned-prior-sampling-v1`: sample legal
+follow-ups from the policy distribution, using stable softmax at temperature 1
+for logits. A fresh, domain-separated RNG is bound per search from its configured
+seed and advances across iterations; it is not shared between searches or with
+root/tree, determinization, environment, or live-game randomness. Root PUCT and
+actual-play visit sampling remain separate. Server, self-play, and arena use the
+same continuation recipe. Historical `learned-argmax-v1` evidence retains its
+original identity; sampling must not silently reuse its checkpoint/cache entries.
+
 For actual play, collect distinct real decision owners since the previous
 boundary. At the next accepted boundary, encode one observation for each of
 those viewers using that hero's team perspective. Repeated decisions by the same

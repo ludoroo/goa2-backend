@@ -164,8 +164,8 @@ def test_candidate_is_paired_on_both_sides(runner: arena.LearnedArenaRunner) -> 
     assert protocol.agent_b.params["matrix_cell"] == "L/H"
     assert protocol.agent_a.params["value_recipe"] == "public-consequence-v4"
     assert protocol.agent_b.params["value_recipe"] == "public-consequence-v4"
-    assert protocol.agent_a.params["continuation_policy"] == "learned-argmax-v1"
-    assert protocol.agent_b.params["continuation_policy"] == "learned-argmax-v1"
+    assert protocol.agent_a.params["continuation_policy"] == "learned-prior-sampling-v1"
+    assert protocol.agent_b.params["continuation_policy"] == "learned-prior-sampling-v1"
 
 
 def test_matrix_cells_bind_leaf_evaluators_and_protocol_identity(
@@ -262,6 +262,26 @@ def test_request_schedule_version_changes_arena_protocol_identity(
     assert baseline.agent_a.params["search_config"]["request_schedule_version"] is None
     assert scheduled.agent_a.params["search_config"]["request_schedule_version"] == 1
     assert baseline.identity_digest() != scheduled.identity_digest()
+
+
+def test_sampled_continuation_identity_cannot_resume_argmax_evidence(
+    runner: arena.LearnedArenaRunner,
+) -> None:
+    kwargs = dict(
+        world_seeds=(1,),
+        source_revision="revision",
+        dirty_tree_hash="tree",
+        case_timeout_seconds=30.0,
+    )
+    sampled = arena.build_protocol(runner, **kwargs)
+    argmax = arena.build_protocol(runner, **kwargs)
+    argmax.agent_a.params["continuation_policy"] = "learned-argmax-v1"
+    argmax.agent_b.params["continuation_policy"] = "learned-argmax-v1"
+
+    assert sampled.identity_digest() != argmax.identity_digest()
+    assert {case.case_id for case in sampled.cases()}.isdisjoint(
+        case.case_id for case in argmax.cases()
+    )
 
 
 def test_protocol_identity_supports_resume_but_changes_for_artifacts_or_namespace(
