@@ -1,4 +1,5 @@
 from collections import deque
+from collections.abc import Callable
 
 from goa2.domain.board import DEFAULT_LANE_ID
 from goa2.domain.hex import Hex
@@ -144,11 +145,13 @@ def find_nearest_empty_hexes(
     zone_id: str,
     respect_obstacles: bool = False,
     actor_id: str | None = None,
+    *,
+    destination_allowed: Callable[[Hex], bool] | None = None,
 ) -> list[Hex]:
     """
     Finds the nearest empty hex(es) to start_hex within the specified zone.
     Used for displacement/collision resolution.
-    Returns a list of equally-distant hexes.
+    Returns equally-distant legal destinations; rejected spaces do not stop the search.
     """
     zone = state.board.zones.get(zone_id)
     if not zone:
@@ -174,18 +177,26 @@ def find_nearest_empty_hexes(
             # Check for Obstacle/Occupancy
             # Note: Token is an obstacle. Unit is an occupant. Terrain is an obstacle.
             # Valid = Not Obstacle (terrain OR occupant).
-            if tile and not tile.is_obstacle:
+            if (
+                tile
+                and not tile.is_obstacle
+                and (destination_allowed is None or destination_allowed(current))
+            ):
                 candidates.append(current)
                 found_distance = dist
 
         # Expand (only if we haven't found a closer layer yet)
         if found_distance is None:
             if respect_obstacles:
-                from goa2.engine.topology import get_traversable_neighbors
+                from goa2.engine.topology import get_topology_service
 
-                neighbors = get_traversable_neighbors(current, state, actor_id=actor_id)
+                neighbors = get_topology_service().get_traversable_neighbors(
+                    current, state, actor_id=actor_id, movement_origin=start_hex
+                )
             else:
-                neighbors = get_connected_neighbors(current, state)
+                neighbors = get_connected_neighbors(
+                    current, state, unit_ids=[actor_id] if actor_id else None
+                )
 
             for neighbor in neighbors:
                 # SAFETY: Only expand to hexes that exist on the board

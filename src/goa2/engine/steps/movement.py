@@ -837,6 +837,8 @@ class ResolvePreActionMovementStep(GameStep):
         if not hero_id:
             return StepResult(is_finished=True)
 
+        from goa2.engine.stats import _is_effect_active
+
         effect = next(
             (
                 e
@@ -844,6 +846,7 @@ class ResolvePreActionMovementStep(GameStep):
                 if e.effect_type == EffectType.PRE_ACTION_MOVEMENT
                 and e.source_id == hero_id
                 and e.is_active
+                and _is_effect_active(e, state)
             ),
             None,
         )

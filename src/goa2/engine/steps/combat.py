@@ -1913,12 +1913,16 @@ class ReturnMinionToZoneStep(GameStep):
     Per manual: "If any minion miniature ends up outside the Battle Zone
     after you perform an action, move it by the shortest path of empty
     spaces to an empty space in the same Battle Zone."
+    "If there is no path to the Battle Zone, or the minion cannot move,
+    place that minion in the nearest empty space of the Battle Zone."
 
     If multiple shortest paths exist, the minion's team chooses.
-    Processes minions in tie-breaker coin order.
+    Processes minions in tie-breaker coin order, at most once per check.
+    Automatic returns are not card clauses: failure must not abort progression.
     """
 
     type: StepType = StepType.RETURN_MINION_TO_ZONE
+    # Persist across team choices, but reset for the next after-action check.
     processed_minion_ids: list[str] = Field(default_factory=list)
 
     def _get_minions_outside_zone(self, state: GameState) -> list[tuple[str, TeamColor]]:
@@ -1943,41 +1947,26 @@ class ReturnMinionToZoneStep(GameStep):
                         outside.append((str(minion.id), minion.team))
         return outside
 
-    def _continuation(self, minion_id: str, has_remaining: bool) -> list[GameStep]:
-        if not has_remaining:
-            return []
-        return [
-            ReturnMinionToZoneStep(processed_minion_ids=[*self.processed_minion_ids, minion_id])
-        ]
-
-    def _return_steps(
+    def _return_step(
         self,
         state: GameState,
-        *,
         minion_id: str,
         target_hex: Hex,
+        *,
         uses_placement_fallback: bool,
-        has_remaining: bool,
-    ) -> list[GameStep]:
+    ) -> GameStep:
         from goa2.engine import rules
         from goa2.engine.steps.movement import MoveUnitStep, PlaceUnitStep
 
-        continuation = self._continuation(minion_id, has_remaining)
         if uses_placement_fallback:
-            return [
-                PlaceUnitStep(
-                    unit_id=minion_id,
-                    target_hex_arg=target_hex,
-                    is_mandatory=False,
-                ),
-                *continuation,
-            ]
+            return PlaceUnitStep(unit_id=minion_id, target_hex_arg=target_hex, is_mandatory=False)
 
+        # Destination selection already found an empty traversable path. Use
+        # its shortest length, not geometric distance (which misses detours).
         start_hex = state.get_position(minion_id)
-        max_range = len(state.board.tiles)
-        move_range = max_range
+        move_range = len(state.board.tiles)
         if start_hex is not None:
-            for distance in range(1, max_range + 1):
+            for distance in range(1, move_range + 1):
                 if rules.validate_movement_path(
                     board=state.board,
                     start=start_hex,
@@ -1989,17 +1978,13 @@ class ReturnMinionToZoneStep(GameStep):
                 ):
                     move_range = distance
                     break
-
-        return [
-            MoveUnitStep(
-                unit_id=minion_id,
-                target_hex_arg=target_hex,
-                range_val=move_range,
-                is_movement_action=False,
-                is_mandatory=False,
-            ),
-            *continuation,
-        ]
+        return MoveUnitStep(
+            unit_id=minion_id,
+            target_hex_arg=target_hex,
+            range_val=move_range,
+            is_movement_action=False,
+            is_mandatory=False,
+        )
 
     def resolve(self, state: GameState, context: dict[str, Any]) -> StepResult:
         outside_minions = self._get_minions_outside_zone(state)
@@ -2013,43 +1998,66 @@ class ReturnMinionToZoneStep(GameStep):
 
         # Process first minion
         minion_id, team = outside_minions[0]
-        remaining = outside_minions[1:]
+        continuation: list[GameStep] = (
+            [ReturnMinionToZoneStep(processed_minion_ids=[*self.processed_minion_ids, minion_id])]
+            if len(outside_minions) > 1
+            else []
+        )
 
         loc = state.entity_locations.get(BoardEntityID(minion_id))
         if not loc:
-            # Minion somehow has no location, skip it without rediscovering it.
-            return StepResult(
-                is_finished=True,
-                new_steps=self._continuation(minion_id, bool(remaining)),
-            )
+            return StepResult(is_finished=True, new_steps=continuation)
 
         # Return the minion to the Battle Zone of its own lane
         minion = state.get_unit(UnitID(minion_id))
         home_zone_id = state.battle_zone_for_lane(getattr(minion, "lane_id", DEFAULT_LANE_ID))
         if not home_zone_id:
-            # No active zone for this lane, skip it without rediscovering it.
-            return StepResult(
-                is_finished=True,
-                new_steps=self._continuation(minion_id, bool(remaining)),
-            )
+            return StepResult(is_finished=True, new_steps=continuation)
 
         from goa2.engine.map_logic import find_nearest_empty_hexes
+        from goa2.engine.topology import are_connected
+
+        actor_id = str(state.current_actor_id or minion_id)
+
+        def can_walk_to(destination: Hex) -> bool:
+            return (
+                state.validator.can_be_moved(state, minion_id, actor_id, context).allowed
+                and state.validator.can_move(
+                    state, minion_id, loc.distance(destination), context, is_movement_action=False
+                ).allowed
+            )
+
+        def can_place_at(destination: Hex) -> bool:
+            return are_connected(loc, destination, state, unit_ids=[minion_id]) and (
+                state.validator.can_be_placed(
+                    state, minion_id, actor_id, destination=destination, context=context
+                ).allowed
+            )
 
         candidates = find_nearest_empty_hexes(
-            state, loc, home_zone_id, respect_obstacles=True, actor_id=minion_id
+            state,
+            loc,
+            home_zone_id,
+            respect_obstacles=True,
+            actor_id=minion_id,
+            destination_allowed=can_walk_to,
         )
         uses_placement_fallback = not candidates
 
         if uses_placement_fallback:
-            # If no path exists, place by shortest distance to an empty Battle Zone space.
-            candidates = find_nearest_empty_hexes(state, loc, home_zone_id, respect_obstacles=False)
+            # No legal walk: search for the nearest legal placement, not just
+            # the nearest empty space (which may be across a reality split).
+            candidates = find_nearest_empty_hexes(
+                state,
+                loc,
+                home_zone_id,
+                actor_id=minion_id,
+                destination_allowed=can_place_at,
+            )
 
         if not candidates:
-            logger.debug(f"   [ZONE] No empty space in zone for {minion_id}!")
-            return StepResult(
-                is_finished=True,
-                new_steps=self._continuation(minion_id, bool(remaining)),
-            )
+            logger.debug(f"   [ZONE] No legal return destination for {minion_id}!")
+            return StepResult(is_finished=True, new_steps=continuation)
 
         # If pending input, process it
         if self.pending_input:
@@ -2057,16 +2065,15 @@ class ReturnMinionToZoneStep(GameStep):
             target_hex = parse_hex_selection(selection)
             if target_hex in candidates:
                 logger.debug(f"   [ZONE] Returning {minion_id} to zone at {target_hex}")
-                return StepResult(
-                    is_finished=True,
-                    new_steps=self._return_steps(
+                new_steps: list[GameStep] = [
+                    self._return_step(
                         state,
-                        minion_id=minion_id,
-                        target_hex=target_hex,
+                        minion_id,
+                        target_hex,
                         uses_placement_fallback=uses_placement_fallback,
-                        has_remaining=bool(remaining),
                     ),
-                )
+                ]
+                return StepResult(is_finished=True, new_steps=[*new_steps, *continuation])
             logger.debug("   [ZONE] Rejected invalid hex %r; re-requesting.", selection)
             self.pending_input = None
 
@@ -2074,16 +2081,15 @@ class ReturnMinionToZoneStep(GameStep):
         if len(candidates) == 1:
             target = candidates[0]
             logger.debug(f"   [ZONE] Auto-returning {minion_id} to zone at {target}")
-            return StepResult(
-                is_finished=True,
-                new_steps=self._return_steps(
+            new_steps = [
+                self._return_step(
                     state,
-                    minion_id=minion_id,
-                    target_hex=target,
+                    minion_id,
+                    target,
                     uses_placement_fallback=uses_placement_fallback,
-                    has_remaining=bool(remaining),
                 ),
-            )
+            ]
+            return StepResult(is_finished=True, new_steps=[*new_steps, *continuation])
 
         # Multiple candidates - need team input
         return StepResult(
