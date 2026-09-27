@@ -587,26 +587,26 @@ def test_automatic_input_records_final_decision_semantics(tmp_path):
     assert decisions[0]["automatic"] is True
 
 
-def test_new_automatic_inputs_reconstruct_without_companion_live_save(tmp_path, monkeypatch):
-    """New replay provenance freezes rollback without consulting a game save."""
-    from goa2.server.app import register_all_effects
+@pytest.mark.parametrize(
+    "companion_save",
+    [None, {"bot_specs": {"hero_wasp": {}}}, []],
+    ids=["no-save", "conflicting-bot-ownership", "invalid-save-shape"],
+)
+def test_automatic_inputs_reconstruct_independently_of_game_saves(
+    tmp_path, monkeypatch, companion_save
+):
+    """The migrated fixture records bot inputs but retains Wasp's human confirmation."""
+    from goa2.bootstrap import register_all_effects
 
     register_all_effects()
     fixture = Path(__file__).parent.parent / "fixtures" / "replays" / "bot_automatic_inputs.jsonl"
-    records = [json.loads(line) for line in fixture.read_text().splitlines()]
-    automatic_heroes = {"hero_arien", "hero_brogan", "hero_xargatha"}
-    for record in records:
-        if record.get("type") == "input" and record.get("hero") in automatic_heroes:
-            record["automatic"] = True
-
-    replay_path = tmp_path / "new-format-automatic.jsonl"
-    replay_path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
-    save_dir = tmp_path / "empty-games"
+    save_dir = tmp_path / "games"
     save_dir.mkdir()
+    if companion_save is not None:
+        (save_dir / "a4d127776809.json").write_text(json.dumps(companion_save))
     monkeypatch.setenv("GOA2_SAVE_DIR", str(save_dir))
-    assert not (save_dir / "a4d127776809.json").exists()
 
-    replayed = replay_game(str(replay_path))
+    replayed = replay_game(str(fixture))
 
     assert replayed.state.phase.value == "PLANNING"
     assert replayed.state.round == 1
@@ -615,29 +615,16 @@ def test_new_automatic_inputs_reconstruct_without_companion_live_save(tmp_path, 
     assert replayed._rollback_snapshot is None
 
 
-def test_legacy_bot_inputs_reconstruct_with_automatic_resolution_semantics(tmp_path, monkeypatch):
-    """Bot answers are final, so they must not leave rollback confirmations open."""
-    from goa2.server.app import register_all_effects
-
-    register_all_effects()
-    fixture = Path(__file__).parent.parent / "fixtures" / "replays" / "bot_automatic_inputs.jsonl"
+def test_loading_replay_preserves_recorded_inputs_despite_bot_save(tmp_path, monkeypatch):
+    """A missing automatic flag must not be inferred from a game's current bot roster."""
+    rec = ReplayRecorder("g1", str(tmp_path))
+    _record_setup(rec)
+    rec.record_input("hero_arien", "HOLD", 1, 1)
+    rec.record_input("hero_wasp", "ATTACK", 1, 1, automatic=True)
+    records = [json.loads(line) for line in rec.path.read_text().splitlines()]
     save_dir = tmp_path / "games"
     save_dir.mkdir()
-    (save_dir / "a4d127776809.json").write_text(
-        json.dumps(
-            {
-                "bot_specs": {
-                    "hero_arien": {},
-                    "hero_brogan": {},
-                    "hero_xargatha": {},
-                }
-            }
-        )
-    )
+    (save_dir / "g1.json").write_text(json.dumps({"bot_specs": {"hero_arien": {}}}))
     monkeypatch.setenv("GOA2_SAVE_DIR", str(save_dir))
 
-    replayed = replay_game(str(fixture))
-
-    assert replayed.state.phase.value == "PLANNING"
-    assert replayed.state.round == 1
-    assert replayed.state.turn == 2
+    assert load_replay(str(rec.path)) == (records[0], records[1:])

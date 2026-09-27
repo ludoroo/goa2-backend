@@ -3,9 +3,9 @@
 {"type":"commit","r":1,"t":1,"hero":"hero_brogan","card":"mad_dash","ts":1789200379.4552698}
 {"type":"commit","r":1,"t":1,"hero":"hero_arien","card":"dangerous_current","ts":1789200382.016334}
 {"type":"commit","r":1,"t":1,"hero":"hero_wasp","card":"stop_projectiles","ts":1789200391.0168161}
-{"type":"input","r":1,"t":1,"hero":"hero_arien","sel":"ATTACK","ts":1789200391.157534}
-{"type":"input","r":1,"t":1,"hero":"hero_xargatha","sel":"ATTACK","ts":1789200391.816352}
-{"type":"input","r":1,"t":1,"hero":"hero_brogan","sel":"ATTACK","ts":1789200392.51325}
+{"type":"input","r":1,"t":1,"hero":"hero_arien","sel":"ATTACK","automatic":true,"ts":1789200391.157534}
+{"type":"input","r":1,"t":1,"hero":"hero_xargatha","sel":"ATTACK","automatic":true,"ts":1789200391.816352}
+{"type":"input","r":1,"t":1,"hero":"hero_brogan","sel":"ATTACK","automatic":true,"ts":1789200392.51325}
 {"type":"input","r":1,"t":1,"hero":"hero_wasp","sel":"FAST_TRAVEL","ts":1789200404.954149}
 {"type":"input","r":1,"t":1,"hero":"hero_wasp","sel":{"q":4,"r":-10,"s":6},"ts":1789200410.2863722}
 {"type":"input","r":1,"t":1,"hero":"hero_wasp","sel":"CONFIRM","ts":1789200411.780129}

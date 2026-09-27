@@ -375,7 +375,10 @@ def create_replay_recorder(game_id: str, replay_dir: str | None = None) -> Repla
 
 
 def load_replay(path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Read a replay file into (setup_header, decisions). Raises FileNotFoundError."""
+    """Read recorded setup and decisions without consulting live game saves.
+
+    Automatic-input provenance must be in the log. Raises FileNotFoundError.
+    """
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(f"Replay file not found: {path}")
@@ -396,35 +399,7 @@ def load_replay(path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if setup is None:
         raise ValueError(f"Replay file has no setup header: {path}")
 
-    # Logs written before automatic inputs identified themselves need the
-    # companion live save to recover which heroes were server-managed bots.
-    # This is exact provenance, not an attempt to repair invalid decisions by
-    # guessing after they fail. New logs carry ``automatic`` on each input and
-    # remain independently durable after their game save expires.
-    legacy_bot_heroes = _bot_heroes_from_live_save(setup)
-    if legacy_bot_heroes:
-        for decision in decisions:
-            if (
-                decision.get("type") == "input"
-                and "automatic" not in decision
-                and decision.get("hero") in legacy_bot_heroes
-            ):
-                decision["automatic"] = True
     return setup, decisions
-
-
-def _bot_heroes_from_live_save(setup: dict[str, Any]) -> set[str]:
-    """Recover bot ownership omitted by legacy replay records, if still saved."""
-    game_id = setup.get("game_id")
-    if not game_id:
-        return set()
-    save_dir = Path(os.environ.get("GOA2_SAVE_DIR", "data/games"))
-    try:
-        payload = json.loads((save_dir / f"{game_id}.json").read_text())
-    except (OSError, json.JSONDecodeError):
-        return set()
-    specs = payload.get("bot_specs")
-    return set(specs) if isinstance(specs, dict) else set()
 
 
 def load_clock_telemetry(path: str) -> list[dict[str, Any]]:
