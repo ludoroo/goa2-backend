@@ -16,6 +16,17 @@ Learned-value inference, Gen1 dataset publication, model batching/losses, and th
 learning loop must adopt the transition contract before any fresh Gen1
 generation. Existing commands are not yet Gen1 commands.
 
+**Local integration verified 2026-09-28:** `ai-gen1-reviewed-integration`
+(implementation tip `2ac3ab9`) combines that published stack with merged upstream
+#46/#47, self-contained replay loading, and sampled learned continuations.
+4,971 full-suite tests and source Ruff/Black/mypy pass; independent integration
+review found no blockers and reran 191 focused tests. The five published drafts
+are unchanged. Native-data work remains uncommitted and parked outside this
+checkpoint; no new generation, training, arena experiment, dependency change,
+or historical evidence relabeling
+was performed. See [AI_PR_RESET_HANDOFF.md](AI_PR_RESET_HANDOFF.md) for exact
+inputs, merge decisions, and the publication boundary.
+
 **Status verified 2026-09-25:** #3 is merged at `7e75671`; #4 is merged at
 `851f96a480dd0fcd48c21a95dec30c3536110b2f`. GitHub `main`, `origin/main`, and local
 `main` agree. The merged foundation passes 4,046 tests plus Ruff/mypy; targeted

@@ -23,7 +23,29 @@ and source checks pass. Offline outcome normalization is implemented on
 `ai-gen1-outcome-normalization`: 4,936 full-suite tests and source checks pass;
 independent review is complete. The search/outcome follow-ups are now published
 as drafts #11 → #12 above #10. Native Gen1 data/model integration remains pending.
-No new generation has started and no run artifacts were removed.
+
+**Local integration checkpoint (2026-09-28):** `ai-gen1-reviewed-integration`
+combines published tip `18916f4`, merged upstream #46/#47 through `822e096`,
+reviewed replay cleanup `e97b6d5`, and reviewed sampled continuations `ffc927f`.
+The combined implementation at `2ac3ab9` passes 4,971 full-suite tests and source
+Ruff/Black/mypy. Independent integration review found no blockers and reran 191
+focused tests. This is correctness verification, not new playing-strength
+evidence. No new generation, training, or arena experiment was run;
+dependencies and historical recipe labels are
+unchanged. The five drafts were not updated. Native-data work stays parked and
+uncommitted. [The handoff](AI_PR_RESET_HANDOFF.md) records exact integration
+commits and scope, including the deliberately excluded later upstream Swift fix.
+
+Separately approved replay maintenance migrated `f42c78365da2` using proven bot
+ownership and removed blocked replay `014f56e704d8` at the owner's request;
+its companion save was retained. The other 24 replay logs were not guessed at
+or repaired. The retained local audit is
+`logs/replay-migrations/2026-09-26-EBahd0/` (outside replay TTL cleanup).
+Integration reverified the corrected log's 61/61 decisions and full normalized
+saved/rollback state without changing either artifact. This maintenance does
+not establish that unflagged historical bot logs reconstruct correctly after
+removing implicit live-save recovery.
+
 The historical code checkpoint before reset implementation is
 `88b85d0c1b57c30a31be5fd00a0320236008924a`.
 

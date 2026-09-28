@@ -1,6 +1,44 @@
 # AI PR reset: merge/rebase handoff
 
-## Recommendation
+## Local integration checkpoint — 2026-09-28
+
+Use **`ai-gen1-reviewed-integration`** as the combined local source checkpoint.
+Its implementation tip is `2ac3ab9`; it includes:
+
+- The unchanged published draft-stack tip `18916f4` (#8 → #12).
+- Merge `dd59689`: upstream #47 (`e9ceb25`) and #46 (`822e096`), including
+  the pre-action-movement duration check added to #47 before upstream merged it.
+  The later Swift/Bullet Time change `803bad1` is deliberately excluded.
+- Replay cleanup `bb850a5`, cherry-picked from reviewed `e97b6d5`: loading
+  depends on recorded automatic-input provenance, not companion live saves.
+- Learned continuation sampling `2ac3ab9`, cherry-picked from reviewed
+  `ffc927f`: private seeded per-search sampling and a new recipe identity.
+
+The immunity merge retains the AI attacker-explicit helper, which already checks
+active duration. Minion-return production code matches merged upstream exactly;
+both upstream regressions and existing AI-only progression tests are retained.
+This integration does not remove or newly endorse the inherited AI-only engine
+guards/ownership changes excluded from the upstream gameplay-fix proposals.
+
+**Combined verification:** 4,971 full-suite tests (including server tests),
+53 focused engine regressions, source Ruff/Black/mypy, and diff checks pass.
+Independent integration review found no blockers and reran 191 focused tests.
+The corrected `f42c78365da2` replay also reconstructs 61/61 decisions with an
+empty save directory and matches its normalized saved state and rollback state;
+replay/save artifacts were unchanged.
+These results supersede neither the historical experiment verdicts nor the
+separate verification counts below.
+
+**Publication and next step:** nothing was pushed or changed on GitHub. The
+five draft PRs remain one dependency stack, not five unrelated implementations;
+they were paused for the engine review. Decide how to publish this checkpoint
+and reconcile the old drafts before changing any published heads. Native-data
+work remains dirty and parked on `ai-gen1-native-data`, outside this checkpoint;
+its existing implementation still needs integration, review, and full-suite
+verification. Generation/training/arena experiments remain gated. Dependencies
+and historical model/data identities were not changed.
+
+## Published draft-stack background
 
 PRs **#3 and #4 are merged**. The verified integration base is
 `851f96a480dd0fcd48c21a95dec30c3536110b2f`. PRs **#6 and #7 are closed as
