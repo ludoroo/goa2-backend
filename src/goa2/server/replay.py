@@ -288,10 +288,22 @@ class ReplayRecorder:
     def record_uncommit(self, hero_id: str, round_num: int, turn: int) -> None:
         self._append({"type": "uncommit", "r": round_num, "t": turn, "hero": hero_id})
 
-    def record_input(self, hero_id: str, selection: Any, round_num: int, turn: int) -> None:
-        self._append(
-            {"type": "input", "r": round_num, "t": turn, "hero": hero_id, "sel": selection}
-        )
+    def record_input(
+        self,
+        hero_id: str,
+        selection: Any,
+        round_num: int,
+        turn: int,
+        *,
+        automatic: bool = False,
+    ) -> None:
+        record = {"type": "input", "r": round_num, "t": turn, "hero": hero_id, "sel": selection}
+        if automatic:
+            # Automatic resolution choices are final: live play freezes rollback
+            # before applying them, which also makes the trailing confirmation
+            # auto-complete. Reconstruction must reproduce that control flow.
+            record["automatic"] = True
+        self._append(record)
 
     def record_rollback(self, hero_id: str, round_num: int, turn: int) -> None:
         self._append({"type": "rollback", "r": round_num, "t": turn, "hero": hero_id})
@@ -363,7 +375,10 @@ def create_replay_recorder(game_id: str, replay_dir: str | None = None) -> Repla
 
 
 def load_replay(path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Read a replay file into (setup_header, decisions). Raises FileNotFoundError."""
+    """Read recorded setup and decisions without consulting live game saves.
+
+    Automatic-input provenance must be in the log. Raises FileNotFoundError.
+    """
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(f"Replay file not found: {path}")
@@ -383,6 +398,7 @@ def load_replay(path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
     if setup is None:
         raise ValueError(f"Replay file has no setup header: {path}")
+
     return setup, decisions
 
 
@@ -775,6 +791,12 @@ def _apply_decision(session: GameSession, decision: dict[str, Any]) -> None:
     elif kind == "uncommit":
         session.uncommit_card(hero_id)
     elif kind == "input":
+        if decision.get("automatic") and session.state.phase == GamePhase.RESOLUTION:
+            # Server-managed bot answers are externally revealed and final, like
+            # timer answers. Live play freezes rollback before applying them.
+            session.state.execution_context["rollback_frozen"] = True
+            session._rollback_snapshot = None
+            session._rollback_actor_id = None
         # Replay decisions are trusted server-side data; request UUIDs are
         # intentionally not logged because they are transport correlation,
         # not deterministic game decisions.

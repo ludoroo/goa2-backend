@@ -8,33 +8,41 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 from torch import Tensor, nn
 
 from .batching import DecisionBatch, FeatureTable, RelationshipTable, masked_mean, safe_gather
-from .schema import RecordFeatureSchema, TensorFeatureSchema
+from .schema import (
+    TENSOR_SCHEMA_ID,
+    TENSOR_SCHEMA_VERSION,
+    RecordFeatureSchema,
+    TensorFeatureSchema,
+    TensorSchemaID,
+    TensorSchemaVersion,
+    expanded_numeric_width,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class JointModelConfig:
     """Versioned architecture parameters pinned to one tensor schema."""
 
-    model_version: int
+    model_version: Literal[2]
     schema_digest: str
     token_width: int
     state_width: int
     candidate_width: int
     message_passing_layers: int
     dropout: float = 0.0
-    schema_id: str = "goa2-tensor-features-v1"
-    schema_version: int = 1
+    schema_id: TensorSchemaID = TENSOR_SCHEMA_ID
+    schema_version: TensorSchemaVersion = TENSOR_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.model_version != 1:
-            raise ValueError("unsupported model version")
-        if self.schema_version != 1 or not self.schema_id:
-            raise ValueError("invalid tensor schema identity")
+        identity = (self.model_version, self.schema_id, self.schema_version)
+        if identity != (2, TENSOR_SCHEMA_ID, TENSOR_SCHEMA_VERSION):
+            raise ValueError("unsupported model/tensor schema identity")
         if len(self.schema_digest) != 64 or any(
             character not in "0123456789abcdef" for character in self.schema_digest
         ):
@@ -55,11 +63,11 @@ class JointModelOutput:
 
 
 class _RecordEncoder(nn.Module):
-    """Encode one schema kind without ever embedding reference or public IDs."""
+    """Encode one kind's declared numeric, hashed-identity, and categorical columns."""
 
     def __init__(self, schema: RecordFeatureSchema, width: int, dropout: float) -> None:
         super().__init__()
-        self.numeric_width = len(schema.numeric)
+        self.numeric_width = expanded_numeric_width(schema)
         self.categorical_width = len(schema.categorical)
         embedding_widths = [min(8, max(2, width // 4)) for _ in schema.categorical]
         self.embeddings = nn.ModuleList(
@@ -239,8 +247,14 @@ class JointPolicyValueModel(nn.Module):
             )
             for _ in range(config.message_passing_layers)
         )
+        if schema.decision_context is None:
+            raise ValueError("model v2 requires a decision-context feature schema")
+        self.decision_encoder = _RecordEncoder(
+            schema.decision_context, config.token_width, config.dropout
+        )
+        state_input_width = (len(self.token_kinds) + 1) * config.token_width
         self.state_encoder = nn.Sequential(
-            nn.Linear(len(self.token_kinds) * config.token_width, config.state_width),
+            nn.Linear(state_input_width, config.state_width),
             nn.ReLU(),
             nn.Dropout(config.dropout),
             nn.Linear(config.state_width, config.state_width),
@@ -285,13 +299,14 @@ class JointPolicyValueModel(nn.Module):
                 edge_embeddings,
                 self.token_kinds,
             )
-        pooled = torch.cat(
-            [
-                masked_mean(embeddings[kind], batch.tokens[kind].mask, dim=1)
-                for kind in self.token_kinds
-            ],
-            dim=-1,
-        )
+        pooled_parts = [
+            masked_mean(embeddings[kind], batch.tokens[kind].mask, dim=1)
+            for kind in self.token_kinds
+        ]
+        if batch.decision_context is None:
+            raise ValueError("model v2 requires one decision-context row")
+        pooled_parts.append(self.decision_encoder(batch.decision_context).squeeze(1))
+        pooled = torch.cat(pooled_parts, dim=-1)
         state = self.state_encoder(pooled)
         candidates = self._encode_candidates(batch)
         targets, target_valid = batch.gather_candidate_targets(embeddings)
@@ -330,6 +345,7 @@ class JointPolicyValueModel(nn.Module):
             self.token_encoders,
             self.edge_encoders,
             self.message_layers,
+            self.decision_encoder,
             self.state_encoder,
         )
         groups = {

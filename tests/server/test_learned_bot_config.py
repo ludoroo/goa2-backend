@@ -8,6 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from automata.agents.ismcts_agent import ISMCTSAgent
+from automata.search.continuation import (
+    AgentContinuationPolicy,
+    PriorSamplingContinuationPolicy,
+)
 from automata.search.contracts import LeafMode
 from automata.search.heuristic import HeuristicLeafEvaluator, HeuristicPrior
 from goa2.engine.setup import GameSetup
@@ -73,7 +77,7 @@ def test_artifact_reference_rejects_control_characters(reference: str) -> None:
 def test_hh_factory_does_not_touch_runtime_cache_or_torch(tmp_path: Path) -> None:
     class ExplodingCache:
         def get(self, *args, **kwargs):
-            raise AssertionError("H/H must not load a neural runtime")
+            raise AssertionError("H/H must not load a learned-model runtime")
 
     state = GameSetup.create_game(MAP, ["Razzle"], ["Arien"], game_type="QUICK", seed=3)
     agent = agent_for_spec(
@@ -85,6 +89,7 @@ def test_hh_factory_does_not_touch_runtime_cache_or_torch(tmp_path: Path) -> Non
 
     assert isinstance(agent, ISMCTSAgent)
     assert agent._cfg.leaf_mode is LeafMode.BOUNDED_CONTINUATION
+    assert isinstance(agent._continuation_policy, AgentContinuationPolicy)
 
 
 @pytest.mark.parametrize("failure", ["missing", "file", "outside_symlink"])
@@ -117,6 +122,8 @@ def test_invalid_artifact_path_logs_and_short_circuits_to_heuristics(
 
     assert isinstance(agent._prior, HeuristicPrior)
     assert isinstance(agent._leaf_evaluator, HeuristicLeafEvaluator)
+    assert isinstance(agent._continuation_policy, PriorSamplingContinuationPolicy)
+    assert agent._continuation_policy.policy is agent._prior
     assert "falling back to heuristic" in caplog.text.lower()
 
 
@@ -151,6 +158,35 @@ def test_missing_torch_logs_and_falls_back_without_failing_agent_construction(
     assert "torch" in caplog.text
 
 
+def test_runtime_cache_programmer_value_error_is_not_treated_as_artifact_unavailability(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "champions" / "joint-v1"
+    artifact.mkdir(parents=True)
+
+    class InvalidCacheCall:
+        def get(self, *args, **kwargs):
+            raise ValueError("programmer misuse")
+
+    state = GameSetup.create_game(MAP, ["Razzle"], ["Arien"], game_type="QUICK", seed=3)
+    spec = BotSpec(
+        kind="ismcts",
+        search=SearchSettings(
+            policy_source="learned",
+            value_source="heuristic",
+            artifact=_artifact(),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="programmer misuse"):
+        agent_for_spec(
+            spec,
+            state=state,
+            artifact_root=tmp_path,
+            runtime_cache=InvalidCacheCall(),
+        )
+
+
 def test_ll_factory_loads_one_shared_runtime_for_both_components(tmp_path: Path) -> None:
     artifact = tmp_path / "champions" / "joint-v1"
     artifact.mkdir(parents=True)
@@ -176,7 +212,7 @@ def test_ll_factory_loads_one_shared_runtime_for_both_components(tmp_path: Path)
         ),
     )
 
-    agent_for_spec(
+    agent = agent_for_spec(
         spec,
         state=state,
         artifact_root=tmp_path,
@@ -185,3 +221,40 @@ def test_ll_factory_loads_one_shared_runtime_for_both_components(tmp_path: Path)
 
     assert len(cache.calls) == 1
     assert cache.calls[0][1]["expected_digest"] == "a" * 64
+    assert isinstance(agent, ISMCTSAgent)
+    assert isinstance(agent._continuation_policy, PriorSamplingContinuationPolicy)
+    assert agent._continuation_policy.policy is agent._prior
+    assert agent._cfg.root_puct_c is not None and agent._cfg.root_puct_c > 0.0
+    assert agent._cfg.root_widening_c is not None
+    assert agent._cfg.root_widening_c < agent._cfg.widening_c
+    assert agent._cfg.root_widening_alpha == agent._cfg.widening_alpha
+
+
+def test_learned_value_with_heuristic_policy_keeps_classic_root_defaults(tmp_path: Path) -> None:
+    artifact = tmp_path / "champions" / "joint-v1"
+    artifact.mkdir(parents=True)
+
+    class Cache:
+        def get(self, *args, **kwargs):
+            return object()
+
+    state = GameSetup.create_game(MAP, ["Razzle"], ["Arien"], game_type="QUICK", seed=3)
+    agent = agent_for_spec(
+        BotSpec(
+            kind="ismcts",
+            search=SearchSettings(
+                iterations=1,
+                policy_source="heuristic",
+                value_source="learned",
+                artifact=_artifact(),
+            ),
+        ),
+        state=state,
+        artifact_root=tmp_path,
+        runtime_cache=Cache(),
+    )
+
+    assert isinstance(agent, ISMCTSAgent)
+    assert agent._cfg.root_puct_c is None
+    assert agent._cfg.root_widening_c is None
+    assert agent._cfg.root_widening_alpha is None

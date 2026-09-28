@@ -7,6 +7,9 @@ from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, model_validator
 
+from automata.decision import DecisionSemanticRole
+from goa2.domain.input import InputRequestType
+
 from .observation import LearnedObservation, _Contract
 
 
@@ -139,89 +142,111 @@ class EncodedCandidate(_Contract[Literal[1]]):
         return self
 
 
-class DecisionObservation(_Contract[Literal[3]]):
-    """A v2 state graph paired with an ordered legal decision in schema v3."""
+def _validate_decision_candidates(
+    state: LearnedObservation, candidates: tuple[EncodedCandidate, ...]
+) -> None:
+    candidate_ids = tuple(candidate.candidate_id for candidate in candidates)
+    _require_unique(candidate_ids)
+    tokens = {token.local_ref: token for token in state.tokens}
+    for candidate in candidates:
+        if candidate.target_ref is not None and candidate.target_ref not in tokens:
+            raise ValueError("candidate target reference must identify an observation token")
+        candidate_id = candidate.candidate_id
+        if (
+            isinstance(
+                candidate_id,
+                (CardCandidateID, UnitCandidateID, HexCandidateID, EntityCandidateID),
+            )
+            and candidate.target_ref is None
+        ):
+            raise ValueError("graph-bound candidate requires a target reference")
+        target = tokens.get(candidate.target_ref) if candidate.target_ref is not None else None
+        if isinstance(candidate_id, CardCandidateID):
+            visible_card = (
+                target is not None
+                and target.kind == "CARD"
+                and target.features.get("card_id") == candidate_id.card_id
+            )
+            legal_card_without_visible_token = (
+                target is not None
+                and target.kind == "HERO"
+                and target.features.get("is_decision_owner") is True
+            )
+            if not (visible_card or legal_card_without_visible_token):
+                raise ValueError(
+                    "card candidate reference must identify its visible CARD token "
+                    "or hidden decision owner"
+                )
+        elif isinstance(candidate_id, UnitCandidateID):
+            identity = None
+            if target and target.kind == "UNIT":
+                identity = target.features.get("entity_id", target.features.get("unit_id"))
+            if target and target.kind == "HERO":
+                identity = target.features.get("hero_id")
+            if identity != candidate_id.unit_id:
+                raise ValueError("unit candidate reference must identify its UNIT or HERO token")
+        elif isinstance(candidate_id, HexCandidateID):
+            coordinates = (candidate_id.q, candidate_id.r, candidate_id.s)
+            target_coordinates = (
+                (
+                    target.features.get("q"),
+                    target.features.get("r"),
+                    target.features.get("s"),
+                )
+                if target and target.kind == "TILE"
+                else None
+            )
+            if target_coordinates != coordinates:
+                raise ValueError("hex candidate reference must identify its TILE token")
+        elif isinstance(candidate_id, EntityCandidateID):
+            if target is None or target.kind not in {"TOKEN", "ENTITY"}:
+                raise ValueError("entity candidate reference must identify an entity graph token")
+        elif isinstance(
+            candidate_id,
+            (
+                FinishCandidateID,
+                SkipCandidateID,
+                NumberCandidateID,
+                OptionCandidateID,
+                ActionCandidateID,
+            ),
+        ):
+            if target is not None:
+                raise ValueError("non-graph candidate cannot carry a target reference")
+        else:
+            raise ValueError("unsupported candidate identity variant")
+
+
+class DecisionObservation(_Contract[Literal[4]]):
+    """A v2 state graph paired with typed decision context in schema v4."""
 
     state: LearnedObservation
-    decision_kind: str = Field(min_length=1)
+    decision_kind: Literal["CARD", "INPUT"]
+    input_request_type: str | None
+    can_skip: bool
+    semantic_role: DecisionSemanticRole
     candidates: tuple[EncodedCandidate, ...]
 
     @model_validator(mode="after")
     def _valid_decision_observation(self) -> DecisionObservation:
-        candidate_ids = tuple(candidate.candidate_id for candidate in self.candidates)
-        _require_unique(candidate_ids)
-        tokens = {token.local_ref: token for token in self.state.tokens}
-        for candidate in self.candidates:
-            if candidate.target_ref is not None and candidate.target_ref not in tokens:
-                raise ValueError("candidate target reference must identify an observation token")
-            candidate_id = candidate.candidate_id
-            if (
-                isinstance(
-                    candidate_id,
-                    (CardCandidateID, UnitCandidateID, HexCandidateID, EntityCandidateID),
-                )
-                and candidate.target_ref is None
-            ):
-                raise ValueError("graph-bound candidate requires a target reference")
-            target = tokens.get(candidate.target_ref) if candidate.target_ref is not None else None
-            if isinstance(candidate_id, CardCandidateID):
-                visible_card = (
-                    target is not None
-                    and target.kind == "CARD"
-                    and target.features.get("card_id") == candidate_id.card_id
-                )
-                legal_card_without_visible_token = (
-                    target is not None
-                    and target.kind == "HERO"
-                    and target.features.get("is_decision_owner") is True
-                )
-                if not (visible_card or legal_card_without_visible_token):
-                    raise ValueError(
-                        "card candidate reference must identify its visible CARD token "
-                        "or hidden decision owner"
-                    )
-            elif isinstance(candidate_id, UnitCandidateID):
-                identity = None
-                if target and target.kind == "UNIT":
-                    identity = target.features.get("entity_id", target.features.get("unit_id"))
-                if target and target.kind == "HERO":
-                    identity = target.features.get("hero_id")
-                if identity != candidate_id.unit_id:
-                    raise ValueError(
-                        "unit candidate reference must identify its UNIT or HERO token"
-                    )
-            elif isinstance(candidate_id, HexCandidateID):
-                coordinates = (candidate_id.q, candidate_id.r, candidate_id.s)
-                target_coordinates = (
-                    (
-                        target.features.get("q"),
-                        target.features.get("r"),
-                        target.features.get("s"),
-                    )
-                    if target and target.kind == "TILE"
-                    else None
-                )
-                if target_coordinates != coordinates:
-                    raise ValueError("hex candidate reference must identify its TILE token")
-            elif isinstance(candidate_id, EntityCandidateID):
-                if target is None or target.kind not in {"TOKEN", "ENTITY"}:
-                    raise ValueError(
-                        "entity candidate reference must identify an entity graph token"
-                    )
-            elif isinstance(
-                candidate_id,
-                (
-                    FinishCandidateID,
-                    SkipCandidateID,
-                    NumberCandidateID,
-                    OptionCandidateID,
-                    ActionCandidateID,
-                ),
-            ):
-                if target is not None:
-                    raise ValueError("non-graph candidate cannot carry a target reference")
-            else:
-                raise ValueError("unsupported candidate identity variant")
+        _validate_decision_candidates(self.state, self.candidates)
+        has_skip = any(isinstance(item.candidate_id, SkipCandidateID) for item in self.candidates)
+        if self.can_skip != has_skip:
+            raise ValueError("can_skip must exactly match the presence of a SKIP candidate")
+        if self.decision_kind == "CARD":
+            if self.input_request_type is not None:
+                raise ValueError("CARD decision cannot carry an input request type")
+            if self.can_skip:
+                raise ValueError("CARD planning uses FINISH, never can_skip")
+            if self.semantic_role is not DecisionSemanticRole.PLANNING:
+                raise ValueError("CARD decision must have the PLANNING semantic role")
+        else:
+            if self.input_request_type is None:
+                raise ValueError("INPUT decision requires an input request type")
+            if self.input_request_type not in {item.value for item in InputRequestType}:
+                raise ValueError("INPUT decision has an unknown input request type")
+            if self.semantic_role is DecisionSemanticRole.PLANNING:
+                raise ValueError("INPUT decision cannot have the PLANNING semantic role")
         return self
 
 

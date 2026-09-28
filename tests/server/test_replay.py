@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -574,3 +575,56 @@ def test_setup_header_defaults_player_names_to_empty(tmp_path):
     )
     header = json.loads((tmp_path / "g2.jsonl").read_text().splitlines()[0])
     assert header["player_names"] == {}
+
+
+def test_automatic_input_records_final_decision_semantics(tmp_path):
+    rec = ReplayRecorder("automatic", str(tmp_path))
+    _record_setup(rec)
+
+    rec.record_input("hero_arien", "ATTACK", 1, 1, automatic=True)
+
+    _, decisions = load_replay(str(rec.path))
+    assert decisions[0]["automatic"] is True
+
+
+@pytest.mark.parametrize(
+    "companion_save",
+    [None, {"bot_specs": {"hero_wasp": {}}}, []],
+    ids=["no-save", "conflicting-bot-ownership", "invalid-save-shape"],
+)
+def test_automatic_inputs_reconstruct_independently_of_game_saves(
+    tmp_path, monkeypatch, companion_save
+):
+    """The migrated fixture records bot inputs but retains Wasp's human confirmation."""
+    from goa2.bootstrap import register_all_effects
+
+    register_all_effects()
+    fixture = Path(__file__).parent.parent / "fixtures" / "replays" / "bot_automatic_inputs.jsonl"
+    save_dir = tmp_path / "games"
+    save_dir.mkdir()
+    if companion_save is not None:
+        (save_dir / "a4d127776809.json").write_text(json.dumps(companion_save))
+    monkeypatch.setenv("GOA2_SAVE_DIR", str(save_dir))
+
+    replayed = replay_game(str(fixture))
+
+    assert replayed.state.phase.value == "PLANNING"
+    assert replayed.state.round == 1
+    assert replayed.state.turn == 2
+    assert replayed.state.execution_stack == []
+    assert replayed._rollback_snapshot is None
+
+
+def test_loading_replay_preserves_recorded_inputs_despite_bot_save(tmp_path, monkeypatch):
+    """A missing automatic flag must not be inferred from a game's current bot roster."""
+    rec = ReplayRecorder("g1", str(tmp_path))
+    _record_setup(rec)
+    rec.record_input("hero_arien", "HOLD", 1, 1)
+    rec.record_input("hero_wasp", "ATTACK", 1, 1, automatic=True)
+    records = [json.loads(line) for line in rec.path.read_text().splitlines()]
+    save_dir = tmp_path / "games"
+    save_dir.mkdir()
+    (save_dir / "g1.json").write_text(json.dumps({"bot_specs": {"hero_arien": {}}}))
+    monkeypatch.setenv("GOA2_SAVE_DIR", str(save_dir))
+
+    assert load_replay(str(rec.path)) == (records[0], records[1:])

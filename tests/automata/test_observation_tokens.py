@@ -10,7 +10,7 @@ from typing import Any, cast
 
 import pytest
 
-from automata.models import PublicSnapshot, Viewer, canonical_json_bytes
+from automata.models.contracts import PublicSnapshot, Viewer, canonical_json_bytes
 from automata.observation import project_snapshot
 from automata.runtime.clone import clone_state
 from goa2.domain.models import (

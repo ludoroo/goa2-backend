@@ -3,7 +3,7 @@ from __future__ import annotations
 from goa2.domain.models import ActionType, Card, CardColor, CardTier
 from goa2.domain.models.effect import DurationType, EffectScope, EffectType, Shape
 from goa2.engine.effect_manager import EffectManager
-from goa2.engine.filters_units import ImmunityFilter
+from goa2.engine.filters_units import ImmunityFilter, is_attack_immune_to_actor
 from goa2.engine.steps.combat import AttackSequenceStep
 from goa2.engine.steps.effects import CreateEffectStep
 from tests.engine.effects.builders import EffectScenarioBuilder
@@ -133,6 +133,52 @@ def test_default_attack_immunity_still_blocks_all_attacks_and_honors_exceptions(
     state.get_hero("hero_attacker").current_turn_card = _attack_card("basic_attack", CardColor.GOLD)
     _classify_attack(state)
     assert _target_is_allowed(state) is True
+
+
+def test_attack_immunity_remains_fail_closed_when_current_actor_is_missing() -> None:
+    state = _state(_attack_card("basic_attack", CardColor.GOLD))
+    _protect(state)
+    state.execution_context.update(
+        {"current_action_type": ActionType.ATTACK, "attack_is_basic": True}
+    )
+    state.current_actor_id = None
+
+    assert _target_is_allowed(state) is False
+
+
+def test_explicit_attacker_immunity_helper_matches_filter_semantics() -> None:
+    state = _state(_attack_card("basic_attack", CardColor.GOLD))
+    _protect(
+        state,
+        basic_attacks_only=True,
+        except_attacker_ids=["hero_exception"],
+    )
+    state.execution_context.update(
+        {"current_action_type": ActionType.ATTACK, "attack_is_basic": True}
+    )
+
+    assert is_attack_immune_to_actor(
+        "hero_defender", state, actor_id="hero_attacker", attack_is_basic=True
+    )
+    assert not is_attack_immune_to_actor(
+        "hero_defender", state, actor_id="hero_exception", attack_is_basic=True
+    )
+    assert not is_attack_immune_to_actor(
+        "hero_defender", state, actor_id="hero_attacker", attack_is_basic=False
+    )
+    assert not is_attack_immune_to_actor(
+        "different_candidate", state, actor_id="hero_attacker", attack_is_basic=True
+    )
+
+
+def test_explicit_attacker_immunity_helper_keeps_duration_check() -> None:
+    state = _state(_attack_card("basic_attack", CardColor.GOLD))
+    effect = _protect(state)
+    effect.duration = DurationType.NEXT_TURN
+
+    assert not is_attack_immune_to_actor(
+        "hero_defender", state, actor_id="hero_attacker", attack_is_basic=True
+    )
 
 
 def test_create_effect_step_plumbs_basic_attacks_only_payload() -> None:
