@@ -253,6 +253,12 @@ async def bounded_inspect_next_decision(
             logger.exception("ismcts: semaphore release raised (game=%s)", game.game_id)
         untrack_future(done, game)
         if abandoned:
+            # The caller deliberately stopped awaiting this shielded executor
+            # future. Retrieve a late exception so asyncio does not report
+            # "Future exception was never retrieved" while still dropping the
+            # stale result exactly as before.
+            if not done.cancelled():
+                done.exception()
             metrics.late_completions += 1
             logger.info(
                 "ismcts: late_completion (dropped) game=%s owner=%s search_wall=%.3fs",
