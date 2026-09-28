@@ -19,6 +19,12 @@ fix (`803bad1`) already on main. All Automata production code and dependency
 manifests still match `004cd86`; no replacement AI implementation is introduced.
 The old PR decomposition below explains ownership, not the current merge order.
 
+Combined verification at `9bfeec7`: **4,963 full-suite tests passed**, with GoA2
+coverage **87.76%** (branches enabled, 80% gate). Ruff/Black over `src tests`,
+mypy over `src`, and diff checks pass. A read-only merge/provenance review found
+no blockers and ran no tests; these are parent-run local checks, not a claim of
+GitHub Actions success. Baseline main `ddc46d2` separately passed 4,064 tests.
+
 This landing does not complete the native data/model/trainer work or authorize
 Gen1 generation/training. The dirty native-data checkout remains parked.
 
