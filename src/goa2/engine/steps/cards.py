@@ -991,9 +991,7 @@ class ResolveCardStep(GameStep):
                                 value=card.current_effect_id,
                             )
                         )
-                        steps_list.append(
-                            SetContextFlagStep(key="basic_action_card_id", value=card.id)
-                        )
+                    steps_list.append(SetContextFlagStep(key="basic_action_card_id", value=card.id))
                     steps_list.append(
                         CheckPassiveAbilitiesStep(trigger=PassiveTrigger.AFTER_BASIC_ACTION.value)
                     )
@@ -2363,15 +2361,13 @@ class PerformCardActionStep(GameStep):
                     )
                 )
             if is_primary and card.current_effect_id:
-                steps.extend(
-                    [
-                        SetContextFlagStep(
-                            key="basic_action_effect_id",
-                            value=card.current_effect_id,
-                        ),
-                        SetContextFlagStep(key="basic_action_card_id", value=card.id),
-                    ]
+                steps.append(
+                    SetContextFlagStep(
+                        key="basic_action_effect_id",
+                        value=card.current_effect_id,
+                    )
                 )
+            steps.append(SetContextFlagStep(key="basic_action_card_id", value=card.id))
             steps.append(CheckPassiveAbilitiesStep(trigger=PassiveTrigger.AFTER_BASIC_ACTION.value))
         if is_primary:
             steps.append(

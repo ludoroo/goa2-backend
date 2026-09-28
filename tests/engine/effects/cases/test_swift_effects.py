@@ -865,3 +865,44 @@ def test_bullet_time_reperform_of_bounce_allows_repeat() -> None:
     run.choose({"q": 6, "r": 0, "s": -6}).finish()
 
     assert state.entity_locations.get("hero_swift") == Hex(q=6, r=0, s=-6)
+
+
+@pytest.mark.effect_flow
+def test_bullet_time_after_basic_secondary_performs_the_primary_action() -> None:
+    # Reload! used for its secondary movement still resolves a basic card, so
+    # Bullet Time offers Reload!'s primary action, which copies last turn's Killshot.
+    from goa2.data.heroes.registry import HeroRegistry
+    from goa2.domain.models import CardState
+
+    state = (
+        EffectScenarioBuilder()
+        .with_hexes(_hex_disk(5))
+        .red_hero("hero_swift", at=(0, 0, 0), current_card=hero_card("Swift", "reload"))
+        .blue_hero("hero_a", at=(4, 0, -4))
+        .with_actor("hero_swift")
+        .build()
+    )
+    swift = state.get_hero("hero_swift")
+    killshot = hero_card("Swift", "killshot")
+    killshot.state = CardState.RESOLVED
+    swift.played_cards = [killshot]
+    swift.level = 8
+    swift.ultimate_card = HeroRegistry.get("Swift").ultimate_card.model_copy(deep=True)
+    state.get_hero("hero_a").hand = []
+
+    run = run_card(state, "hero_swift")
+    run.expect_input(InputRequestType.CHOOSE_ACTION)
+    run.choose("MOVEMENT").expect_input(InputRequestType.SELECT_HEX)
+    run.choose({"q": 1, "r": 0, "s": -1}).expect_input(InputRequestType.CONFIRM_PASSIVE)
+
+    run.choose("YES").expect_input(InputRequestType.SELECT_NUMBER)  # Reload!'s choice
+    run.choose(1).expect_input(InputRequestType.SELECT_UNIT)  # Killshot's target
+    assert "hero_a" in _option_set(run)
+    run.choose("hero_a").expect_input(InputRequestType.SELECT_CARD_OR_PASS)
+    run.choose("PASS").finish()
+
+    assert [
+        e
+        for e in run.events
+        if e.event_type == GameEventType.COMBAT_RESOLVED and e.target_id == "hero_a"
+    ]

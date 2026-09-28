@@ -534,8 +534,10 @@ class ReloadEffect(CardEffect):
     def build_steps(
         self, state: GameState, hero: Hero, card: Card, stats: CardStats
     ) -> list[GameStep]:
-        # Rightmost resolved card = the most recently resolved card. Reload
-        # itself is the current turn card (not yet resolved), so it is excluded.
+        # Rightmost resolved card = the most recently resolved card, never Reload!
+        # itself. RAW, Bullet Time's re-perform would copy Reload! (already
+        # resolved); the designer rules it copies the earlier card, per the older
+        # "card in the previous turn slot" wording.
         resolved = [c for c in hero.played_cards if c is not None]
         rightmost_id = resolved[-1].id if resolved else None
 
@@ -638,7 +640,9 @@ class BulletTimeEffect(CardEffect):
     the same turn this way."
 
     Basic card = Gold/Silver (``card.is_basic``). AFTER_BASIC_ACTION fires after
-    every basic primary action and publishes ``basic_action_card_id``.
+    every basic action, primary or secondary, and publishes
+    ``basic_action_card_id``; a card resolved by its secondary still gets its
+    primary performed.
 
     "Cannot target the same enemy hero twice this way": the just-resolved basic
     action's combat target is published by ResolveCombatStep under the standard
@@ -668,8 +672,6 @@ class BulletTimeEffect(CardEffect):
     ) -> bool:
         if trigger != PassiveTrigger.AFTER_BASIC_ACTION:
             return False
-        # Only when a basic primary action was just resolved (the card id is only
-        # published for primary actions of basic cards).
         return bool(context.get("basic_action_card_id"))
 
     def get_passive_steps(
