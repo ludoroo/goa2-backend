@@ -78,3 +78,41 @@ The dirty `ai-gen1-native-data` checkout remains untouched and uncommitted.
 No generation, training, or arena experiment is authorized by this cleanup.
 The dependency manifests retain the already-reviewed changes in their original
 layers; this cleanup adds no dependency changes.
+
+## Cleaned-stack verification — 2026-09-28
+
+Every layer passed the repository's existing CI commands locally, including
+Ruff and Black over **both `src` and `tests`**, mypy over `src`, and the full
+pytest suite with GoA2 branch-aware coverage and the 80% coverage gate:
+
+| Layer | Tested implementation | Full-suite tests | GoA2 coverage (branches enabled) |
+|---|---|---:|---:|
+| Upstream sync | `d5b0540` | 4,063 | 87.53% |
+| #8 AI seams/replay | `22cef92` | 4,100 | 87.61% |
+| #9 runtime/sampling | `b511ba8` | 4,313 | 87.62% |
+| #10 offline infrastructure | `40af1c8` | 4,847 | 87.73% |
+| #11 stable-transition search | `9c7ac3b` | 4,905 | 87.73% |
+| #12 outcome normalization | `f8b80a4` | 4,962 | 87.76% |
+
+A separate read-only review found no blockers in the source cleanup, the layer
+partition, or the subsequent test/documentation correction. That reviewer ran
+no tests; the counts above are parent-run full suites, not reviewer evidence.
+Local passes do not imply a GitHub Actions run succeeded; check the PR's current
+remote checks separately.
+
+The first #10 coverage run exposed a timing-sensitive test: a real first search
+could exceed its arbitrary one-second deadline before the intended second-search
+timeout. The test now injects that second-decision expiry after a real search
+plan, keeping the fragment discard, next-game continuation, and telemetry checks.
+Dedicated tests still exercise real POSIX expiry and nested deadlines. Production
+timeout behavior is unchanged; the full corrected suite passed.
+
+The corrected replay `f42c78365da2` reconstructs 61/61 decisions with an empty save
+directory and matches its full normalized saved state and rollback state. Replay
+and save bytes were not changed. Parked checkout branch, HEAD, status, and all
+nine dirty/untracked file fingerprints were rechecked unchanged.
+
+The final `src/automata` tree and dependency manifests match the prior reviewed
+combined checkpoint `0631d50`. The intended differences are the engine-scope
+removal, associated engine-test cleanup/parity coverage, the deterministic test
+fixture above, and documentation. No native-data implementation is included.
