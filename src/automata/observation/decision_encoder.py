@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Hashable, Sequence
-from typing import Any
+from typing import Any, Literal, cast
 
-from automata.decision import DecisionDescriptor
+from automata.decision import DecisionDescriptor, classify_decision
 from automata.models.contracts import (
     ActionCandidateID,
     CandidateID,
@@ -327,10 +327,14 @@ def encode_decision(
 
     if [_stable(key) for key in legal_keys] != [_stable(key) for key in expected_keys]:
         raise ValueError("legal candidates do not match request options")
+    semantics = classify_decision(state, decision)
     return DecisionObservation(
-        schema_version=3,
+        schema_version=4,
         state=graph,
-        decision_kind=decision.kind,
+        decision_kind=cast(Literal["CARD", "INPUT"], decision.kind),
+        input_request_type=semantics.input_request_type,
+        can_skip=semantics.can_skip,
+        semantic_role=semantics.semantic_role,
         candidates=tuple(candidates),
     )
 

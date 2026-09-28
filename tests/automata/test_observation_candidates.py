@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from automata.decision import DecisionDescriptor as Decision
-from automata.models import DecisionObservation, canonical_json_bytes, from_canonical_json
+from automata.models.contracts import DecisionObservation, canonical_json_bytes, from_canonical_json
 from automata.search.ismcts.engine import legal_keys
 from goa2.domain.hex import Hex
 from goa2.domain.input import InputOption, InputRequest, InputRequestType

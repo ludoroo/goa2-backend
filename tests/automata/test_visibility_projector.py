@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import pytest
 
-from automata.models import Viewer, canonical_json_bytes
+from automata.models.contracts import Viewer, canonical_json_bytes
 from automata.observation import project_snapshot
 from goa2.domain.board import Board, Zone
 from goa2.domain.hex import Hex

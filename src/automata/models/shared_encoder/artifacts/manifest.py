@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from ..schema import TensorSchemaID, TensorSchemaVersion
+
 
 class _FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -24,15 +26,15 @@ class ArtifactTensor(_FrozenModel):
 class ModelArtifactManifest(_FrozenModel):
     schema_version: Literal[2] = 2
     model_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    observation_schema_version: int
+    observation_schema_version: Literal[4]
     map_schema_version: int
-    runtime_compatibility_version: int
+    runtime_compatibility_version: Literal[2]
     hero_adapter_versions: dict[str, int]
     supported_heroes: tuple[str, ...]
     supported_maps: tuple[str, ...]
     supported_game_types: tuple[str, ...]
-    tensor_schema_id: str
-    tensor_schema_version: int
+    tensor_schema_id: TensorSchemaID
+    tensor_schema_version: TensorSchemaVersion
     tensor_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     architecture_config: dict[str, JsonValue]
     tensors: dict[str, ArtifactTensor]

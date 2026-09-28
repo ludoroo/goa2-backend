@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import struct
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -9,9 +11,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-import automata.models as nn
+import automata.models.contracts as learned_contracts
 import automata.models.shared_encoder.schema as feature_schema_contracts
 from automata.decision import DecisionDescriptor as Decision
+from automata.decision import DecisionSemanticRole
 from automata.observation import encode_decision
 from automata.search.ismcts.engine import legal_keys
 from goa2.domain.input import InputOption, InputRequest, InputRequestType
@@ -208,7 +211,7 @@ def _request(
     )
 
 
-def _encode(state: Any, decision: Decision) -> nn.DecisionObservation:
+def _encode(state: Any, decision: Decision) -> learned_contracts.DecisionObservation:
     return encode_decision(
         state,
         decision,
@@ -219,7 +222,7 @@ def _encode(state: Any, decision: Decision) -> nn.DecisionObservation:
 
 
 @pytest.fixture(scope="module")
-def observation() -> nn.DecisionObservation:
+def observation() -> learned_contracts.DecisionObservation:
     state = _state()
     return _encode(
         state,
@@ -243,6 +246,7 @@ def schema():
 def _record_schema_fields(record_schema: Any) -> set[str]:
     declarations = (
         tuple(record_schema.numeric)
+        + tuple(record_schema.hashed)
         + tuple(record_schema.categorical)
         + tuple(record_schema.references)
         + tuple(record_schema.ignored)
@@ -251,19 +255,98 @@ def _record_schema_fields(record_schema: Any) -> set[str]:
 
 
 def test_current_schema_is_frozen_versioned_and_canonically_artifact_pinnable(schema: Any) -> None:
-    assert schema.schema_version >= 1
-    assert schema.schema_id
+    assert schema.schema_version == feature_schema_contracts.TENSOR_SCHEMA_VERSION == 2
+    assert schema.schema_id == feature_schema_contracts.TENSOR_SCHEMA_ID
+    assert schema.schema_id == "goa2-tensor-features-v2"
     assert len(schema.digest) == 64
     assert schema == feature_schema_contracts.TensorFeatureSchema.current()
 
-    encoded = nn.canonical_json_bytes(schema)
-    restored = nn.from_canonical_json(feature_schema_contracts.TensorFeatureSchema, encoded)
+    encoded = learned_contracts.canonical_json_bytes(schema)
+    restored = learned_contracts.from_canonical_json(
+        feature_schema_contracts.TensorFeatureSchema, encoded
+    )
     assert restored == schema
-    assert nn.canonical_json_bytes(restored) == encoded
+    assert learned_contracts.canonical_json_bytes(restored) == encoded
     assert restored.digest == schema.digest
 
     with pytest.raises((ValidationError, TypeError)):
         schema.schema_id = "mutable"
+
+
+def test_v2_decision_context_vocabularies_are_literal_frozen_snapshots(schema: Any) -> None:
+    assert schema.digest == "608ea298bfbe9b6b751b0a756e2b8ffd87098a5012804f1beaf7d6d1c79ab933"
+    assert set(feature_schema_contracts.DECISION_CONTEXT_REQUEST_TYPES_V2) == {
+        item.value for item in InputRequestType
+    }
+    assert set(feature_schema_contracts.DECISION_CONTEXT_SEMANTIC_ROLES_V2) == {
+        item.value for item in DecisionSemanticRole
+    }
+    context = schema.decision_context
+    assert context is not None
+    categorical = {item.source: item.vocabulary[3:] for item in context.categorical}
+    assert categorical["input_request_type"] == (
+        *feature_schema_contracts.DECISION_CONTEXT_REQUEST_TYPES_V2,
+    )
+    assert categorical["semantic_role"] == (
+        *feature_schema_contracts.DECISION_CONTEXT_SEMANTIC_ROLES_V2,
+    )
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "schema_id", "observation_schema_version"),
+    [
+        (1, "goa2-tensor-features-v1", 3),
+        (999, "incompatible-tensor-schema", 4),
+    ],
+    ids=["obsolete-v1", "unknown"],
+)
+def test_incompatible_tensor_schema_identity_is_rejected_instead_of_reinterpreted(
+    schema: Any,
+    schema_version: int,
+    schema_id: str,
+    observation_schema_version: int,
+) -> None:
+    payload = schema.model_dump(mode="json")
+    payload.update(
+        schema_version=schema_version,
+        schema_id=schema_id,
+        observation_schema_version=observation_schema_version,
+    )
+
+    with pytest.raises(
+        ValidationError, match=r"schema_version|schema_id|observation_schema_version"
+    ):
+        feature_schema_contracts.TensorFeatureSchema.model_validate(payload)
+
+
+def test_candidate_hash_semantics_are_bound_into_tensor_schema_digest(schema: Any) -> None:
+    payload = schema.model_dump(mode="json")
+    option = next(item for item in payload["candidates"] if item["kind"] == "OPTION")
+    option["hashed"][0]["dimension"] += 1
+
+    with pytest.raises(ValidationError, match="digest"):
+        feature_schema_contracts.TensorFeatureSchema.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"dimension": 4097}, "dimension"),
+        ({"max_n": 17}, "max_n"),
+    ],
+)
+def test_hashed_feature_resource_bounds_fail_closed(change: dict[str, int], message: str) -> None:
+    values = {
+        "source": "option_id",
+        "namespace": "OPTION",
+        "dimension": 64,
+        "min_n": 1,
+        "max_n": 4,
+        **change,
+    }
+
+    with pytest.raises(ValidationError, match=message):
+        feature_schema_contracts.HashedStringFeature(**values)
 
 
 def test_schema_explicitly_accounts_for_every_current_encoder_field(schema: Any) -> None:
@@ -282,6 +365,14 @@ def test_schema_explicitly_accounts_for_every_current_encoder_field(schema: Any)
             assert feature.dtype in {"BOOLEAN", "INTEGER", "FLOAT"}
             assert feature.default is not None
             assert feature.normalization in {"NONE", "STANDARD", "MIN_MAX", "SIGNED_LOG"}
+        for feature in item.hashed:
+            assert feature.algorithm == "BLAKE2B_SIGNED_CHARACTER_NGRAM"
+            assert feature.algorithm_version == 1
+            assert feature.dimension > 0
+            assert 1 <= feature.min_n <= feature.max_n
+            assert feature.boundary_markers is True
+            assert feature.normalization == "L2"
+            assert feature.namespace in {"ACTION", "OPTION"}
         for feature in item.categorical:
             assert feature.policy == "DIRECT"
             assert tuple(feature.vocabulary[:3]) == ("PAD", "UNK", "MISSING")
@@ -339,13 +430,13 @@ def test_raw_record_ids_are_not_categorical_model_features(schema: Any) -> None:
         for declaration in item.categorical
     }
     assert prohibited.isdisjoint(categorical)
-    artifact = nn.canonical_json_bytes(schema)
+    artifact = learned_contracts.canonical_json_bytes(schema)
     assert b"hero_razzle" not in artifact
     assert b"razzle_card_1" not in artifact
 
 
 def test_vectorization_is_order_invariant_per_local_record(
-    schema: Any, observation: nn.DecisionObservation
+    schema: Any, observation: learned_contracts.DecisionObservation
 ) -> None:
     original = schema.vectorize(observation, training=True)
     reordered_tokens = tuple(
@@ -380,7 +471,7 @@ def test_vectorization_is_order_invariant_per_local_record(
 
 
 def test_references_resolve_after_token_permutation_and_optional_missing_is_masked(
-    schema: Any, observation: nn.DecisionObservation
+    schema: Any, observation: learned_contracts.DecisionObservation
 ) -> None:
     permuted = observation.model_copy(
         update={
@@ -407,7 +498,7 @@ def test_references_resolve_after_token_permutation_and_optional_missing_is_mask
 
 
 def test_required_missing_reference_and_unexpected_training_field_fail_closed(
-    schema: Any, observation: nn.DecisionObservation
+    schema: Any, observation: learned_contracts.DecisionObservation
 ) -> None:
     unit_index = next(i for i, token in enumerate(observation.state.tokens) if token.kind == "UNIT")
     unit = observation.state.tokens[unit_index]
@@ -438,14 +529,14 @@ def test_required_missing_reference_and_unexpected_training_field_fail_closed(
 
 
 def test_bool_missing_unknown_and_malformed_numbers_have_explicit_behavior(
-    schema: Any, observation: nn.DecisionObservation
+    schema: Any, observation: learned_contracts.DecisionObservation
 ) -> None:
     global_index = next(
         i for i, token in enumerate(observation.state.tokens) if token.kind == "GLOBAL"
     )
     global_token = observation.state.tokens[global_index]
 
-    def changed(**features: Any) -> nn.DecisionObservation:
+    def changed(**features: Any) -> learned_contracts.DecisionObservation:
         tokens = list(observation.state.tokens)
         tokens[global_index] = global_token.model_copy(
             update={"features": {**global_token.features, **features}}
@@ -581,8 +672,70 @@ def test_all_current_candidate_kinds_vectorize_and_order_and_ids_stay_python_sid
     assert seen == CANDIDATE_KINDS
 
 
+def test_action_and_option_candidate_ids_have_deterministic_open_world_identity_vectors(
+    schema: Any,
+) -> None:
+    state = _state()
+
+    def identity_vector(kind: InputRequestType, candidate_id: str) -> tuple[float, ...]:
+        encoded = _encode(state, Decision("INPUT", request=_request(kind, [candidate_id])))
+        vectorized = schema.vectorize(encoded, training=True)
+        assert vectorized.candidate_ids == tuple(
+            candidate.candidate_id for candidate in encoded.candidates
+        )
+        return vectorized.candidates[0].numeric
+
+    golden_vectors = (
+        (
+            InputRequestType.SELECT_OPTION,
+            "hold",
+            "753f7539259e35a35cc4311d42202a3aaf64374174b2761870691bbfeeb36f8e",
+        ),
+        (
+            InputRequestType.CHOOSE_ACTION,
+            "advance",
+            "157e113f2c20038d51882f7c9fbcdae63f2b1c7094a1a15c0a46b28e08a7fde7",
+        ),
+        (
+            InputRequestType.SELECT_OPTION,
+            "café-東京",
+            "233d34cbb71d577ca7d14ea91e576d427ca4cb41056fe927e8a32d341ae28026",
+        ),
+        (
+            InputRequestType.CHOOSE_ACTION,
+            "teleport-😀",
+            "2c9dd5ba3ac5a25757952b6b24c52282e9fdb6174cfc8c1401a70d7039a0734a",
+        ),
+    )
+    vectors: dict[tuple[InputRequestType, str], tuple[float, ...]] = {}
+    for request_type, candidate_id, expected_digest in golden_vectors:
+        vector = identity_vector(request_type, candidate_id)
+        vectors[(request_type, candidate_id)] = vector
+        assert vector == identity_vector(request_type, candidate_id)
+        assert hashlib.sha256(struct.pack(f">{len(vector)}d", *vector)).hexdigest() == (
+            expected_digest
+        )
+
+    assert vectors[(InputRequestType.SELECT_OPTION, "hold")] != identity_vector(
+        InputRequestType.SELECT_OPTION, "advance"
+    )
+    assert vectors[(InputRequestType.SELECT_OPTION, "hold")] != identity_vector(
+        InputRequestType.SELECT_OPTION, "future-extension:teleport"
+    )
+    assert (
+        identity_vector(InputRequestType.CHOOSE_ACTION, "hold")
+        != vectors[(InputRequestType.SELECT_OPTION, "hold")]
+    )
+
+    option_schema = next(item for item in schema.candidates if item.kind == "OPTION")
+    action_schema = next(item for item in schema.candidates if item.kind == "ACTION")
+    assert option_schema.hashed[0].source == "option_id"
+    assert action_schema.hashed[0].source == "action_id"
+    assert option_schema.hashed[0].namespace != action_schema.hashed[0].namespace
+
+
 def test_empty_candidate_decision_fails_vectorization(
-    schema: Any, observation: nn.DecisionObservation
+    schema: Any, observation: learned_contracts.DecisionObservation
 ) -> None:
     with pytest.raises(ValueError, match="candidate"):
         schema.vectorize(observation.model_copy(update={"candidates": ()}), training=True)
