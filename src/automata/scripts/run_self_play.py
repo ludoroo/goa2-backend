@@ -29,7 +29,7 @@ from automata.models.contracts import (
     canonical_json_bytes,
 )
 from automata.search.config import parse_learned_lh_search_config
-from automata.search.continuation import LEARNED_ARGMAX_CONTINUATION_POLICY_ID
+from automata.search.continuation import LEARNED_PRIOR_SAMPLING_CONTINUATION_POLICY_ID
 from automata.search.heuristic import HeuristicLeafEvaluator
 from automata.search.ismcts.strategy import SearchStrategy
 from automata.training.experiments.phase0 import PHASE0_EXPERIMENT
@@ -208,7 +208,7 @@ def _resolve_strategy_preset(
     preset_identity = {
         "name": name,
         "matrix_cell": "L/H",
-        "continuation_policy": LEARNED_ARGMAX_CONTINUATION_POLICY_ID,
+        "continuation_policy": LEARNED_PRIOR_SAMPLING_CONTINUATION_POLICY_ID,
         "value_recipe": HeuristicLeafEvaluator.recipe_id,
         "search_config": search_identity,
     }

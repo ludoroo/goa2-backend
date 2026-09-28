@@ -7,7 +7,10 @@ from enum import StrEnum
 from automata.agents.heuristic_agent import HeuristicAgent
 from automata.models.contracts import LearnedModelRuntime
 from automata.search.config import SearchConfig
-from automata.search.continuation import AgentContinuationPolicy, ArgmaxContinuationPolicy
+from automata.search.continuation import (
+    AgentContinuationPolicy,
+    PriorSamplingContinuationPolicy,
+)
 from automata.search.heuristic import HeuristicLeafEvaluator, HeuristicPrior
 from automata.search.ismcts.strategy import ISMCTSStrategy
 from automata.search.learned import LearnedLeafEvaluator, LearnedSearchPolicy
@@ -46,7 +49,7 @@ def build_learned_ismcts(
         LearnedLeafEvaluator(runtime) if runtime and uses_learned_leaf else HeuristicLeafEvaluator()
     )
     continuation = (
-        ArgmaxContinuationPolicy(prior)
+        PriorSamplingContinuationPolicy(prior)
         if uses_learned_policy
         else AgentContinuationPolicy(default_policy)
     )

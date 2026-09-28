@@ -246,10 +246,28 @@ continuation. Heuristic-policy configurations preserve the historical Agent
 choices through `AgentContinuationPolicy` when those choices are canonically
 legal; a stale or out-of-set custom-Agent result now fails closed rather than
 being submitted to the engine. Learned-policy configurations use
-`learned-argmax-v1`: the same root `SearchPolicy` scores canonical legal keys,
-then `ArgmaxContinuationPolicy` chooses the first maximum in canonical order.
+`learned-prior-sampling-v1`: the same root `SearchPolicy` scores canonical legal
+keys, then `PriorSamplingContinuationPolicy` samples from that distribution.
+Logits use numerically stable softmax at temperature 1; probability scores keep
+their supplied relative mass. Zero-probability options are never chosen, and a
+singleton needs neither inference nor a random draw. There is no extra uniform
+exploration mixture or continuation-temperature setting.
+
+Each search binds a fresh, domain-separated continuation RNG from its configured
+seed. That stream advances across the search's iterations and follow-ups, without
+sharing mutable RNG state between searches or consuming the root/tree,
+determinization, environment-policy, global, or live-game RNG streams. The
+continuation draw sequence is reproducible for the same seed and policy outputs;
+wall-clock deadlines can still change how many iterations a search completes.
+Root PUCT and real-play visit sampling are separate and unchanged. The policy
+instance is a reusable template: `search()` binds it automatically, while direct
+callers must use `for_search(seed)` before choosing actions. Passing a previously
+bound sampler to another search also creates a fresh search-local stream.
+
 It never routes a learned continuation through `Agent.choose_input`; applying
 the canonical key through the simulator also preserves synthetic `SKIP`.
+`ArgmaxContinuationPolicy` remains available as an explicit greedy baseline,
+not the default learned continuation.
 
 ## Composition matrix
 
@@ -266,9 +284,11 @@ L/L, both adapters share one `SharedEncoderRuntime`:
 
 The environment remains H in this first product architecture so opponent and
 foreign behavior is a fixed search assumption. When policy is L, controlled
-follow-up decisions use the same Learned runtime with stable argmax; when policy
-is H, they remain heuristic. Self-play and arena provenance identify the
-Learned continuation recipe as `continuation_policy=learned-argmax-v1`.
+follow-up decisions sample the same Learned runtime's prior; when policy is H,
+they remain heuristic. Self-play and arena provenance identify the Learned
+continuation recipe as `continuation_policy=learned-prior-sampling-v1`. Existing
+`learned-argmax-v1` evidence keeps its original identity and must not be resumed
+or relabelled as sampled-continuation evidence.
 
 ## Availability and fallback
 
@@ -280,14 +300,14 @@ Optional components declare only two recoverable failures:
 
 `FallbackSearchPolicy` and `FallbackLeafEvaluator` catch exactly those errors.
 In server composition, the same fallback-wrapped root policy is used for Learned
-argmax continuation, so only those declared failures recover to heuristic
+sampled continuation, so only those declared failures recover to heuristic
 scores. Self-play and arena composition deliberately use the same bare Learned
 policy for roots and continuation, so inference failures propagate in both
 places. Programming errors, invalid output types, candidate reordering,
 non-finite values, and other exceptions always propagate. This prevents fallback
 from concealing correctness bugs. In server degraded mode, fallback heuristic
-scores are argmaxed over the complete canonical set; this can select FINISH or
-SKIP when every concrete score is negative, unlike direct `HeuristicAgent`
+logits are softmaxed and sampled over the complete canonical set, including
+legal FINISH or SKIP choices, rather than using direct `HeuristicAgent`
 continuation.
 A policy fallback marks its returned scores as `FALLBACK`; root-only learned
 PUCT and widening overrides are then disabled for that decision, while the

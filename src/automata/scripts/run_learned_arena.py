@@ -27,7 +27,7 @@ from automata.evaluation.protocol import (
 )
 from automata.harness.game_runner import run_game
 from automata.search.config import SearchConfig, parse_learned_lh_search_config
-from automata.search.continuation import LEARNED_ARGMAX_CONTINUATION_POLICY_ID
+from automata.search.continuation import LEARNED_PRIOR_SAMPLING_CONTINUATION_POLICY_ID
 from automata.search.heuristic import HeuristicLeafEvaluator
 from automata.search.learned import LearnedLeafEvaluator
 
@@ -315,7 +315,7 @@ def build_protocol(
 ) -> EvaluationProtocol:
     """Bind a runner to the canonical candidate-as-A paired protocol."""
     shared = {
-        "continuation_policy": LEARNED_ARGMAX_CONTINUATION_POLICY_ID,
+        "continuation_policy": LEARNED_PRIOR_SAMPLING_CONTINUATION_POLICY_ID,
         "search_config": _search_identity(runner.search_config),
         "random_stream_namespace": runner.random_stream_namespace,
         "seed_derivation": _SEED_DERIVATION,
