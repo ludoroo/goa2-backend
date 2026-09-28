@@ -1,7 +1,14 @@
 # Gen1 learning contract
 
-**Delivery scope updated 2026-09-28:** follow
-[AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md) for the cleaned PR train. The separate
+**Final landing updated 2026-09-28:** #8–#13 are closed, but the accumulated AI
+stack remained on the already-merged sync branch. The remaining delivery is
+`ai-gen1-land-reviewed-stack` → `main`, preserving current upstream changes.
+This does **not** make Gen1 training ready: native policy/value publication,
+candidate-free model/runtime batching, indexing/losses, and trainer/iteration
+integration remain the next checkpoints. Parked native-data work is not included.
+
+**Cleaned-stack scope:** follow
+[AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md) for the original PR decomposition. The separate
 upstream-sync base owns the gameplay fixes; #8 retains only agreed AI seams and
 bot/replay support. Deferred engine recovery and immunity ownership changes are
 not included. Replay cleanup is folded into #8 and prior-sampled continuations

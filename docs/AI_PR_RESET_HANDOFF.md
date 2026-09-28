@@ -1,6 +1,20 @@
 # AI PR reset: merge/rebase handoff
 
-## Current merge scope — 2026-09-28
+## Current landing — 2026-09-28
+
+PRs #8–#13 are closed. #13 reached main before the AI stack accumulated on its
+branch, so the reviewed AI code remained at `d157782` on
+`ai-gen1-upstream-gameplay-base`, not on main. That tree equals `004cd86` exactly.
+The only remaining delivery is **`ai-gen1-land-reviewed-stack` → `main`**.
+Merge `8729dc9` combines it with main `ddc46d2` and preserves the newer upstream
+Swift fix. See [AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md) for the landing and
+verification record. Closed PR status is not proof of landing on main.
+
+Native data/model/trainer integration remains unfinished. Do not launch Gen1
+training merely because this landing PR is merged. The nine parked native-data
+files and historical evidence remain outside this delivery.
+
+## Cleaned-stack scope before landing (historical publication)
 
 **Do not merge the old five drafts unchanged.** The stack is rebuilt according to
 [AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md), which is the current source of truth

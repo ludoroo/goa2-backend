@@ -1,6 +1,15 @@
 # AI experiment journal
 
-## Current delivery scope — 2026-09-28
+## Final landing correction — 2026-09-28
+
+The old PRs closed without the accumulated AI stack reaching main: #13 landed
+first, then `d157782` put the full stack onto its already-merged branch. The code
+was not lost; that tree exactly equals reviewed `004cd86`. The remaining delivery
+is `ai-gen1-land-reviewed-stack` → `main`. Merge `8729dc9` preserves both the
+reviewed AI implementation and newer main's upstream Swift fix. No training,
+generation, or arena experiment was started; native-data work stays parked.
+
+## Cleaned-stack scope before landing
 
 The source stack has been cleaned up; see
 [AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md) for the authoritative scope and merge

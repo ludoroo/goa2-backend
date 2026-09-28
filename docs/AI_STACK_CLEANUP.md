@@ -5,7 +5,24 @@ old proposal to merge the five drafts unchanged and add a corrective follow-up.
 The old combined checkpoint `0631d50` remains preserved for provenance, not as
 the branch to merge.
 
-## Merge order
+## Current delivery: one final landing PR
+
+PRs #8–#13 are closed, but their closed status did not mean the AI stack reached
+`main`. #13 merged the upstream-sync base first (`73e25b3`); the later stack merge
+`d157782` accumulated the AI code on `ai-gen1-upstream-gameplay-base` afterward.
+That commit's tree exactly matches the reviewed checkpoint `004cd86`.
+
+**The remaining delivery is `ai-gen1-land-reviewed-stack` → `main`.** Do not try
+to reopen or merge the old stack again. Merge commit `8729dc9` combines the intact
+reviewed stack with current main `ddc46d2`, preserving the newer upstream Swift
+fix (`803bad1`) already on main. All Automata production code and dependency
+manifests still match `004cd86`; no replacement AI implementation is introduced.
+The old PR decomposition below explains ownership, not the current merge order.
+
+This landing does not complete the native data/model/trainer work or authorize
+Gen1 generation/training. The dirty native-data checkout remains parked.
+
+## Original PR decomposition (already closed)
 
 1. **Upstream sync** — `ai-gen1-upstream-gameplay-base` → `main`: merged upstream
    [#47](https://github.com/PedroVIOliv/goa2-backend/pull/47) and
@@ -24,10 +41,10 @@ the branch to merge.
    **[#12](https://github.com/ludoroo/goa2-backend/pull/12)** — stable-transition
    search, then offline outcome normalization.
 
-Use merge commits, not squash/rebase merges, to preserve the stacked ancestry.
-Do not delete base branches until their dependent PRs have landed. No additional
-replay/sampling follow-up is needed: those changes are folded into the owning
-layers. The native-data working tree is not part of this stack.
+The original train used merge commits to preserve ancestry. Its replay/sampling
+follow-ups are already folded into the owning layers; the remaining landing PR
+is needed only because the accumulated branch has not reached main. Retain the
+preservation refs and parked native-data work.
 
 ## Why engine files still appear in #8
 
