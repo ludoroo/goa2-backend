@@ -48,7 +48,7 @@ Design notes:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -399,14 +399,21 @@ def legal_selection_values_for_request(
     return values
 
 
-def apply_decision(session: GameSession, decision: BotDecision) -> SessionResult:
+def apply_decision(
+    session: GameSession,
+    decision: BotDecision,
+    *,
+    stop_before_step: Callable[[GameState, Any], bool] | None = None,
+) -> SessionResult:
     """Apply one :class:`BotDecision` through :class:`GameSession`.
 
     Callers get back the fresh :class:`SessionResult` so they can immediately
     check for GAME_OVER / a new INPUT_NEEDED / a phase change. The session's
     normal validation (phase gating, hand membership, planning-done
     eligibility) still runs; illegal decisions surface as engine exceptions
-    exactly as they would from a human client.
+    exactly as they would from a human client. ``stop_before_step`` is forwarded
+    through every branch when supplied; omitting it preserves compatibility
+    with lightweight session substitutes that implement the original methods.
     """
     if decision.kind is DecisionKind.PLANNING:
         plan = decision.planning
@@ -425,17 +432,29 @@ def apply_decision(session: GameSession, decision: BotDecision) -> SessionResult
                     str(hero_id),
                     f"commit card {plan.card.id!r} is not in live hand",
                 )
-            return session.commit_card(hero_id, live_card)
+            if stop_before_step is None:
+                return session.commit_card(hero_id, live_card)
+            return session.commit_card(
+                hero_id,
+                live_card,
+                stop_before_step=stop_before_step,
+            )
         if plan.kind is PlanningKind.FINISH:
-            return session.finish_planning(hero_id)
+            if stop_before_step is None:
+                return session.finish_planning(hero_id)
+            return session.finish_planning(hero_id, stop_before_step=stop_before_step)
         # PASS
-        return session.pass_turn(hero_id)
+        if stop_before_step is None:
+            return session.pass_turn(hero_id)
+        return session.pass_turn(hero_id, stop_before_step=stop_before_step)
 
     # INPUT
     request = decision.request
     assert request is not None
     response = InputResponse(request_id=request.id, selection=decision.selection)
-    return session.advance(response)
+    if stop_before_step is None:
+        return session.advance(response)
+    return session.advance(response, stop_before_step=stop_before_step)
 
 
 # --------------------------------------------------------------------------- #

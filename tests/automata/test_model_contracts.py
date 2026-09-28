@@ -1,4 +1,4 @@
-"""Public serialization and validation contracts for Phase 0 neural RL."""
+"""Public serialization and validation contracts for Phase 0 learned models."""
 
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ import math
 import pytest
 from pydantic import BaseModel
 
-import automata.models as nn
-from automata.models import (
+import automata.models.contracts as learned_contracts
+from automata.decision import DecisionSemanticRole
+from automata.models.contracts import (
     ActionCandidateID,
     CardCandidateID,
     DecisionObservation,
@@ -33,8 +34,15 @@ from automata.models import (
 from automata.models.shared_encoder.artifacts.manifest import ModelArtifactManifest
 
 
+def test_obsolete_observation_v3_contract_and_bridge_are_not_public() -> None:
+    assert not hasattr(learned_contracts, "LegacyDecisionObservationV3")
+    assert not hasattr(learned_contracts, "LEGACY_DECISION_OBSERVATION_BRIDGE_ID")
+    assert not hasattr(learned_contracts, "LEGACY_DECISION_OBSERVATION_SCHEMA_VERSION")
+    assert not hasattr(learned_contracts, "LEGACY_RUNTIME_COMPATIBILITY_VERSION")
+
+
 def test_viewer_has_one_public_schema_v2_contract() -> None:
-    viewer = nn.Viewer(
+    viewer = learned_contracts.Viewer(
         schema_version=2,
         private_hero_id="hero_wasp",
         perspective_team="RED",
@@ -45,14 +53,14 @@ def test_viewer_has_one_public_schema_v2_contract() -> None:
         "private_hero_id": "hero_wasp",
         "perspective_team": "RED",
     }
-    assert [name for name in nn.__all__ if name.startswith("Viewer")] == ["Viewer"]
+    assert [name for name in learned_contracts.__all__ if name.startswith("Viewer")] == ["Viewer"]
     with pytest.raises(ValueError, match=r"unsupported.*version"):
         from_canonical_json(
-            nn.Viewer,
+            learned_contracts.Viewer,
             b'{"hero_id":"hero_wasp","schema_version":1,"scope":"HERO","team":"RED"}',
         )
     with pytest.raises(ValueError, match=r"extra|hero_id|scope|team"):
-        nn.Viewer.model_validate(
+        learned_contracts.Viewer.model_validate(
             {
                 "schema_version": 2,
                 "hero_id": "hero_wasp",
@@ -94,9 +102,12 @@ def _decision_observation() -> DecisionObservation:
         ),
     )
     return DecisionObservation(
-        schema_version=3,
+        schema_version=4,
         state=state,
         decision_kind="INPUT",
+        input_request_type="SELECT_UNIT",
+        can_skip=True,
+        semantic_role=DecisionSemanticRole.UNIT_SELECTION,
         candidates=(
             EncodedCandidate(
                 schema_version=1,
@@ -296,7 +307,7 @@ def test_decision_observation_is_independently_versioned_from_graph_state() -> N
     decision = _decision_observation()
 
     assert state.schema_version == 2
-    assert decision.schema_version == 3
+    assert decision.schema_version == 4
     assert from_canonical_json(DecisionObservation, canonical_json_bytes(decision)) == decision
     with pytest.raises(ValueError, match=r"unsupported.*version"):
         from_canonical_json(
@@ -346,9 +357,12 @@ def test_decision_observation_rejects_invalid_candidate_refs_uniqueness_and_alig
 ) -> None:
     with pytest.raises(ValueError, match=r"reference|duplicate|align|selection|target"):
         DecisionObservation(
-            schema_version=3,
+            schema_version=4,
             state=_decision_observation().state,
             decision_kind="INPUT",
+            input_request_type="SELECT_OPTION",
+            can_skip=False,
+            semantic_role=DecisionSemanticRole.OPTION_SELECTION,
             candidates=candidates,
         )
 
