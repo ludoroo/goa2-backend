@@ -2,7 +2,8 @@ import pytest
 
 import goa2.data.heroes.tigerclaw
 import goa2.scripts.tigerclaw_effects  # noqa: F401 - register effects
-from goa2.domain.models import ActionType, Card, CardColor, CardState, CardTier
+from goa2.domain.hex import Hex
+from goa2.domain.models import ActionType, Card, CardColor, CardState, CardTier, GamePhase
 from goa2.domain.models.effect import (
     AffectsFilter,
     DurationType,
@@ -10,7 +11,9 @@ from goa2.domain.models.effect import (
     EffectType,
     Shape,
 )
+from goa2.domain.types import HeroID
 from goa2.engine.effect_manager import EffectManager
+from goa2.engine.session import GameSession
 
 from ..builders import EffectScenarioBuilder, hero_card
 from ..runner import run_card
@@ -121,3 +124,48 @@ def test_counterattack_defenses_do_not_affect_immune_attacker(defense_id: str) -
     assert state.get_position("hero_attacker") is not None
     if defense_id == "parry":
         assert [card.id for card in attacker.hand] == ["dodge"]
+
+
+@pytest.mark.effect_flow
+@pytest.mark.parametrize("turns_later", [0, 1, 2], ids=["same-turn", "next-turn", "expired"])
+def test_blend_into_shadows_attack_immunity_only_applies_next_turn(turns_later):
+    state = (
+        EffectScenarioBuilder()
+        .with_hexes([(0, 0, 0), (0, 1, -1), (1, 0, -1), (2, 0, -2), (2, 1, -3)])
+        .red_hero(
+            "hero_tigerclaw",
+            at=(0, 0, 0),
+            current_card=hero_card("Tigerclaw", "blend_into_shadows"),
+        )
+        .blue_hero("hero_attacker", at=(2, 0, -2), current_card=_melee_attack())
+        # Keep another legal target available even when Tigerclaw is immune.
+        .red_minion("red_minion", at=(2, 1, -3))
+        .with_actor("hero_tigerclaw")
+        .build()
+    )
+    state.board.tiles[Hex(q=0, r=1, s=-1)].is_terrain = True
+    attacker = state.get_hero("hero_attacker")
+    attacker.hand = [
+        _melee_attack().model_copy(update={"id": f"future_attack_{i}", "state": CardState.HAND})
+        for i in range(2)
+    ]
+
+    run = run_card(state, "hero_tigerclaw", finalize_turn=True)
+    run.expect_input("CHOOSE_ACTION").choose("SKILL").expect_input("SELECT_HEX")
+    run.choose({"q": 1, "r": 0, "s": -1}).expect_input("CHOOSE_ACTION")
+
+    # Finish real turns and commit the attacker's next card; do not synthesize
+    # effect rows or advance timestamps by hand. Tigerclaw auto-passes (no hand).
+    for _ in range(turns_later):
+        run.choose("HOLD").expect_input("CHOOSE_ACTION").choose("CONFIRM").finish()
+        assert state.phase == GamePhase.PLANNING
+        GameSession(state).commit_card(HeroID(attacker.id), attacker.hand[0])
+        run.expect_input("CHOOSE_ACTION")
+
+    assert state.turn == 1 + turns_later
+    assert run.latest_request.player_id == "hero_attacker"
+    run.choose("ATTACK").expect_input("SELECT_UNIT")
+    expected = {"red_minion"}
+    if turns_later != 1:
+        expected.add("hero_tigerclaw")
+    assert _option_set(run) == expected

@@ -75,7 +75,7 @@ def _make_filler_card(card_id="filler", color=CardColor.GOLD):
     )
 
 
-def _add_pre_action_effect(state, hero_id, move_distance, is_active=True):
+def _add_pre_action_effect(state, hero_id, move_distance, is_active=True, turns_ago=1):
     effect = ActiveEffect(
         id="pam_effect",
         source_id=hero_id,
@@ -88,7 +88,7 @@ def _add_pre_action_effect(state, hero_id, move_distance, is_active=True):
         duration=DurationType.NEXT_TURN,
         max_value=move_distance,
         is_active=is_active,
-        created_at_turn=state.turn,
+        created_at_turn=state.turn - turns_ago,
         created_at_round=state.round,
     )
     state.active_effects.append(effect)
@@ -126,6 +126,14 @@ class TestResolvePreActionMovementStepDirect:
 
     def test_inactive_effect_is_noop(self, basic_state):
         _add_pre_action_effect(basic_state, "hero_misa", 2, is_active=False)
+        step = ResolvePreActionMovementStep(hero_id="hero_misa")
+        result = step.resolve(basic_state, {})
+        assert result.is_finished is True
+        assert result.new_steps == []
+
+    @pytest.mark.parametrize("turns_ago", [0, 2], ids=["same-turn", "expired"])
+    def test_effect_outside_next_turn_is_noop(self, basic_state, turns_ago):
+        _add_pre_action_effect(basic_state, "hero_misa", 2, turns_ago=turns_ago)
         step = ResolvePreActionMovementStep(hero_id="hero_misa")
         result = step.resolve(basic_state, {})
         assert result.is_finished is True

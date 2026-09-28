@@ -258,6 +258,7 @@ class ImmunityFilter(FilterCondition):
     def apply(self, candidate: Any, state: GameState, context: dict) -> bool:
         from goa2.domain.models.effect import EffectType
         from goa2.engine import rules  # Import inside to be safe
+        from goa2.engine.stats import _is_effect_active
 
         target = state.get_entity(BoardEntityID(candidate)) if isinstance(candidate, str) else None
         if not target:
@@ -287,7 +288,9 @@ class ImmunityFilter(FilterCondition):
             for effect in state.active_effects:
                 if effect.effect_type != EffectType.ATTACK_IMMUNITY:
                     continue
-                if not effect.is_active:
+                # Resolving a card sets is_active even for NEXT_TURN effects.
+                # The effect's duration must also include the current turn.
+                if not effect.is_active or not _is_effect_active(effect, state):
                     continue
 
                 # The effect protects its source_id (the hero who played the defense card)
