@@ -8,7 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from automata.agents.ismcts_agent import ISMCTSAgent
-from automata.search.continuation import AgentContinuationPolicy, ArgmaxContinuationPolicy
+from automata.search.continuation import (
+    AgentContinuationPolicy,
+    PriorSamplingContinuationPolicy,
+)
 from automata.search.contracts import LeafMode
 from automata.search.heuristic import HeuristicLeafEvaluator, HeuristicPrior
 from goa2.engine.setup import GameSetup
@@ -119,6 +122,8 @@ def test_invalid_artifact_path_logs_and_short_circuits_to_heuristics(
 
     assert isinstance(agent._prior, HeuristicPrior)
     assert isinstance(agent._leaf_evaluator, HeuristicLeafEvaluator)
+    assert isinstance(agent._continuation_policy, PriorSamplingContinuationPolicy)
+    assert agent._continuation_policy.policy is agent._prior
     assert "falling back to heuristic" in caplog.text.lower()
 
 
@@ -217,7 +222,7 @@ def test_ll_factory_loads_one_shared_runtime_for_both_components(tmp_path: Path)
     assert len(cache.calls) == 1
     assert cache.calls[0][1]["expected_digest"] == "a" * 64
     assert isinstance(agent, ISMCTSAgent)
-    assert isinstance(agent._continuation_policy, ArgmaxContinuationPolicy)
+    assert isinstance(agent._continuation_policy, PriorSamplingContinuationPolicy)
     assert agent._continuation_policy.policy is agent._prior
     assert agent._cfg.root_puct_c is not None and agent._cfg.root_puct_c > 0.0
     assert agent._cfg.root_widening_c is not None

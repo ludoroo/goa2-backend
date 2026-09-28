@@ -223,9 +223,11 @@ giving H/H, L/H, H/L, and L/L compositions. `leaf_mode` is
 If either source is learned, `artifact` is required with a server-local
 relative `reference` and pinned lowercase SHA-256 `digest`. With
 `leaf_mode: "bounded_continuation"`, a learned policy also controls owned rollout
-follow-ups with stable first-argmax over canonical legal actions; the
-`"immediate"` mode does not enter continuation. Opponent and foreign
-rollout decisions remain heuristic. H/H rejects an artifact and does not load
+follow-ups by sampling canonical legal actions from its prior distribution
+(softmax at temperature 1 for logits). Continuation sampling uses a fresh,
+separate seeded RNG for each search; it does not share a mutable stream across
+bot requests. The `"immediate"` mode does not enter continuation. Root PUCT
+selection is unchanged, and opponent and foreign rollout decisions remain heuristic. H/H rejects an artifact and does not load
 Torch. There is intentionally no separate learned-model bot
 kind or persisted model-family discriminator. `search` is rejected for
 random and heuristic bots. Every bot key must identify a hero in this game's
