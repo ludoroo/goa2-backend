@@ -1,5 +1,21 @@
 # AI experiment journal
 
+## Current delivery scope — 2026-09-28
+
+The source stack has been cleaned up; see
+[AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md) for the authoritative scope and merge
+order. Merged upstream #46/#47 are isolated in the fork-sync base. The AI PRs no
+longer contain stale-actor recovery, broad phase-abort survival, the drained-stack
+engine guard, or immunity subject/owner normalization. Agreed search seams and
+bot/replay support remain. Replay cleanup and prior sampling are folded into
+#8 and #9/#10 respectively, rather than left in an unlanded final follow-up.
+
+This is source cleanup, not a new playing-strength experiment. Historical source
+checkpoint `0631d50`, original recipe identities, and the chronology below remain
+preserved. References below to `f26d9a6` and its engine-progression behavior record
+what that old checkpoint contained; they do not approve those removed changes
+for the cleaned stack. Native-data work remains parked and uncommitted.
+
 ## Direction: reset the learning stack, retain the lessons
 
 The goal is an AlphaZero-like learner: information-safe search produces policy

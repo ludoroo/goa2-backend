@@ -1,6 +1,28 @@
 # AI PR reset: merge/rebase handoff
 
-## Recommendation
+## Current merge scope — 2026-09-28
+
+**Do not merge the old five drafts unchanged.** The stack is rebuilt according to
+[AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md), which is the current source of truth
+for scope and merge order. First land the separate fork upstream-sync base
+(`ai-gen1-upstream-gameplay-base`), then #8 → #9 → #10 → #11 → #12 using merge
+commits. Fork `main` is not changed by preparing or publishing this stack.
+
+Only the agreed optional search hooks and exact-semantics immunity query remain
+in the AI engine delta. Stale-actor pruning, broad phase abort-survival flags,
+the drained-resolution engine guard, and immunity ownership normalization are
+removed, not newly approved. Minion-return and duration fixes come from merged
+upstream #46/#47, not duplicated AI patches. Replay cleanup is folded into #8;
+sampled continuations into #9/#10. No final corrective follow-up is needed.
+
+The old combined checkpoint `0631d50` and prior source history stay preserved.
+Passing its tests did not approve its mixed engine scope. The chronology below
+records historical heads and test counts; it is not a second current merge plan.
+Historical instructions to preserve whole progression patches are superseded by
+the explicit scope above. The dirty `ai-gen1-native-data` checkout stays parked
+at `18916f4`, outside this delivery; generation and training remain gated.
+
+## Historical recommendation — 2026-09-25
 
 PRs **#3 and #4 are merged**. The verified integration base is
 `851f96a480dd0fcd48c21a95dec30c3536110b2f`. PRs **#6 and #7 are closed as
@@ -200,7 +222,7 @@ Likewise, #6/#7 contain substantial reusable code; replacement is about a clear
 learning contract and reviewable changes, not a ground-up rewrite of all I/O and
 execution infrastructure.
 
-## Concrete ownership for the two threads
+## Original ownership for the two threads (historical, superseded)
 
 ### Fork cleanup / merge thread
 
@@ -220,10 +242,12 @@ and are not blanket cherry-pick recommendations.
 The owner clarified that this thread owns **all #6/#7 work**, including engine
 fix salvage. The cleanup thread should only tidy and merge #3/#4.
 
-- Preserve/review the independent engine progression fix from #7: original
-  `1c8c4e2450f4341ea674561bb538c409c7c31891`, rewritten `1deb58985cff`.
-  It changes `goa2/engine/phases.py`, `session.py`, `steps/combat.py`,
-  `steps/phases.py`, and three engine test files.
+- The earlier plan was to preserve/review the engine progression patch from #7:
+  original `1c8c4e2450f4341ea674561bb538c409c7c31891`, rewritten `1deb58985cff`.
+  It touched `goa2/engine/phases.py`, `session.py`, `steps/combat.py`,
+  `steps/phases.py`, and three engine test files. **Do not carry it wholesale:**
+  the current cleanup retains only agreed AI seams and the separately merged
+  upstream fixes; the unproven recovery/ownership behavior is parked.
 - Define the single stable-boundary/observation/data contract, including planning,
   foreign reactions, cleanup, terminal handling, and watchdog interruption.
 - Rework #6's data/loss/training/replay integration on that contract.

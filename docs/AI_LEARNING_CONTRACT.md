@@ -1,5 +1,14 @@
 # Gen1 learning contract
 
+**Delivery scope updated 2026-09-28:** follow
+[AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md) for the cleaned PR train. The separate
+upstream-sync base owns the gameplay fixes; #8 retains only agreed AI seams and
+bot/replay support. Deferred engine recovery and immunity ownership changes are
+not included. Replay cleanup is folded into #8 and prior-sampled continuations
+into #9/#10. Historical verification numbers below describe their original
+checkpoints, not the rewritten heads. Native-data work remains uncommitted and
+parked outside this stack; no generation/training gate has been lifted.
+
 **Scope:** the fresh AI lineage replacing the historical #6/#7 experimental
 pipeline. #3/#4 remain the runtime/model foundation; engine rules and the client
 API remain intact. Historical AI artifact compatibility is not a requirement.
