@@ -30,9 +30,7 @@ class SearchContext:
     current_owner_id: str
     decision: DecisionDescriptor
 
-    def for_decision(
-        self, decision: DecisionDescriptor, *, owner_id: str
-    ) -> SearchContext:
+    def for_decision(self, decision: DecisionDescriptor, *, owner_id: str) -> SearchContext:
         return replace(self, current_owner_id=owner_id, decision=decision)
 
 

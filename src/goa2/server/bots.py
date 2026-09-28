@@ -539,9 +539,7 @@ async def _bot_drive_worker(game: ManagedGame, registry: GameRegistry) -> None:
 
         if build_game is not None:
             try:
-                built_agents = await asyncio.to_thread(
-                    bot_factory.get_or_build_agents, build_game
-                )
+                built_agents = await asyncio.to_thread(bot_factory.get_or_build_agents, build_game)
             except asyncio.CancelledError:
                 # The detached build may continue in its executor thread, but
                 # it has no reference to the live game and cannot publish an
