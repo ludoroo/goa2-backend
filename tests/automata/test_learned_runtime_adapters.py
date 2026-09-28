@@ -220,9 +220,7 @@ def test_heuristic_prior_scores_the_explicit_live_input_without_input_stack() ->
         "hero_razzle",
         DecisionDescriptor("INPUT", request=request),
     )
-    scores = HeuristicPrior(ExplicitScores(seed=1)).score(
-        context, state, ["LOW", "HIGH"]
-    )
+    scores = HeuristicPrior(ExplicitScores(seed=1)).score(context, state, ["LOW", "HIGH"])
 
     assert not state.input_stack
     assert scores.scores == (-2.0, 3.0)

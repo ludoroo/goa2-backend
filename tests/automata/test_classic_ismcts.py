@@ -58,9 +58,7 @@ def test_classic_ismcts_is_deterministic_for_a_fixed_budget_and_seed() -> None:
 
 def test_search_checks_its_internal_deadline_between_iterations(monkeypatch) -> None:
     state = _state()
-    target = RootTarget.card(
-        hero_id="hero_wasp", owned_hero_ids=frozenset({"hero_wasp"})
-    )
+    target = RootTarget.card(hero_id="hero_wasp", owned_hero_ids=frozenset({"hero_wasp"}))
     validated = SimpleNamespace(legal_candidates=("card-a", "card-b"))
     monkeypatch.setattr(engine, "validate_search_root", lambda *_args, **_kwargs: validated)
     simulate = Mock()
@@ -108,7 +106,9 @@ def test_deadline_returns_completed_search_visits(monkeypatch) -> None:
     assert result.root.children[result.best_key].visits == 1
 
 
-@pytest.mark.parametrize("failure", [SearchDeadlineExceeded, SearchAdvanceLimitExceeded, ValueError])
+@pytest.mark.parametrize(
+    "failure", [SearchDeadlineExceeded, SearchAdvanceLimitExceeded, ValueError]
+)
 def test_interrupted_iteration_never_hides_non_deadline_failures(failure) -> None:
     state = _state()
     hero = state.get_hero(HeroID("hero_wasp"))

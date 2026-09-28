@@ -62,7 +62,9 @@ def test_learned_source_requires_one_pinned_artifact_but_hh_does_not() -> None:
         SearchSettings(policy_source="learned", value_source="heuristic")
 
 
-@pytest.mark.parametrize("reference", ["champions/model\x00", "champions/model\n", "champions/\x1fmodel"])
+@pytest.mark.parametrize(
+    "reference", ["champions/model\x00", "champions/model\n", "champions/\x1fmodel"]
+)
 def test_artifact_reference_rejects_control_characters(reference: str) -> None:
     with pytest.raises(ValidationError, match="safe relative path"):
         ModelArtifactSpec(reference=reference, digest="a" * 64)
