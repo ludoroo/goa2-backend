@@ -1,5 +1,34 @@
 # AI experiment journal
 
+## Native recording checkpoint — 2026-09-29
+
+PR #15 now truly lands the cleaned stack on main at `2f1bc92`, with the same
+tree as verified `1406cac` and a fresh 4,963-test baseline. The historical landing
+problem below is resolved; there is no remaining foundation-stack merge.
+
+Local checkpoint `9060250` on `ai-gen1-native-dataset` ports the parked native
+policy/value records, whole-game recorder, and public search-target adapter onto
+that base. The original nine dirty files remain untouched. No engine, server,
+client contract, dependency, historical dataset, or model artifact changed.
+
+Validation caught and corrected real data-integrity gaps: setup roster order
+versus sorted graph tokens in 2v2 games; silent truncated-zstd/prefix acceptance;
+observation-local aliases compared as global hero identities; policy viewer/owner
+binding; and encoded candidate reordering against search evidence. Private spool
+filenames no longer match final dataset globs. The recorder checks frame integrity
+and live sample/policy/boundary counts before atomic no-clobber publication.
+
+Verification: **5,024 full-suite tests**, **67 focused native/adapter tests**,
+Ruff/Black over `src tests`, mypy over `src`, and GoA2 branch coverage **87.76%**.
+Independent read-only follow-up review found no blockers and ran no tests; these
+are parent-run local checks, not remote CI or playing-strength evidence.
+
+This is a local checkpoint, not a published PR or completed Gen1 pipeline.
+Candidate-free model/runtime batching, bounded indexing/per-head losses, and
+trainer/iteration integration remain separate gates. No generation, training,
+arena experiment, dependency change, or historical evidence conversion occurred.
+The older chronology below retains its original source heads and observations.
+
 ## Final landing correction — 2026-09-28
 
 The old PRs closed without the accumulated AI stack reaching main: #13 landed

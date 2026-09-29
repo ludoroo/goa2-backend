@@ -1,18 +1,34 @@
 # AI PR reset: merge/rebase handoff
 
-## Current landing — 2026-09-28
+## Current checkpoint — native data verified locally
 
-PRs #8–#13 are closed. #13 reached main before the AI stack accumulated on its
-branch, so the reviewed AI code remained at `d157782` on
-`ai-gen1-upstream-gameplay-base`, not on main. That tree equals `004cd86` exactly.
-The only remaining delivery is **`ai-gen1-land-reviewed-stack` → `main`**.
-Merge `8729dc9` combines it with main `ddc46d2` and preserves the newer upstream
-Swift fix. See [AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md) for the landing and
-verification record. Closed PR status is not proof of landing on main.
+PR #15 merged into `main` at `2f1bc92`; the tree equals verified `1406cac` exactly.
+Both the cleaned AI stack and newer upstream Swift fix are present. A fresh
+post-merge baseline passes 4,963 tests. The intermediate-branch landing gap from
+#8–#13 is resolved; no foundation PR remains to merge. See
+[AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md) for the historical landing evidence.
 
-Native data/model/trainer integration remains unfinished. Do not launch Gen1
-training merely because this landing PR is merged. The nine parked native-data
-files and historical evidence remain outside this delivery.
+The next branch is `ai-gen1-native-dataset`, based on that actual merged main.
+Production/test checkpoint `9060250` passes **5,024 full-suite tests**, **67
+focused native/adapter tests**, Ruff/Black over `src tests`, mypy over `src`, and
+the GoA2 branch-coverage gate (87.76%). Independent read-only follow-up review
+found no blockers and ran no tests; the test results are parent-run local evidence.
+This branch is not yet published or merged.
+
+Eight source/test files were ported from the parked native-data work, then
+corrected during review; its old contract patch was not applied over current
+documentation. The original checkout,
+branch/HEAD, and all nine dirty files remain unchanged. Work/reviews use the same
+shared workspace, `/tmp/goa2-clean-stack.e0SwTB/repo`.
+
+This checkpoint covers policy/value records, strict one-game I/O, whole-game
+recording, and the public root-target adapter only. Red/green regressions fixed
+unsorted multi-hero rosters, truncated/incomplete spools, observation-local ref
+comparison, and reordered candidate evidence. Policy viewer/owner identity is
+validated, and provisional spools cannot match final-dataset filename patterns. Candidate-free model/runtime,
+bounded indexing/per-head losses, and trainer/iteration integration follow it.
+No Gen1 generation, training, arena experiment, dependency change, historical
+artifact conversion, engine change, or client API change is part of this slice.
 
 ## Cleaned-stack scope before landing (historical publication)
 
