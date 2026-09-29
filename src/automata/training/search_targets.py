@@ -6,16 +6,19 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from automata.decision import DecisionDescriptor
 from automata.models.contracts import CandidateID, EncodedCandidate
-from automata.search.node import Key
+from automata.search.node import Key, action_key
 from goa2.domain.input import InputRequest
 from goa2.domain.state import GameState
 from goa2.domain.types import HeroID
+
+if TYPE_CHECKING:
+    from automata.search.ismcts.strategy import StrategyResult
 
 
 class SearchActionTarget(BaseModel):
@@ -78,6 +81,111 @@ class SearchPolicyTarget(BaseModel):
     @property
     def has_selection(self) -> bool:
         return any(action.selected for action in self.actions)
+
+
+def search_policy_target_from_result(
+    result: StrategyResult[Key], candidates: Sequence[EncodedCandidate]
+) -> SearchPolicyTarget:
+    """Build an aligned policy target from one completed strategy result."""
+    if tuple(action_key(candidate.selection) for candidate in candidates) != result.candidates:
+        raise ValueError("encoded candidates must align with the exact ordered search choices")
+    statistics = result.search_result
+    if statistics is None:
+        raise ValueError("self-play search strategy must return improved action statistics")
+    if statistics.best_key not in result.candidates:
+        raise ValueError("search statistics best action is outside the legal root")
+    if any(key not in result.candidates for key in statistics.root.children):
+        raise ValueError("search statistics contain actions outside the legal root")
+
+    visits = tuple(
+        statistics.root.children[key].visits if key in statistics.root.children else 0
+        for key in result.candidates
+    )
+    if any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in visits):
+        raise ValueError("self-play root visits must be non-negative integers")
+    total_visits = sum(visits)
+    if (
+        statistics.effective_iterations is not None
+        and total_visits != statistics.effective_iterations
+    ):
+        # Live serving may recover a completed prefix after a cooperative
+        # deadline. That is not complete offline teacher evidence, even if
+        # the actual game could continue to an otherwise normal outcome.
+        raise ValueError("self-play search did not complete its effective visit budget")
+    improved_probabilities: tuple[float, ...]
+    if not total_visits:
+        if len(visits) != 1:
+            raise ValueError("self-play search statistics contain no root visits")
+        # Search intentionally leaves validated forced roots unvisited. Keep
+        # the zero sample/value sentinel while recording the only policy mass.
+        improved_probabilities = (1.0,)
+    else:
+        improved_probabilities = tuple(count / total_visits for count in visits)
+
+    diagnostics = {}
+    for diagnostic in statistics.root_action_diagnostics:
+        if diagnostic.action not in result.candidates:
+            raise ValueError("search diagnostics contain actions outside the legal root")
+        if diagnostic.action in diagnostics:
+            raise ValueError("search diagnostics contain a duplicate root action")
+        child = statistics.root.children.get(diagnostic.action)
+        expected_visits = child.visits if child is not None else 0
+        expected_mean = child.q if child is not None else 0.0
+        expected_variance = child.value_variance if child is not None else 0.0
+        if (
+            diagnostic.visits != expected_visits
+            or not math.isclose(diagnostic.mean_value, expected_mean)
+            or not math.isclose(diagnostic.value_variance, expected_variance)
+        ):
+            raise ValueError("search diagnostics disagree with root statistics")
+        prior = diagnostic.prior_probability
+        if prior is not None and (
+            isinstance(prior, bool)
+            or not isinstance(prior, (int, float))
+            or not math.isfinite(prior)
+            or not 0.0 <= prior <= 1.0
+        ):
+            raise ValueError("search diagnostics contain an invalid root prior")
+        diagnostics[diagnostic.action] = diagnostic
+
+    has_complete_priors = len(diagnostics) == len(result.candidates) and all(
+        diagnostics[key].prior_probability is not None for key in result.candidates
+    )
+    if has_complete_priors:
+        priors: tuple[float | None, ...] = tuple(
+            cast(float, diagnostics[key].prior_probability) for key in result.candidates
+        )
+        if not math.isclose(sum(cast(tuple[float, ...], priors)), 1.0):
+            raise ValueError("search diagnostics root priors must sum to one")
+    else:
+        # The action-target contract is all-or-none. Partial diagnostics are
+        # not evidence for a full prior distribution and must not be filled
+        # from visit counts.
+        priors = (None,) * len(result.candidates)
+
+    return SearchPolicyTarget(
+        actions=tuple(
+            SearchActionTarget(
+                schema_version=1,
+                candidate=candidate,
+                prior_probability=priors[index],
+                sample_count=visits[index],
+                mean_value=(
+                    statistics.root.children[key].q if key in statistics.root.children else 0.0
+                ),
+                value_variance=(
+                    statistics.root.children[key].value_variance
+                    if key in statistics.root.children
+                    else 0.0
+                ),
+                improved_probability=improved_probabilities[index],
+                selected=index == result.selected_index,
+            )
+            for index, (key, candidate) in enumerate(
+                zip(result.candidates, candidates, strict=True)
+            )
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,4 +288,5 @@ __all__ = [
     "SearchActionTarget",
     "SearchPolicyTarget",
     "root_search_trace_from_result",
+    "search_policy_target_from_result",
 ]
