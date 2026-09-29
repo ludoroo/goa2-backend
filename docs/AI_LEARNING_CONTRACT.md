@@ -1,11 +1,18 @@
 # Gen1 learning contract
 
-**Final landing updated 2026-09-28:** #8–#13 are closed, but the accumulated AI
-stack remained on the already-merged sync branch. The remaining delivery is
-`ai-gen1-land-reviewed-stack` → `main`, preserving current upstream changes.
-This does **not** make Gen1 training ready: native policy/value publication,
-candidate-free model/runtime batching, indexing/losses, and trainer/iteration
-integration remain the next checkpoints. Parked native-data work is not included.
+**Current status — foundation landed:** #15 merged into `main` at `2f1bc92`,
+with a tree identical to the verified landing `1406cac`. The reviewed AI stack
+and newer upstream Swift fix are both present. The merged foundation passes
+4,963 tests. The native rows/recorder checkpoint is now verified locally at
+`9060250` on `ai-gen1-native-dataset`: **5,024 full-suite tests**, 67 focused
+native/adapter tests, and all Ruff/Black/mypy checks pass. GoA2 branch-aware
+coverage is 87.76%. Independent read-only follow-up review found no blockers;
+the reviewer ran no tests. Published as draft [#16](https://github.com/ludoroo/goa2-backend/pull/16)
+into `main`; original parked files remain unchanged.
+
+This does **not** make Gen1 training ready: candidate-free model/runtime batching,
+indexing/losses, and trainer/iteration integration remain separate checkpoints.
+Existing joint-data commands are not Gen1 commands; no generation is authorized.
 
 **Cleaned-stack scope:** follow
 [AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md) for the original PR decomposition. The separate
@@ -13,16 +20,18 @@ upstream-sync base owns the gameplay fixes; #8 retains only agreed AI seams and
 bot/replay support. Deferred engine recovery and immunity ownership changes are
 not included. Replay cleanup is folded into #8 and prior-sampled continuations
 into #9/#10. Historical verification numbers below describe their original
-checkpoints, not the rewritten heads. Native-data work remains uncommitted and
-parked outside this stack; no generation/training gate has been lifted.
+checkpoints, not the rewritten heads. The original native-data files remain
+parked outside that stack; their reviewed port is delivered separately in #16.
+No generation/training gate has been lifted.
 
 **Scope:** the fresh AI lineage replacing the historical #6/#7 experimental
 pipeline. #3/#4 remain the runtime/model foundation; engine rules and the client
 API remain intact. Historical AI artifact compatibility is not a requirement.
 
-This is the target contract and current execution plan. Boundary recognition,
-actual-play observation, candidate-free value encoding, and the first source
-cleanup are implemented and published in the replacement draft stack. Opt-in
+This is the target contract and current execution plan. The following foundation
+checkpoint descriptions are historical; the cleaned versions are now on `main`
+through #15. Boundary recognition, actual-play observation, candidate-free value
+encoding, and the first source cleanup were published in the replacement draft stack. Opt-in
 heuristic-valued search now uses the shared transition contract on
 `ai-gen1-search-parity`. Offline outcomes are normalized on
 `ai-gen1-outcome-normalization`;
@@ -255,14 +264,73 @@ test defect was corrected and the full suite rerun. No training-row schema expan
 or historical artifact migration is part of this fix. Native policy/value data
 and model changes still follow it.
 
-### Next data/model checkpoints (pending; no generation yet)
+### Native dataset/recorder slice
 
-1. **Native rows and publication.** Add discriminated policy/value records and
-   a whole-game recorder over the existing `StableBoundaryObserver` and
+The new API is separate from the retained joint-data commands:
+
+- `training/native_dataset.py`: `NativeGameIdentity`, `NativeBoundaryProvenance`,
+  tagged `PolicyDatasetRecord` / `ValueDatasetRecord`, `native_game_id`,
+  `native_sample_id`, `iter_native_game_records`, and `publish_native_game`.
+- `training/native_recorder.py`: `NativeDatasetRecorder(path, *, game=...)`, with
+  `record_policy`, `record_boundary`, `record_outcome`, and idempotent `close`.
+- `training/search_targets.py`: `search_policy_target_from_result` is the public
+  root-evidence adapter. The existing joint generator delegates to it; this does
+  not silently convert legacy commands into native generation.
+
+Record schema version 1 is discriminated by `sample_kind`. Policy records contain
+`DecisionObservation` schema 4 and `SearchPolicyTarget`; value records contain
+`StableValueObservation` schema 1, boundary provenance, terminal winner and a
+signed perspective-correct label. Existing observation/viewer contracts are not
+changed. Actual priors remain distinct from visit probabilities; singleton roots
+retain zero visits/returns and probability one, not invented search evidence.
+
+Game IDs hash a namespaced canonical encoding of world seed, map/game type,
+setup-ordered team compositions, generation/source revision/dirty-tree provenance,
+source-model digest (nullable for heuristic bootstrap), and search/generator
+configuration IDs. Sample IDs additionally bind kind and a global sample index.
+Policy indexes count only decisions; boundary indexes count retained boundary
+groups, with one value row per entitled viewer. Hero references in boundary
+provenance are observation-local, not strings to compare across observations.
+Grouping resolves them to public hero IDs, with one consistent roster per game.
+Token sorting does not change setup-order identity: observation membership is
+validated independently of token order. Policy viewers must be the unique SELF
+hero and decision owner on the declared team.
+Identity inputs are caller-supplied provenance; hashes do not certify execution.
+
+The live outer strategy supplies actual searched policy roots. Pass the recorder
+as the harness's **`boundary_observer`**, not its decision/trajectory `recorder`:
+the harness already supplies distinct entitled viewers and one normalized outcome.
+Search leaves do not call this sink. Enclose its lifetime in a context manager so
+exceptions/interruption discard its provisional data even before an outcome.
+
+During play, samples are immediately serialized to a private `.pending.zst`
+spool, outside the final `*.jsonl` / `*.jsonl.zst` discovery patterns. Publication
+checks frame integrity and sample/policy/boundary counts against live bookkeeping.
+Only a normal decisive `game_over` publishes the complete game to `.jsonl` or
+`.jsonl.zst`; timeout/censoring/failure/unfinished close discards both heads.
+Nullable value labels preserve abstract draw support in the schema only—the
+current recorder rejects missing engine winners rather than inventing draws.
+Final publication validates records, fsyncs staged data, and uses an atomic
+no-clobber link. Existing files and racing publishers are never overwritten.
+Memory scales with one record/boundary group rather than accumulated game length.
+
+Readers validate canonical JSON, schema/index/game consistency, and compressed
+frame integrity. They must be consumed to exhaustion before accepting a source;
+yielding an early row is not certification of the remaining file. An arbitrary
+syntactically valid JSONL prefix is not proof of normal game completion: production
+completion is established by the live recorder, not inferred from a filename.
+Persisted source receipts/index verification belong to the later integration
+checkpoint. No native CLI, dataset conversion, or training run is added here.
+
+### Next data/model checkpoints (no generation yet)
+
+1. **Native rows and publication — verified locally at `9060250`.** Discriminated
+   policy/value records and a whole-game recorder over the existing `StableBoundaryObserver` and
    `encode_stable_value` seams. Policy rows retain exact candidates/root visits
    without a value target; value rows contain actual boundary observations and
-   terminal labels without policy candidates. Test per-viewer deduplication,
-   perspective orientation, atomic publication, and discard on every failure.
+   terminal labels without policy candidates. Coverage includes per-viewer
+   deduplication, unsorted 2v2 rosters, perspective orientation, atomic publication,
+   corruption/count mismatch, canonical target alignment, and whole-game discard.
 2. **Candidate-free model/runtime.** Separate shared graph batching from candidate
    tables in `shared_encoder/batching.py`, expose value-only model/runtime paths,
    and preserve boundary/viewer metadata and strict artifact/scope validation.

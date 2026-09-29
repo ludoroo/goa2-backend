@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from automata.decision import DecisionSemanticRole
 from automata.models.contracts import (
     DecisionObservation,
     EncodedCandidate,
+    HexCandidateID,
     LearnedObservation,
     ObservationToken,
     OptionCandidateID,
@@ -19,11 +21,11 @@ from automata.models.contracts import (
 )
 from automata.search.ismcts.engine import RootActionDiagnostic, SearchResult
 from automata.search.ismcts.strategy import StrategyResult
-from automata.search.node import Node
+from automata.search.node import Node, action_key
 from automata.training.dataset import JointDatasetRow, joint_decision_id, write_joint_dataset
-from automata.training.generation import _aligned_action_stats
 from automata.training.indexed_dataset import IndexedDatasetManifest, open_indexed_dataset
 from automata.training.metrics import PolicyMetricInput, policy_metrics
+from automata.training.search_targets import search_policy_target_from_result
 
 _SEARCH_FAVORITE_VARIANCE = 3.9375 / 9 - (5.75 / 9) ** 2
 
@@ -155,11 +157,19 @@ def test_generation_and_index_preserve_true_priors_including_unvisited_actions(
     tmp_path: Path,
 ) -> None:
     candidates = _candidates("prior-favorite", "search-favorite", "unvisited")
-    actions = _aligned_action_stats(_search_result(_complete_diagnostics()), candidates)
+    target = search_policy_target_from_result(_search_result(_complete_diagnostics()), candidates)
+    actions = target.actions
 
+    assert target.selected_candidate_id == candidates[1].candidate_id
     assert tuple(item.sample_count for item in actions) == (1, 9, 0)
     assert tuple(item.improved_probability for item in actions) == (0.1, 0.9, 0.0)
     assert tuple(item.prior_probability for item in actions) == (0.8, 0.1, 0.1)
+    assert tuple(item.mean_value for item in actions) == (0.25, 5.75 / 9, 0.0)
+    assert tuple(item.value_variance for item in actions) == (
+        0.0,
+        _SEARCH_FAVORITE_VARIANCE,
+        0.0,
+    )
 
     source = tmp_path / "joint.jsonl"
     write_joint_dataset(source, (_row(actions),))
@@ -197,10 +207,10 @@ def test_unavailable_or_partial_root_priors_do_not_fabricate_evidence(
     diagnostics: tuple[RootActionDiagnostic, ...],
     tmp_path: Path,
 ) -> None:
-    actions = _aligned_action_stats(
+    actions = search_policy_target_from_result(
         _search_result(diagnostics),
         _candidates("prior-favorite", "search-favorite", "unvisited"),
-    )
+    ).actions
 
     assert tuple(item.prior_probability for item in actions) == (None, None, None)
     assert tuple(item.improved_probability for item in actions) == (0.1, 0.9, 0.0)
@@ -219,17 +229,115 @@ def test_inconsistent_root_diagnostics_are_rejected() -> None:
     )
 
     with pytest.raises(ValueError, match="diagnostics disagree"):
-        _aligned_action_stats(
+        search_policy_target_from_result(
             _search_result(diagnostics),
             _candidates("prior-favorite", "search-favorite", "unvisited"),
         )
 
 
+def test_public_adapter_rejects_incomplete_effective_visit_budget() -> None:
+    result = _search_result(_complete_diagnostics())
+    assert result.search_result is not None
+    result = replace(
+        result,
+        search_result=replace(result.search_result, effective_iterations=11),
+    )
+
+    with pytest.raises(ValueError, match="effective visit budget"):
+        search_policy_target_from_result(
+            result,
+            _candidates("prior-favorite", "search-favorite", "unvisited"),
+        )
+
+
+def test_public_adapter_accepts_zero_visit_singleton_and_checks_candidate_alignment() -> None:
+    result = StrategyResult(
+        candidates=("forced",),
+        selected_index=0,
+        search_result=SearchResult(
+            root=Node(),
+            best_key="forced",
+            effective_iterations=0,
+        ),
+    )
+    candidate = _candidates("forced")[0]
+
+    target = search_policy_target_from_result(result, (candidate,))
+
+    assert target.actions[0].candidate is candidate
+    assert target.actions[0].sample_count == 0
+    assert target.actions[0].improved_probability == 1.0
+    assert target.actions[0].selected is True
+    with pytest.raises(ValueError, match="candidates must align"):
+        search_policy_target_from_result(result, ())
+
+
+def test_public_adapter_uses_returned_selected_index_not_search_best_key() -> None:
+    result = replace(_search_result(_complete_diagnostics()), selected_index=0)
+    candidates = _candidates("prior-favorite", "search-favorite", "unvisited")
+
+    target = search_policy_target_from_result(result, candidates)
+
+    assert tuple(action.selected for action in target.actions) == (True, False, False)
+    assert target.selected_candidate_id == candidates[0].candidate_id
+
+
+def test_public_adapter_aligns_hex_selections_with_canonical_search_keys() -> None:
+    selection = {"q": 1, "r": -1, "s": 0}
+    candidate = EncodedCandidate(
+        schema_version=1,
+        candidate_id=HexCandidateID(schema_version=1, **selection),
+        selection=selection,
+    )
+    key = action_key(selection)
+    result = StrategyResult(
+        candidates=(key,),
+        selected_index=0,
+        search_result=SearchResult(root=Node(), best_key=key, effective_iterations=0),
+    )
+
+    target = search_policy_target_from_result(result, (candidate,))
+
+    assert target.actions[0].candidate.selection == selection
+    assert target.actions[0].selected is True
+    assert target.actions[0].improved_probability == 1.0
+
+
+@pytest.mark.parametrize("ordering", ["reversed", "wrong-choice"])
+def test_public_adapter_rejects_encoded_choices_not_matching_the_search(ordering: str) -> None:
+    candidates = _candidates("prior-favorite", "search-favorite", "unvisited")
+    if ordering == "reversed":
+        candidates = tuple(reversed(candidates))
+    else:
+        candidates = (*candidates[:2], _candidates("not-in-this-search")[0])
+
+    with pytest.raises(ValueError, match="candidates must align"):
+        search_policy_target_from_result(_search_result(_complete_diagnostics()), candidates)
+
+
+def test_public_adapter_requires_search_result_and_legal_best_key() -> None:
+    candidates = _candidates("prior-favorite", "search-favorite", "unvisited")
+    with pytest.raises(ValueError, match="must return improved action statistics"):
+        search_policy_target_from_result(
+            StrategyResult(candidates=("prior-favorite",), selected_index=0),
+            candidates[:1],
+        )
+
+    result = _search_result(_complete_diagnostics())
+    assert result.search_result is not None
+    result = replace(
+        result,
+        search_result=replace(result.search_result, best_key="not-legal"),
+    )
+    with pytest.raises(ValueError, match="best action is outside"):
+        search_policy_target_from_result(result, candidates)
+
+
 def test_index_rebuilds_cache_without_metric_metadata_version(tmp_path: Path) -> None:
-    actions = _aligned_action_stats(
+    actions = search_policy_target_from_result(
         _search_result(_complete_diagnostics()),
         _candidates("prior-favorite", "search-favorite", "unvisited"),
-    )
+    ).actions
     source = tmp_path / "joint.jsonl"
     cache = tmp_path / "index"
     write_joint_dataset(source, (_row(actions),))
