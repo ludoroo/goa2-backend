@@ -22,7 +22,9 @@ only shared graph vectorization/batching plus distinctly identified candidate-fr
 value tensors. Source/test checkpoint `52f5085` passes **5,049 full-suite tests**,
 **141 focused tests**, source/test Ruff and Black, source mypy, and the GoA2
 branch-coverage gate (87.76%). Independent read-only follow-up review found no
-blockers and ran no tests. This branch is not yet published or merged.
+blockers and ran no tests. [#17](https://github.com/ludoroo/goa2-backend/pull/17)
+is the direct delivery into `main`, with owner approval to publish and merge.
+Subsequent commits only record verification/publication, not implementation changes.
 
 A differential audit against immutable `471b6f8` confirmed legacy schema canonical
 bytes, vectorized fields, and all decision-batch tensors for nine real decision

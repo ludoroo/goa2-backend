@@ -15,7 +15,8 @@ The next branch, `ai-gen1-candidate-free-value`, implements **schema/batching
 only**, verified locally at `52f5085`: **5,049 full-suite tests**, 141 focused
 model/schema/index tests, all Ruff/Black/mypy checks, and 87.76% GoA2 branch
 coverage. Independent read-only follow-up review found no blockers and ran no
-tests. This checkpoint is not yet published or merged.
+tests. Delivery is tracked in [#17](https://github.com/ludoroo/goa2-backend/pull/17),
+`ai-gen1-candidate-free-value` → `main`; source/tests remain at verified `52f5085`.
 
 It adds shared graph tensors and candidate-free value batches, not model heads,
 artifact loading, runtime inference, or a learned search adapter. Those remain

@@ -26,8 +26,11 @@ Independent read-only follow-up review found no blockers and ran no tests; these
 are parent-run local checks. The temporary differential audit script was removed
 once its result was recorded; durable behavior tests remain in the repository.
 
-This checkpoint is local, not yet published or merged. It does not add model
-heads, model/artifact/runtime capability, search integration, native indexing or
+Publication follow-up: the owner approved publishing and merging this roughly
+1,300-line slice as [#17](https://github.com/ludoroo/goa2-backend/pull/17), directly
+from `ai-gen1-candidate-free-value` into `main`. Source/tests remain at `52f5085`;
+publication adds documentation only. This does not add model heads,
+model/artifact/runtime capability, search integration, native indexing or
 losses, or trainer/CLI adoption. No engine/server/client changes, dependencies,
 new generation/training/arena run, or historical artifact migration occurred.
 The original parked checkout and all nine dirty files remain unchanged.
