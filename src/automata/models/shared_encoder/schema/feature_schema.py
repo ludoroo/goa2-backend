@@ -12,13 +12,28 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from automata.decision import DecisionSemanticRole
-from automata.models.contracts import CandidateID, DecisionObservation, EncodedCandidate
+from automata.models.contracts import (
+    CandidateID,
+    DecisionObservation,
+    EncodedCandidate,
+    LearnedObservation,
+    StableValueObservation,
+    Viewer,
+)
 from goa2.domain.input import InputRequestType
 
 TensorSchemaID = Literal["goa2-tensor-features-v2"]
 TensorSchemaVersion = Literal[2]
 TENSOR_SCHEMA_ID: TensorSchemaID = "goa2-tensor-features-v2"
 TENSOR_SCHEMA_VERSION: TensorSchemaVersion = 2
+
+StableValueTensorSchemaID = Literal["goa2-stable-value-tensor-v1"]
+StableValueTensorSchemaVersion = Literal[1]
+STABLE_VALUE_TENSOR_SCHEMA_ID: StableValueTensorSchemaID = "goa2-stable-value-tensor-v1"
+STABLE_VALUE_TENSOR_SCHEMA_VERSION: StableValueTensorSchemaVersion = 1
+STABLE_VALUE_TENSOR_SCHEMA_DIGEST = (
+    "1be2af48315e64fb02425905e0bb873e490b6b8d2ba1b150dacabb9f0944b4cd"
+)
 
 _RESERVED = ("PAD", "UNK", "MISSING")
 _MAX_HASHED_FEATURE_DIMENSION = 4096
@@ -206,6 +221,26 @@ class VectorizedDecision(_Frozen):
     relationships: tuple[VectorizedRelationship, ...]
     candidates: tuple[VectorizedCandidate, ...]
     candidate_ids: tuple[CandidateID, ...]
+
+
+class VectorizedValueContext(_Frozen):
+    """One candidate-free stable-boundary context row."""
+
+    numeric: tuple[float, ...]
+    numeric_valid: tuple[bool, ...]
+    categorical: tuple[int, ...]
+
+
+class VectorizedStableValue(_Frozen):
+    """A graph vectorized under one explicitly pinned stable-value schema."""
+
+    tensor_schema_id: StableValueTensorSchemaID
+    tensor_schema_version: StableValueTensorSchemaVersion
+    tensor_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    viewer: Viewer
+    value_context: VectorizedValueContext
+    tokens: tuple[VectorizedToken, ...]
+    relationships: tuple[VectorizedRelationship, ...]
 
 
 def _n(
@@ -588,6 +623,13 @@ def _decision_context_schema() -> RecordFeatureSchema:
     )
 
 
+def _value_context_schema() -> RecordFeatureSchema:
+    return _record(
+        "STABLE_VALUE_CONTEXT",
+        categorical=(_c("boundary_kind", "ACTOR_READY", "PLANNING_READY"),),
+    )
+
+
 def _schema_digest(
     *,
     schema_version: int,
@@ -617,6 +659,66 @@ def _schema_digest(
             sort_keys=True,
         ).encode()
     ).hexdigest()
+
+
+def _vectorize_graph(
+    observation: LearnedObservation,
+    *,
+    token_by_kind: dict[str, RecordFeatureSchema],
+    relationship_by_kind: dict[str, RecordFeatureSchema],
+    training: bool,
+) -> tuple[tuple[VectorizedToken, ...], tuple[VectorizedRelationship, ...]]:
+    """Vectorize the graph shared by policy decisions and stable values."""
+    if observation.schema_version != 2:
+        raise ValueError("graph observation schema version is incompatible with tensor schema")
+    index_by_ref = {token.local_ref: index for index, token in enumerate(observation.tokens)}
+    if len(index_by_ref) != len(observation.tokens):
+        raise ValueError("graph observation token refs must be unique")
+
+    tokens: list[VectorizedToken] = []
+    for token in observation.tokens:
+        record_schema = TensorFeatureSchema._require_kind(token_by_kind, token.kind, "token")
+        numeric, valid, categorical = TensorFeatureSchema._values(
+            record_schema, token.features, training=training
+        )
+        references, reference_valid = TensorFeatureSchema._references(
+            record_schema, token.features, index_by_ref
+        )
+        tokens.append(
+            VectorizedToken(
+                local_ref=token.local_ref,
+                kind=token.kind,
+                numeric=numeric,
+                numeric_valid=valid,
+                categorical=categorical,
+                references=references,
+                reference_valid=reference_valid,
+            )
+        )
+
+    relationships: list[VectorizedRelationship] = []
+    for edge in observation.relationships:
+        record_schema = TensorFeatureSchema._require_kind(
+            relationship_by_kind, edge.kind, "relationship"
+        )
+        numeric, valid, categorical = TensorFeatureSchema._values(
+            record_schema, edge.features, training=training
+        )
+        if edge.source_ref not in index_by_ref or edge.target_ref not in index_by_ref:
+            raise ValueError("relationship reference does not identify a token")
+        relationships.append(
+            VectorizedRelationship(
+                source_ref=edge.source_ref,
+                target_ref=edge.target_ref,
+                source_index=index_by_ref[edge.source_ref],
+                target_index=index_by_ref[edge.target_ref],
+                kind=edge.kind,
+                numeric=numeric,
+                numeric_valid=valid,
+                categorical=categorical,
+            )
+        )
+    return tuple(tokens), tuple(relationships)
 
 
 class TensorFeatureSchema(_Frozen):
@@ -705,46 +807,15 @@ class TensorFeatureSchema(_Frozen):
             raise ValueError("observation schema version is incompatible with tensor schema")
         if not observation.candidates:
             raise ValueError("candidate collection cannot be empty")
+        tokens, relationships = _vectorize_graph(
+            observation.state,
+            token_by_kind=self._token_by_kind,
+            relationship_by_kind=self._relationship_by_kind,
+            training=training,
+        )
         index_by_ref = {
             token.local_ref: index for index, token in enumerate(observation.state.tokens)
         }
-
-        tokens: list[VectorizedToken] = []
-        for token in observation.state.tokens:
-            schema = self._require_kind(self._token_by_kind, token.kind, "token")
-            numeric, valid, categorical = self._values(schema, token.features, training=training)
-            references, reference_valid = self._references(schema, token.features, index_by_ref)
-            tokens.append(
-                VectorizedToken(
-                    local_ref=token.local_ref,
-                    kind=token.kind,
-                    numeric=numeric,
-                    numeric_valid=valid,
-                    categorical=categorical,
-                    references=references,
-                    reference_valid=reference_valid,
-                )
-            )
-
-        relationships: list[VectorizedRelationship] = []
-        for edge in observation.state.relationships:
-            schema = self._require_kind(self._relationship_by_kind, edge.kind, "relationship")
-            numeric, valid, categorical = self._values(schema, edge.features, training=training)
-            # Observation contracts validate these refs; repeat the check for model safety.
-            if edge.source_ref not in index_by_ref or edge.target_ref not in index_by_ref:
-                raise ValueError("relationship reference does not identify a token")
-            relationships.append(
-                VectorizedRelationship(
-                    source_ref=edge.source_ref,
-                    target_ref=edge.target_ref,
-                    source_index=index_by_ref[edge.source_ref],
-                    target_index=index_by_ref[edge.target_ref],
-                    kind=edge.kind,
-                    numeric=numeric,
-                    numeric_valid=valid,
-                    categorical=categorical,
-                )
-            )
 
         candidates: list[VectorizedCandidate] = []
         for candidate in observation.candidates:
@@ -784,8 +855,8 @@ class TensorFeatureSchema(_Frozen):
             )
         return VectorizedDecision(
             decision_context=decision_context,
-            tokens=tuple(tokens),
-            relationships=tuple(relationships),
+            tokens=tokens,
+            relationships=relationships,
             candidates=tuple(candidates),
             candidate_ids=tuple(item.candidate_id for item in observation.candidates),
         )
@@ -946,12 +1017,166 @@ class TensorFeatureSchema(_Frozen):
         return tuple(indexes), tuple(valid)
 
 
+def _stable_value_schema_digest(
+    *,
+    schema_version: int,
+    schema_id: str,
+    observation_schema_version: int,
+    graph_observation_schema_version: int,
+    tokens: tuple[RecordFeatureSchema, ...],
+    relationships: tuple[RecordFeatureSchema, ...],
+    value_context: RecordFeatureSchema,
+) -> str:
+    payload = {
+        "schema_version": schema_version,
+        "schema_id": schema_id,
+        "observation_schema_version": observation_schema_version,
+        "graph_observation_schema_version": graph_observation_schema_version,
+        "tokens": [item.model_dump(mode="json") for item in tokens],
+        "relationships": [item.model_dump(mode="json") for item in relationships],
+        "value_context": value_context.model_dump(mode="json"),
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+
+
+class StableValueTensorSchema(_Frozen):
+    """Candidate-free tensor declarations for stable value observations."""
+
+    schema_version: StableValueTensorSchemaVersion = STABLE_VALUE_TENSOR_SCHEMA_VERSION
+    schema_id: StableValueTensorSchemaID = STABLE_VALUE_TENSOR_SCHEMA_ID
+    observation_schema_version: Literal[1] = 1
+    graph_observation_schema_version: Literal[2] = 2
+    value_context: RecordFeatureSchema
+    tokens: tuple[RecordFeatureSchema, ...]
+    relationships: tuple[RecordFeatureSchema, ...]
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    _CURRENT: ClassVar[StableValueTensorSchema | None] = None
+
+    @cached_property
+    def _token_by_kind(self) -> dict[str, RecordFeatureSchema]:
+        return {item.kind: item for item in self.tokens}
+
+    @cached_property
+    def _relationship_by_kind(self) -> dict[str, RecordFeatureSchema]:
+        return {item.kind: item for item in self.relationships}
+
+    @model_validator(mode="after")
+    def _valid_digest_and_kinds(self) -> StableValueTensorSchema:
+        for collection in (self.tokens, self.relationships):
+            kinds = [item.kind for item in collection]
+            if len(kinds) != len(set(kinds)):
+                raise ValueError("record schema kinds must be unique")
+        identity = (
+            self.schema_id,
+            self.schema_version,
+            self.observation_schema_version,
+            self.graph_observation_schema_version,
+        )
+        if identity != (STABLE_VALUE_TENSOR_SCHEMA_ID, STABLE_VALUE_TENSOR_SCHEMA_VERSION, 1, 2):
+            raise ValueError("unsupported stable-value tensor/observation schema identity")
+        if self.value_context.kind != "STABLE_VALUE_CONTEXT":
+            raise ValueError("stable-value tensor schema requires its value context")
+        expected = _stable_value_schema_digest(
+            schema_version=self.schema_version,
+            schema_id=self.schema_id,
+            observation_schema_version=self.observation_schema_version,
+            graph_observation_schema_version=self.graph_observation_schema_version,
+            tokens=self.tokens,
+            relationships=self.relationships,
+            value_context=self.value_context,
+        )
+        if self.digest != expected:
+            raise ValueError("stable-value tensor schema digest does not match its declarations")
+        # Unlike a configurable feature inventory, this v1 release has one frozen
+        # declaration set. Extensions require a distinct version/identity.
+        if expected != STABLE_VALUE_TENSOR_SCHEMA_DIGEST:
+            raise ValueError("unsupported declarations for the released stable-value tensor v1")
+        return self
+
+    @classmethod
+    def current(cls) -> StableValueTensorSchema:
+        if cls._CURRENT is None:
+            # These are the exact graph declarations used by decision schema v2,
+            # intentionally repeated without importing policy-only declarations.
+            tokens = _token_schemas()
+            relationships = _relationship_schemas()
+            value_context = _value_context_schema()
+            digest = _stable_value_schema_digest(
+                schema_version=STABLE_VALUE_TENSOR_SCHEMA_VERSION,
+                schema_id=STABLE_VALUE_TENSOR_SCHEMA_ID,
+                observation_schema_version=1,
+                graph_observation_schema_version=2,
+                tokens=tokens,
+                relationships=relationships,
+                value_context=value_context,
+            )
+            cls._CURRENT = cls(
+                value_context=value_context,
+                tokens=tokens,
+                relationships=relationships,
+                digest=digest,
+            )
+        assert cls._CURRENT is not None
+        return cls._CURRENT
+
+    def vectorize(self, observation: StableValueObservation) -> VectorizedStableValue:
+        if not isinstance(observation, StableValueObservation):
+            raise TypeError("stable value vectorization requires StableValueObservation")
+        if observation.schema_version != self.observation_schema_version:
+            raise ValueError("stable value observation schema is incompatible with tensor schema")
+        viewer = observation.state.viewer
+        if (
+            viewer.schema_version != 2
+            or not viewer.private_hero_id
+            or viewer.perspective_team not in {"RED", "BLUE"}
+        ):
+            raise ValueError("stable value observation requires viewer entitlement and perspective")
+        # Value v1 rejects undeclared fields at both preparation and inference
+        # boundaries; it does not inherit the legacy policy's permissive mode.
+        tokens, relationships = _vectorize_graph(
+            observation.state,
+            token_by_kind=self._token_by_kind,
+            relationship_by_kind=self._relationship_by_kind,
+            training=True,
+        )
+        numeric, valid, categorical = TensorFeatureSchema._values(
+            self.value_context,
+            {"boundary_kind": observation.boundary_kind},
+            training=True,
+        )
+        return VectorizedStableValue(
+            tensor_schema_id=self.schema_id,
+            tensor_schema_version=self.schema_version,
+            tensor_schema_digest=self.digest,
+            viewer=viewer,
+            value_context=VectorizedValueContext(
+                numeric=numeric,
+                numeric_valid=valid,
+                categorical=categorical,
+            ),
+            tokens=tokens,
+            relationships=relationships,
+        )
+
+
 def expanded_numeric_width(schema: RecordFeatureSchema) -> int:
     """Return scalar columns after fixed-width hashed features are expanded."""
     return len(schema.numeric) + sum(feature.dimension for feature in schema.hashed)
 
 
 __all__ = [
+    "STABLE_VALUE_TENSOR_SCHEMA_DIGEST",
+    "STABLE_VALUE_TENSOR_SCHEMA_ID",
+    "STABLE_VALUE_TENSOR_SCHEMA_VERSION",
     "TENSOR_SCHEMA_ID",
     "TENSOR_SCHEMA_VERSION",
     "CategoricalFeature",
@@ -960,6 +1185,9 @@ __all__ = [
     "NumericFeature",
     "RecordFeatureSchema",
     "ReferenceFeature",
+    "StableValueTensorSchema",
+    "StableValueTensorSchemaID",
+    "StableValueTensorSchemaVersion",
     "TensorFeatureSchema",
     "TensorSchemaID",
     "TensorSchemaVersion",
@@ -967,6 +1195,8 @@ __all__ = [
     "VectorizedDecision",
     "VectorizedDecisionContext",
     "VectorizedRelationship",
+    "VectorizedStableValue",
     "VectorizedToken",
+    "VectorizedValueContext",
     "expanded_numeric_width",
 ]
