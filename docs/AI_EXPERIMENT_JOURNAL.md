@@ -23,7 +23,11 @@ Ruff/Black over `src tests`, mypy over `src`, and GoA2 branch coverage **87.76%*
 Independent read-only follow-up review found no blockers and ran no tests; these
 are parent-run local checks, not remote CI or playing-strength evidence.
 
-This is a local checkpoint, not a published PR or completed Gen1 pipeline.
+Publication follow-up: the owner approved one approximately 2,900-line PR,
+including tests/docs. Draft [#16](https://github.com/ludoroo/goa2-backend/pull/16)
+delivers `ai-gen1-native-dataset` directly into `main`, not another stacked train.
+Production/tests still match `9060250`; publication adds only documentation.
+This is not a completed Gen1 pipeline.
 Candidate-free model/runtime batching, bounded indexing/per-head losses, and
 trainer/iteration integration remain separate gates. No generation, training,
 arena experiment, dependency change, or historical evidence conversion occurred.

@@ -1,6 +1,6 @@
 # AI PR reset: merge/rebase handoff
 
-## Current checkpoint — native data verified locally
+## Current checkpoint — native data published as draft #16
 
 PR #15 merged into `main` at `2f1bc92`; the tree equals verified `1406cac` exactly.
 Both the cleaned AI stack and newer upstream Swift fix are present. A fresh
@@ -13,20 +13,23 @@ Production/test checkpoint `9060250` passes **5,024 full-suite tests**, **67
 focused native/adapter tests**, Ruff/Black over `src tests`, mypy over `src`, and
 the GoA2 branch-coverage gate (87.76%). Independent read-only follow-up review
 found no blockers and ran no tests; the test results are parent-run local evidence.
-This branch is not yet published or merged.
+Published as draft [#16](https://github.com/ludoroo/goa2-backend/pull/16),
+`ai-gen1-native-dataset` → `main`. It is not merged; source/tests remain identical
+to verified `9060250`. Later commits only record verification/publication.
 
 Eight source/test files were ported from the parked native-data work, then
 corrected during review; its old contract patch was not applied over current
-documentation. The original checkout,
-branch/HEAD, and all nine dirty files remain unchanged. Work/reviews use the same
+documentation. The original checkout, branch/HEAD, and all nine dirty files
+remain unchanged. Work/reviews use the same
 shared workspace, `/tmp/goa2-clean-stack.e0SwTB/repo`.
 
 This checkpoint covers policy/value records, strict one-game I/O, whole-game
 recording, and the public root-target adapter only. Red/green regressions fixed
 unsorted multi-hero rosters, truncated/incomplete spools, observation-local ref
 comparison, and reordered candidate evidence. Policy viewer/owner identity is
-validated, and provisional spools cannot match final-dataset filename patterns. Candidate-free model/runtime,
-bounded indexing/per-head losses, and trainer/iteration integration follow it.
+validated, and provisional spools cannot match final-dataset filename patterns.
+Candidate-free model/runtime, bounded indexing/per-head losses, and
+trainer/iteration integration follow it.
 No Gen1 generation, training, arena experiment, dependency change, historical
 artifact conversion, engine change, or client API change is part of this slice.
 

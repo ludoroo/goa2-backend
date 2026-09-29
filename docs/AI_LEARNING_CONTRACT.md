@@ -7,7 +7,8 @@ and newer upstream Swift fix are both present. The merged foundation passes
 `9060250` on `ai-gen1-native-dataset`: **5,024 full-suite tests**, 67 focused
 native/adapter tests, and all Ruff/Black/mypy checks pass. GoA2 branch-aware
 coverage is 87.76%. Independent read-only follow-up review found no blockers;
-the reviewer ran no tests. Original parked files remain unchanged.
+the reviewer ran no tests. Published as draft [#16](https://github.com/ludoroo/goa2-backend/pull/16)
+into `main`; original parked files remain unchanged.
 
 This does **not** make Gen1 training ready: candidate-free model/runtime batching,
 indexing/losses, and trainer/iteration integration remain separate checkpoints.
@@ -20,7 +21,7 @@ bot/replay support. Deferred engine recovery and immunity ownership changes are
 not included. Replay cleanup is folded into #8 and prior-sampled continuations
 into #9/#10. Historical verification numbers below describe their original
 checkpoints, not the rewritten heads. The original native-data files remain
-parked outside that stack; their reviewed port is a separate local checkpoint.
+parked outside that stack; their reviewed port is delivered separately in #16.
 No generation/training gate has been lifted.
 
 **Scope:** the fresh AI lineage replacing the historical #6/#7 experimental
