@@ -341,6 +341,11 @@ def test_only_explicit_batching_import_loads_torch() -> None:
         assert "torch" not in sys.modules
         assert not any(name.startswith("torch.") for name in sys.modules)
 
+        from automata.models.shared_encoder.schema import StableValueTensorSchema
+        StableValueTensorSchema.current()
+        assert "torch" not in sys.modules
+        assert not any(name.startswith("torch.") for name in sys.modules)
+
         import automata.models.shared_encoder.batching
 
         assert "torch" in sys.modules

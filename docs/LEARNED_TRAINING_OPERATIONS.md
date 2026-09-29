@@ -27,9 +27,13 @@ generations. Native artifact integrity, scope, candidate alignment, and schema
 checks remain mandatory. Observation-v3/tensor-v1 bridges and their command-line
 flags have been removed; old artifacts are rejected rather than adapted.
 
-The current joint dataset is still schema v2. It is retained until separate
-policy-decision and actual-boundary value samples replace it. The new
-candidate-free `StableValueObservation` exists, but is not yet a training input.
+The current CLI joint dataset is still schema v2. It is retained until the
+native policy/value path is adopted end to end. Native records and whole-game
+publication landed in #16. `StableValueObservation` also has separate candidate-free
+tensor preparation via `StableValueTensorSchema` / `collate_stable_values`; this
+does not make it a trainer or runtime input yet. Model/artifact/runtime capability,
+native indexing and per-head losses, and trainer/generation adoption remain gated.
+No old artifact, index, or dataset is converted by the new batching API.
 
 The unused curriculum, callback-only generation coordinator, and callback-only
 policy-iteration wrapper have been removed. **There is no executable complete

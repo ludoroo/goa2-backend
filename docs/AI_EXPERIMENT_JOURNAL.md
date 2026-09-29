@@ -1,5 +1,40 @@
 # AI experiment journal
 
+## Candidate-free tensor preparation — 2026-09-29
+
+Native-data #16 merged into main at `471b6f8`, tree-identical to reviewed
+`298c63d`, with a fresh 5,024-test baseline. The next local source/test checkpoint
+is `52f5085` on `ai-gen1-candidate-free-value`, limited to schema and batching.
+
+Graph vectorization/collation is shared by decisions and candidate-free stable
+values. `StableValueTensorSchema` has distinct identity
+`goa2-stable-value-tensor-v1` and a frozen digest/declaration set; it adds explicit
+boundary context without policy candidates, fake decisions, or logits. Viewer
+metadata remains Python-side. Released decision-v2 schema bytes, decision-batch
+positional/flattened layout, old indexes, and model/runtime behavior stay intact.
+A differential audit against immutable main compared all vectorized fields and
+batch tensors for nine real decision fixtures and found no differences.
+
+Red/green validation caught two new-path integrity gaps: Python-finite values
+could overflow float32, and a prevectorized required reference could be masked
+out. Both now reject before tensor use, with negative coverage for viewer metadata,
+boundary categories, reference sentinels/ranges, and edge index/ref consistency.
+
+Verification: **5,049 full-suite tests**, **141 focused model/schema/index tests**,
+Ruff/Black over `src tests`, mypy over `src`, and GoA2 branch coverage **87.76%**.
+Independent read-only follow-up review found no blockers and ran no tests; these
+are parent-run local checks. The temporary differential audit script was removed
+once its result was recorded; durable behavior tests remain in the repository.
+
+Publication follow-up: the owner approved publishing and merging this roughly
+1,300-line slice as [#17](https://github.com/ludoroo/goa2-backend/pull/17), directly
+from `ai-gen1-candidate-free-value` into `main`. Source/tests remain at `52f5085`;
+publication adds documentation only. This does not add model heads,
+model/artifact/runtime capability, search integration, native indexing or
+losses, or trainer/CLI adoption. No engine/server/client changes, dependencies,
+new generation/training/arena run, or historical artifact migration occurred.
+The original parked checkout and all nine dirty files remain unchanged.
+
 ## Native recording checkpoint — 2026-09-29
 
 PR #15 now truly lands the cleaned stack on main at `2f1bc92`, with the same

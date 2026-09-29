@@ -1,6 +1,6 @@
 # AI PR reset: merge/rebase handoff
 
-## Current checkpoint — native data published as draft #16
+## Current checkpoint — value tensor preparation verified locally
 
 PR #15 merged into `main` at `2f1bc92`; the tree equals verified `1406cac` exactly.
 Both the cleaned AI stack and newer upstream Swift fix are present. A fresh
@@ -8,14 +8,33 @@ post-merge baseline passes 4,963 tests. The intermediate-branch landing gap from
 #8–#13 is resolved; no foundation PR remains to merge. See
 [AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md) for the historical landing evidence.
 
-The next branch is `ai-gen1-native-dataset`, based on that actual merged main.
+The native-data branch was `ai-gen1-native-dataset`, based on that merged main.
 Production/test checkpoint `9060250` passes **5,024 full-suite tests**, **67
 focused native/adapter tests**, Ruff/Black over `src tests`, mypy over `src`, and
 the GoA2 branch-coverage gate (87.76%). Independent read-only follow-up review
 found no blockers and ran no tests; the test results are parent-run local evidence.
-Published as draft [#16](https://github.com/ludoroo/goa2-backend/pull/16),
-`ai-gen1-native-dataset` → `main`. It is not merged; source/tests remain identical
-to verified `9060250`. Later commits only record verification/publication.
+[#16](https://github.com/ludoroo/goa2-backend/pull/16) merged into `main` at
+`471b6f8`, whose tree equals verified `298c63d`; source/tests still match
+`9060250`. A fresh post-merge baseline passes 5,024 tests.
+
+Current branch `ai-gen1-candidate-free-value` starts from `471b6f8` and covers
+only shared graph vectorization/batching plus distinctly identified candidate-free
+value tensors. Source/test checkpoint `52f5085` passes **5,049 full-suite tests**,
+**141 focused tests**, source/test Ruff and Black, source mypy, and the GoA2
+branch-coverage gate (87.76%). Independent read-only follow-up review found no
+blockers and ran no tests. [#17](https://github.com/ludoroo/goa2-backend/pull/17)
+is the direct delivery into `main`, with owner approval to publish and merge.
+Subsequent commits only record verification/publication, not implementation changes.
+
+A differential audit against immutable `471b6f8` confirmed legacy schema canonical
+bytes, vectorized fields, and all decision-batch tensors for nine real decision
+fixtures, plus the positional constructor and flattened layout. New-path fixes
+reject finite Python numbers that overflow float32 and missing required references.
+Model heads, new artifact/runtime capability, learned stable search, native
+indexes/losses, and trainer/iteration adoption remain separate checkpoints.
+Do not turn decision-trained artifacts into stable-boundary value models.
+
+### Landed native-data checkpoint (historical detail)
 
 Eight source/test files were ported from the parked native-data work, then
 corrected during review; its old contract patch was not applied over current
