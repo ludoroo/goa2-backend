@@ -1,16 +1,27 @@
 # Gen1 learning contract
 
-**Current status — foundation landed:** #15 merged into `main` at `2f1bc92`,
+**Current status — native data landed:** #15 merged into `main` at `2f1bc92`,
 with a tree identical to the verified landing `1406cac`. The reviewed AI stack
 and newer upstream Swift fix are both present. The merged foundation passes
 4,963 tests. The native rows/recorder checkpoint is now verified locally at
 `9060250` on `ai-gen1-native-dataset`: **5,024 full-suite tests**, 67 focused
 native/adapter tests, and all Ruff/Black/mypy checks pass. GoA2 branch-aware
 coverage is 87.76%. Independent read-only follow-up review found no blockers;
-the reviewer ran no tests. Published as draft [#16](https://github.com/ludoroo/goa2-backend/pull/16)
-into `main`; original parked files remain unchanged.
+the reviewer ran no tests. [#16](https://github.com/ludoroo/goa2-backend/pull/16)
+merged into `main` at `471b6f8`, with a tree identical to verified `298c63d` and
+a fresh 5,024-test baseline. Original parked files remain unchanged.
 
-This does **not** make Gen1 training ready: candidate-free model/runtime batching,
+The next branch, `ai-gen1-candidate-free-value`, implements **schema/batching
+only**, verified locally at `52f5085`: **5,049 full-suite tests**, 141 focused
+model/schema/index tests, all Ruff/Black/mypy checks, and 87.76% GoA2 branch
+coverage. Independent read-only follow-up review found no blockers and ran no
+tests. This checkpoint is not yet published or merged.
+
+It adds shared graph tensors and candidate-free value batches, not model heads,
+artifact loading, runtime inference, or a learned search adapter. Those remain
+the next part of the candidate-free model/runtime checkpoint.
+
+This does **not** make Gen1 training ready: model/runtime integration,
 indexing/losses, and trainer/iteration integration remain separate checkpoints.
 Existing joint-data commands are not Gen1 commands; no generation is authorized.
 
@@ -324,18 +335,24 @@ checkpoint. No native CLI, dataset conversion, or training run is added here.
 
 ### Next data/model checkpoints (no generation yet)
 
-1. **Native rows and publication — verified locally at `9060250`.** Discriminated
+1. **Native rows and publication — merged in #16, implementation `9060250`.** Discriminated
    policy/value records and a whole-game recorder over the existing `StableBoundaryObserver` and
    `encode_stable_value` seams. Policy rows retain exact candidates/root visits
    without a value target; value rows contain actual boundary observations and
    terminal labels without policy candidates. Coverage includes per-viewer
    deduplication, unsorted 2v2 rosters, perspective orientation, atomic publication,
    corruption/count mismatch, canonical target alignment, and whole-game discard.
-2. **Candidate-free model/runtime.** Separate shared graph batching from candidate
-   tables in `shared_encoder/batching.py`, expose value-only model/runtime paths,
-   and preserve boundary/viewer metadata and strict artifact/scope validation.
-   Test batched/single parity, privacy, and native boundary-value inference without
-   constructing candidates or policy logits.
+2. **Candidate-free model/runtime — staged checkpoints.** Schema/batching is
+   verified locally at `52f5085`: `GraphBatch`, `StableValueBatch`, and
+   `collate_stable_values`, with torch-free `StableValueTensorSchema` identity
+   `goa2-stable-value-tensor-v1`. Shared graph vectorization/collation preserves
+   the released decision-v2 schema and flattened batch/cache interface; value
+   tensors have their own boundary context and no policy candidates. Next add
+   value-only model/runtime paths, new Gen1 artifact capability/scope checks,
+   and the stable search adapter. Tensor support alone is not inference
+   support; decision-trained artifacts must not be reinterpreted as boundary-value
+   models. Test batched/single parity, privacy, and isolation from candidates and
+   policy logits at each layer.
 3. **Bounded indexing and separate losses.** Index tagged policy/value chunks with
    source/dataset identity checks. Normalize each head independently per game;
    policy metrics must ignore value rows and value metrics need no candidate

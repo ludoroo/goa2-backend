@@ -16,6 +16,9 @@
   joint model, batching, artifact, `SharedEncoderRuntime`, and serving cache;
   `LearnedSearchPolicy` and `LearnedLeafEvaluator`; independent
   `policy_source`/`value_source` server composition.
+- **Gen1 tensor preparation:** shared graph vectorization/collation plus
+  `StableValueTensorSchema` and candidate-free `StableValueBatch`. This is only
+  schema/batching support, not a new model, artifact loader, or runtime capability.
 - **Gen1 search boundary:** opt-in complete-transition search shares the live
   boundary detector and exposes a candidate-free value interface. Only heuristic
   value implements it so far; incompatible value evaluators fail explicitly.
@@ -148,6 +151,41 @@ The observation-v3/tensor-v1 execution path, old digest-loading exceptions, and
 self-play/arena bridge flags have been removed. Unsupported versions fail closed;
 artifact integrity, scope, and candidate validation have not been relaxed.
 Historical checkpoints remain evidence, not executable dependencies of Gen1.
+
+## Candidate-free value tensor preparation
+
+`StableValueTensorSchema.current()` declares a separate, torch-free tensor schema:
+`goa2-stable-value-tensor-v1`, schema version 1, stable-value observation version 1,
+and graph observation version 2. Its pinned digest is
+`1be2af48315e64fb02425905e0bb873e490b6b8d2ba1b150dacabb9f0944b4cd`.
+It reuses the released decision-v2 graph declarations, not its policy candidates
+or decision context. A single `STABLE_VALUE_CONTEXT` row encodes the explicit
+`ACTOR_READY` / `PLANNING_READY` boundary kind. The released value-v1 declaration
+set is fixed: custom declarations need a new identity, and undeclared graph fields
+fail at both preparation and inference-input collation rather than being ignored.
+
+`collate_stable_values(observations, schema=...)` accepts native stable observations
+or `VectorizedStableValue` records pinned to that value schema. It returns a
+`StableValueBatch` with `graph: GraphBatch`, `value_context`, and Python-side
+`viewers`. Graph tables share the decision path's vectorization and collation.
+Viewer-relative graph features carry the information entitlement and orientation;
+raw hero IDs are validation/alignment metadata, never learned identity features.
+Value batches have no candidates, candidate IDs, policy decision, synthetic action,
+or logits. Ragged padding and graph-reference handling do not need a policy table.
+Collation checks float32-representable finite values, schema identity, required
+references, graph endpoints and context indexes, including prevectorized inputs.
+This is layout validation, not proof that an arbitrary graph was information-safe
+or a real completed transition: use `encode_stable_value` and the native record
+validators for boundary/viewer semantics. Artifact/scope validation is still a
+later runtime responsibility.
+
+The legacy `DecisionBatch` keeps its flattened fields and positional constructor;
+its `.graph` property is a nonserialized view of the existing graph tensors.
+Released `TensorFeatureSchema.current()` remains decision v2 with the same canonical
+bytes and digest. Joint indexes, model v2, runtime v2, and CLI behavior remain
+unchanged. The new tensor schema is **not** a model/artifact version: distinct
+Gen1 model/artifact identity, native inference, and stable search integration still
+follow. Existing decision-trained artifacts cannot be relabelled to supply them.
 
 ## Leaf contract
 
