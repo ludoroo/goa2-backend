@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import math
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from .candidates import CandidateID, DecisionObservation, _require_unique
-from .observation import _Contract
+from .observation import StableValueObservation, _Contract
 
 
 def _require_finite(values: tuple[float, ...], name: str) -> None:
@@ -40,6 +40,40 @@ class PolicyValueOutput(_Contract[Literal[1]]):
         if not math.isfinite(self.value) or not -1.0 <= self.value <= 1.0:
             raise ValueError("value must be finite and in the range [-1, 1]")
         return self
+
+
+class LearnedPolicyOutput(BaseModel):
+    """Candidate-aligned policy logits without probabilities or a value."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    candidate_ids: tuple[CandidateID, ...]
+    policy_logits: tuple[float, ...]
+
+    @model_validator(mode="after")
+    def _valid_output(self) -> LearnedPolicyOutput:
+        _require_unique(self.candidate_ids)
+        if not self.candidate_ids:
+            raise ValueError("policy output must contain at least one candidate")
+        if len(self.candidate_ids) != len(self.policy_logits):
+            raise ValueError("candidate IDs and policy logits must have aligned lengths")
+        _require_finite(self.policy_logits, "policy logits")
+        return self
+
+
+class LearnedStableValueOutput(BaseModel):
+    """Candidate-free outcome value at a stable evaluation boundary."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    value: float
+
+    @field_validator("value")
+    @classmethod
+    def _valid_value(cls, value: float) -> float:
+        if not math.isfinite(value) or not -1.0 <= value <= 1.0:
+            raise ValueError("value must be finite and in [-1, 1]")
+        return value
 
 
 class SearchOutcome(_Contract[Literal[1]]):
@@ -110,9 +144,25 @@ class LearnedModelRuntime(Protocol):
     def evaluate(self, observation: DecisionObservation) -> LearnedModelOutput: ...
 
 
+@runtime_checkable
+class LearnedPolicyRuntime(Protocol):
+    def evaluate_policy(self, observation: DecisionObservation) -> LearnedPolicyOutput: ...
+
+
+@runtime_checkable
+class LearnedStableValueRuntime(Protocol):
+    def evaluate_stable_value(
+        self, observation: StableValueObservation
+    ) -> LearnedStableValueOutput: ...
+
+
 __all__ = [
     "LearnedModelOutput",
     "LearnedModelRuntime",
+    "LearnedPolicyOutput",
+    "LearnedPolicyRuntime",
+    "LearnedStableValueOutput",
+    "LearnedStableValueRuntime",
     "PolicyValueOutput",
     "SearchOutcome",
 ]

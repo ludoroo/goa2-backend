@@ -1,6 +1,33 @@
 # AI PR reset: merge/rebase handoff
 
-## Current checkpoint — value tensor preparation verified locally
+## Current checkpoint — native Gen1 model/runtime integration
+
+Current branch: `ai-gen1-stable-value-runtime`, based on merged main `f8469f4`.
+Work and reviews use `/tmp/goa2-clean-stack.e0SwTB/repo`; do not create additional
+agent workspaces or alter the original parked checkout.
+
+The verified local slice adds separate policy/stable-value model forwards,
+distinct Gen1 artifacts and CPU inference, and the native stable-search adapter.
+Verification: **5,091 full-suite tests**, **161 focused tests**, Ruff/Black over
+`src tests`, mypy over `src`, and **87.76%** GoA2 branch-aware coverage (80% gate).
+Independent read-only review found no blockers and ran no tests. Model-only
+review also found no blockers. These are local checks, not remote CI or strength
+evidence. The owner approved committing, publishing, and merging this checkpoint
+as one direct PR into `main`. No training, generation, or arena run is authorized
+by that delivery approval.
+
+Artifact hardening rejects incompatible config before weight loading and preserves
+a competing empty destination directory. Publication reserves the destination
+exclusively and installs the manifest last; an interrupted publication fails
+closed and can require manual cleanup of its incomplete directory before retry.
+Logs and source/test fingerprints are recorded outside the repository at
+`/tmp/goa2-clean-stack.e0SwTB/runtime-verification.json`. The original checkout's
+HEAD, branch, and all nine parked file fingerprints remain unchanged.
+Bounded native indexing, per-head losses, and trainer/generator/iteration adoption
+are the next checkpoints, not included here. Existing joint commands and artifacts
+retain their old identities; native inference is not a training-readiness claim.
+
+### Landed schema/batching and native-data foundations
 
 PR #15 merged into `main` at `2f1bc92`; the tree equals verified `1406cac` exactly.
 Both the cleaned AI stack and newer upstream Swift fix are present. A fresh
@@ -17,22 +44,25 @@ found no blockers and ran no tests; the test results are parent-run local eviden
 `471b6f8`, whose tree equals verified `298c63d`; source/tests still match
 `9060250`. A fresh post-merge baseline passes 5,024 tests.
 
-Current branch `ai-gen1-candidate-free-value` starts from `471b6f8` and covers
+The previous branch `ai-gen1-candidate-free-value` started from `471b6f8` and covered
 only shared graph vectorization/batching plus distinctly identified candidate-free
 value tensors. Source/test checkpoint `52f5085` passes **5,049 full-suite tests**,
 **141 focused tests**, source/test Ruff and Black, source mypy, and the GoA2
 branch-coverage gate (87.76%). Independent read-only follow-up review found no
 blockers and ran no tests. [#17](https://github.com/ludoroo/goa2-backend/pull/17)
-is the direct delivery into `main`, with owner approval to publish and merge.
-Subsequent commits only record verification/publication, not implementation changes.
+merged directly into `main` at `f8469f4`, tree-identical to published `e66249f`.
+Source/tests match tested `52f5085`; the subsequent commits only record
+verification/publication. A fresh baseline before the native-runtime slice passed
+5,049 tests; this is not a separate full-suite claim for the merge operation itself.
 
 A differential audit against immutable `471b6f8` confirmed legacy schema canonical
 bytes, vectorized fields, and all decision-batch tensors for nine real decision
 fixtures, plus the positional constructor and flattened layout. New-path fixes
 reject finite Python numbers that overflow float32 and missing required references.
-Model heads, new artifact/runtime capability, learned stable search, native
-indexes/losses, and trainer/iteration adoption remain separate checkpoints.
-Do not turn decision-trained artifacts into stable-boundary value models.
+Model heads, new artifact/runtime capability, and learned stable search are the
+current local checkpoint. Native indexes/losses and trainer/iteration adoption
+remain separate. Do not turn decision-trained artifacts into stable-boundary
+value models.
 
 ### Landed native-data checkpoint (historical detail)
 

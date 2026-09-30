@@ -1,5 +1,53 @@
 # AI experiment journal
 
+## Native Gen1 model/runtime integration — 2026-09-30
+
+Schema/batching #17 merged at `f8469f4`, tree-identical to published `e66249f`;
+source/tests match verified `52f5085`. The new local branch is
+`ai-gen1-stable-value-runtime`, using the same shared workspace. The original
+parked checkout remains outside the implementation.
+
+The native model has a shared graph trunk with separate policy and stable-value
+contexts/heads and exhaustive disjoint parameter groups. Stable inference has
+no candidate or policy-logit dependency. Gen1 uses a distinct architecture,
+manifest schema 3, runtime compatibility 1, and explicit stable-boundary outcome
+semantics; legacy joint manifest/runtime compatibility remains 2. Native CPU
+inference exposes separate policy/value single/batch methods rather than a joint
+`evaluate`. The stable-search adapter encodes actual boundaries with fixed viewer
+and perspective; exact terminal outcomes bypass inference.
+
+Model-only review found no blockers. Follow-up tightened integer identity checks,
+added explicit viewer/batch alignment errors, and covered malformed batch layouts
+and padded-row gradients in training mode. A real artifact export/load → policy
+and value search regression checks a foreign boundary actor, fixed private
+viewer, and unchanged live state. This is functional evidence, not playing-strength
+evidence or a training run.
+
+Artifact review identified an exists-check/rename race that could replace a
+competing empty destination directory, plus late architecture-config validation.
+Three new regressions failed before correction and pass after: export now
+reserves its destination exclusively and installs the manifest last; both schema
+config bindings are checked before loading weights. A crash can leave an
+incomplete reservation that fails closed and needs inspection/removal before
+retry. This deliberately prioritizes no-clobber behavior over whole-directory
+atomic visibility. Runtime behavior tests additionally cover ragged batch parity,
+allied owners, scope/boundary rejection, malformed outputs, and value isolation.
+
+Final verification: **5,091 full-suite tests**, **161 focused tests**, Ruff/Black
+over `src tests`, mypy over `src`, diff checks, and **87.76%** GoA2 branch-aware
+coverage (80% gate). A separate server run passed all **520 tests**. Independent
+read-only full-slice review found no blockers and ran no tests; these are parent-run
+local results, not remote CI. No commit, push, PR, merge, engine/server/client
+change, dependency update, historical artifact conversion, generation, training,
+or arena experiment occurred in this slice.
+Native indexing, per-head losses, and trainer/generator/iteration adoption remain
+separate gates; existing joint commands are not native Gen1 commands.
+
+Publication follow-up: the owner approved committing, publishing, and merging
+this verified model/runtime checkpoint as one direct PR into `main`. This
+changes delivery status only; no source/test or training-gate change accompanies
+publication.
+
 ## Candidate-free tensor preparation — 2026-09-29
 
 Native-data #16 merged into main at `471b6f8`, tree-identical to reviewed

@@ -5,19 +5,32 @@ import pytest
 from automata.agents.heuristic_agent import HeuristicAgent
 from automata.agents.ismcts_agent import ISMCTSAgent
 from automata.decision import DecisionDescriptor
-from automata.models.contracts.inference import LearnedModelOutput
+from automata.models.contracts import ArtifactError
+from automata.models.contracts.inference import (
+    LearnedModelOutput,
+    LearnedPolicyOutput,
+    LearnedStableValueOutput,
+)
 from automata.runtime.clone import clone_state
 from automata.runtime.effects import register_all_effects
+from automata.runtime.value_boundary import detect_stable_value_boundary
 from automata.search.config import SearchConfig
 from automata.search.contracts import (
+    ComponentInferenceError,
+    ComponentUnavailableError,
     LeafMode,
     PolicyScores,
     ScoreSemantics,
     SearchContext,
+    StableValueContext,
 )
 from automata.search.fallback import FallbackLeafEvaluator, FallbackSearchPolicy
 from automata.search.heuristic import HeuristicLeafEvaluator, HeuristicPrior
-from automata.search.learned import LearnedLeafEvaluator, LearnedSearchPolicy
+from automata.search.learned import (
+    LearnedLeafEvaluator,
+    LearnedSearchPolicy,
+    LearnedStableValueEvaluator,
+)
 from goa2.domain.input import InputOption, InputRequest, InputRequestType
 from goa2.domain.models import GamePhase, TeamColor
 from goa2.domain.types import HeroID
@@ -80,6 +93,44 @@ def _live_resolution_input():
     return state, result.input_request
 
 
+def test_learned_policy_prefers_native_policy_capability() -> None:
+    state = _state()
+    owner = state.get_hero(HeroID("hero_razzle"))
+    assert owner is not None
+    legal = tuple(card.id for card in owner.hand)
+
+    class NativePolicyRuntime:
+        def __init__(self) -> None:
+            self.observations = []
+
+        def evaluate_policy(self, observation):
+            self.observations.append(observation)
+            return LearnedPolicyOutput(
+                candidate_ids=tuple(candidate.candidate_id for candidate in observation.candidates),
+                policy_logits=tuple(float(index) for index in range(len(legal))),
+            )
+
+        def evaluate(self, _observation):
+            pytest.fail("legacy joint inference used instead of native policy inference")
+
+    runtime = NativePolicyRuntime()
+    context = SearchContext(
+        "hero_razzle",
+        TeamColor.RED,
+        "hero_razzle",
+        DecisionDescriptor("CARD", hero=owner),
+    )
+
+    scores = LearnedSearchPolicy(runtime).score(context, state, legal)
+
+    assert scores == PolicyScores(
+        legal,
+        tuple(float(index) for index in range(len(legal))),
+        ScoreSemantics.LOGITS,
+    )
+    assert len(runtime.observations) == 1
+
+
 def test_learned_policy_returns_exact_caller_aligned_raw_logits_from_fixed_viewer() -> None:
     state = _state()
     request = InputRequest(
@@ -113,6 +164,65 @@ def test_learned_policy_returns_exact_caller_aligned_raw_logits_from_fixed_viewe
         if token.kind == "HERO" and token.features["hero_id"] == "hero_razzle"
     )
     assert owner_token.features["is_decision_owner"] is True
+
+
+def test_stable_value_evaluator_requires_native_capability_and_encodes_fixed_viewer() -> None:
+    state = _state()
+    boundary = detect_stable_value_boundary(state)
+    assert boundary is not None
+
+    with pytest.raises(TypeError, match="LearnedStableValueRuntime"):
+        LearnedStableValueEvaluator(RecordingRuntime((0.0,)))
+
+    class StableRuntime:
+        def __init__(self) -> None:
+            self.observations = []
+
+        def evaluate_stable_value(self, observation):
+            self.observations.append(observation)
+            return LearnedStableValueOutput(value=0.4)
+
+    runtime = StableRuntime()
+    evaluator = LearnedStableValueEvaluator(runtime)
+    assert evaluator.recipe_id == "learned-stable-boundary-value-v1"
+    result = evaluator.evaluate_stable_value(
+        StableValueContext("hero_arien", TeamColor.BLUE, boundary), state
+    )
+
+    assert result.value == 0.4
+    assert len(runtime.observations) == 1
+    observation = runtime.observations[0]
+    assert observation.boundary_kind == boundary.kind.value
+    assert observation.state.viewer.private_hero_id == "hero_arien"
+    assert observation.state.viewer.perspective_team == "BLUE"
+
+
+def test_stable_value_evaluator_preserves_inference_and_output_error_boundaries() -> None:
+    state = _state()
+    boundary = detect_stable_value_boundary(state)
+    assert boundary is not None
+    context = StableValueContext("hero_razzle", TeamColor.RED, boundary)
+
+    class UnavailableRuntime:
+        def evaluate_stable_value(self, _observation):
+            raise ArtifactError("stable value artifact is incompatible")
+
+    with pytest.raises(ComponentUnavailableError, match="artifact is incompatible"):
+        LearnedStableValueEvaluator(UnavailableRuntime()).evaluate_stable_value(context, state)
+
+    class FailedRuntime:
+        def evaluate_stable_value(self, _observation):
+            raise RuntimeError("stable value inference failed")
+
+    with pytest.raises(ComponentInferenceError, match="stable value inference failed"):
+        LearnedStableValueEvaluator(FailedRuntime()).evaluate_stable_value(context, state)
+
+    class MalformedRuntime:
+        def evaluate_stable_value(self, _observation):
+            return type("MalformedOutput", (), {"value": float("nan")})()
+
+    with pytest.raises(ValueError, match=r"\[-1, 1\]"):
+        LearnedStableValueEvaluator(MalformedRuntime()).evaluate_stable_value(context, state)
 
 
 def test_learned_leaf_uses_same_runtime_and_rejects_out_of_contract_value() -> None:

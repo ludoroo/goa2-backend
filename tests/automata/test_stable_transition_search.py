@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from automata.agents.heuristic_agent import HeuristicAgent
+from automata.models.contracts.inference import LearnedStableValueOutput
 from automata.runtime.effects import register_all_effects
 from automata.runtime.value_boundary import detect_stable_value_boundary
 from automata.search.config import SearchConfig
@@ -16,6 +17,7 @@ from automata.search.contracts import (
 from automata.search.fallback import FallbackLeafEvaluator
 from automata.search.heuristic import HeuristicLeafEvaluator
 from automata.search.ismcts import RootTarget, SearchProgressionError, search
+from automata.search.learned import LearnedStableValueEvaluator
 from goa2.domain.input import InputOption, InputRequest, InputRequestType
 from goa2.domain.models import CardState, GamePhase, TargetType, TeamColor
 from goa2.domain.types import HeroID
@@ -72,6 +74,56 @@ def test_stable_transition_card_edges_reach_real_boundary_on_every_visit() -> No
         assert context.perspective_team is TeamColor.RED
         assert detect_stable_value_boundary(stable) == context.boundary
         assert context.boundary.actor_id is not None
+
+
+def test_native_learned_value_runs_real_stable_search_for_foreign_actor_privately() -> None:
+    state = _state()
+    hero = state.get_hero(HeroID("hero_wasp"))
+    assert hero is not None
+    hero.hand[:] = [card for card in hero.hand if card.id in {"lift_up", "shock"}]
+    legal = tuple(card.id for card in hero.hand)
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.observations = []
+
+        def evaluate_stable_value(self, observation):
+            self.observations.append(observation)
+            return LearnedStableValueOutput(value=0.4)
+
+    runtime = Runtime()
+    result = search(
+        state,
+        TeamColor.RED,
+        legal,
+        HeuristicAgent(4),
+        SearchConfig(iterations=3, leaf_mode=LeafMode.STABLE_TRANSITION, seed=9),
+        root_target=RootTarget.card(
+            hero_id=hero.id,
+            owned_hero_ids=frozenset({hero.id}),
+        ),
+        leaf_evaluator=LearnedStableValueEvaluator(runtime),
+    )
+
+    assert result.root.visits == len(runtime.observations) == 3
+    assert result.root.q == pytest.approx(0.7)
+    for observation in runtime.observations:
+        assert observation.boundary_kind == "ACTOR_READY"
+        assert observation.state.viewer.private_hero_id == "hero_wasp"
+        assert observation.state.viewer.perspective_team == "RED"
+        foreign_actor = next(
+            token
+            for token in observation.state.tokens
+            if token.kind == "HERO" and token.features["hero_id"] == "hero_arien"
+        )
+        assert foreign_actor.features["is_current_actor"] is True
+        assert foreign_actor.features["is_decision_owner"] is True
+        assert not any(
+            token.kind == "CARD"
+            and token.features["owner_ref"] == "hero:hero_arien"
+            and token.features["area"] == "hand"
+            for token in observation.state.tokens
+        )
 
 
 def test_stable_transition_requires_explicit_value_capability_even_for_singleton() -> None:

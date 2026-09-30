@@ -11,19 +11,27 @@ the reviewer ran no tests. [#16](https://github.com/ludoroo/goa2-backend/pull/16
 merged into `main` at `471b6f8`, with a tree identical to verified `298c63d` and
 a fresh 5,024-test baseline. Original parked files remain unchanged.
 
-The next branch, `ai-gen1-candidate-free-value`, implements **schema/batching
-only**, verified locally at `52f5085`: **5,049 full-suite tests**, 141 focused
-model/schema/index tests, all Ruff/Black/mypy checks, and 87.76% GoA2 branch
-coverage. Independent read-only follow-up review found no blockers and ran no
-tests. Delivery is tracked in [#17](https://github.com/ludoroo/goa2-backend/pull/17),
-`ai-gen1-candidate-free-value` → `main`; source/tests remain at verified `52f5085`.
+The schema/batching checkpoint landed in
+[#17](https://github.com/ludoroo/goa2-backend/pull/17) at `f8469f4`, with the same
+tree as published `e66249f` and source/tests matching verified `52f5085`:
+**5,049 full-suite tests**, 141 focused model/schema/index tests, all
+Ruff/Black/mypy checks, and 87.76% GoA2 branch coverage. Independent read-only
+follow-up review found no blockers and ran no tests.
 
-It adds shared graph tensors and candidate-free value batches, not model heads,
-artifact loading, runtime inference, or a learned search adapter. Those remain
-the next part of the candidate-free model/runtime checkpoint.
+The current local branch, `ai-gen1-stable-value-runtime`, adds separate policy
+and candidate-free stable-value model forwards, distinct Gen1 artifacts, CPU
+runtime inference, and `LearnedStableValueEvaluator`. Model identity is
+`goa2-gen1-policy-stable-value-v1`; manifest schema 3 declares
+`GEN1_POLICY_STABLE_VALUE` and `stable-boundary-outcome-v1`. Legacy joint
+artifacts are rejected, not relabelled or used to initialize this model.
+Local verification: **5,091 full-suite tests**, **161 focused tests**, Ruff and
+Black over `src tests`, mypy over `src`, and **87.76%** GoA2 branch-aware coverage
+(80% gate). Independent read-only review found no blockers and ran no tests.
+The owner approved committing, publishing, and merging this checkpoint directly
+into `main`; delivery is tracked in the PR reset handoff.
 
-This does **not** make Gen1 training ready: model/runtime integration,
-indexing/losses, and trainer/iteration integration remain separate checkpoints.
+This does **not** make Gen1 training ready: bounded indexing, separate losses,
+and trainer/generator/iteration integration remain separate checkpoints.
 Existing joint-data commands are not Gen1 commands; no generation is authorized.
 
 **Cleaned-stack scope:** follow
@@ -343,17 +351,17 @@ checkpoint. No native CLI, dataset conversion, or training run is added here.
    terminal labels without policy candidates. Coverage includes per-viewer
    deduplication, unsorted 2v2 rosters, perspective orientation, atomic publication,
    corruption/count mismatch, canonical target alignment, and whole-game discard.
-2. **Candidate-free model/runtime — staged checkpoints.** Schema/batching is
-   verified locally at `52f5085`: `GraphBatch`, `StableValueBatch`, and
-   `collate_stable_values`, with torch-free `StableValueTensorSchema` identity
-   `goa2-stable-value-tensor-v1`. Shared graph vectorization/collation preserves
-   the released decision-v2 schema and flattened batch/cache interface; value
-   tensors have their own boundary context and no policy candidates. Next add
-   value-only model/runtime paths, new Gen1 artifact capability/scope checks,
-   and the stable search adapter. Tensor support alone is not inference
-   support; decision-trained artifacts must not be reinterpreted as boundary-value
-   models. Test batched/single parity, privacy, and isolation from candidates and
-   policy logits at each layer.
+2. **Candidate-free model/runtime — local integration checkpoint.** Schema/batching
+   landed in #17: `GraphBatch`, `StableValueBatch`, `collate_stable_values`, and
+   torch-free `StableValueTensorSchema` (`goa2-stable-value-tensor-v1`). The new
+   model shares graph processing but separates decision/candidate policy inputs
+   from stable boundary context and the value head. Runtime protocols expose
+   `evaluate_policy` and `evaluate_stable_value`, not a joint Gen1 `evaluate`.
+   Both tensor schemas and the stable-outcome semantics are pinned in a distinct
+   artifact manifest. The native search adapter uses actual boundary encoding
+   with a fixed viewer/perspective; exact terminal scoring still bypasses it.
+   Legacy decision-v2 batching/cache and joint model/runtime remain operational.
+   No serving/CLI adoption or decision-trained artifact reinterpretation occurs.
 3. **Bounded indexing and separate losses.** Index tagged policy/value chunks with
    source/dataset identity checks. Normalize each head independently per game;
    policy metrics must ignore value rows and value metrics need no candidate

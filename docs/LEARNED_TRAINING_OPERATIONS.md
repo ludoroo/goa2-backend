@@ -21,19 +21,25 @@ retired; Git history retains them. Old models are not bootstrap dependencies.
 | Replay and artifact registration | `training.replay_buffer`, `registry`, `io` |
 | Evaluation | `evaluation.arena`, `arena_stats`, `protocol`, `provenance`, `promotion_gates`; `training.evaluate_artifact`; `scripts.run_learned_arena` |
 
-There is one supported learned-model path: decision observation v4, tensor
-schema v2, model/runtime v2. These are format versions, **not** training
-generations. Native artifact integrity, scope, candidate alignment, and schema
-checks remain mandatory. Observation-v3/tensor-v1 bridges and their command-line
-flags have been removed; old artifacts are rejected rather than adapted.
+The retained CLI/serving learned-model path uses decision observation v4, tensor
+schema v2, joint model/runtime v2. These are format versions, **not** training
+generations. Artifact integrity, scope, candidate alignment, and schema checks
+remain mandatory. Observation-v3/tensor-v1 bridges and their command-line flags
+have been removed; old artifacts are rejected rather than adapted.
 
 The current CLI joint dataset is still schema v2. It is retained until the
 native policy/value path is adopted end to end. Native records and whole-game
-publication landed in #16. `StableValueObservation` also has separate candidate-free
-tensor preparation via `StableValueTensorSchema` / `collate_stable_values`; this
-does not make it a trainer or runtime input yet. Model/artifact/runtime capability,
-native indexing and per-head losses, and trainer/generation adoption remain gated.
-No old artifact, index, or dataset is converted by the new batching API.
+publication landed in #16, and candidate-free tensor preparation landed in #17.
+The native model/runtime checkpoint adds `Gen1PolicyValueModel` and
+`Gen1SharedEncoderRuntime` with separate policy and stable-value inference APIs.
+Its artifact manifest schema 3, kind `GEN1_POLICY_STABLE_VALUE`, and runtime
+compatibility 1 are distinct from the retained joint path; both loaders reject
+the other format. The stable search adapter is an explicit library API, not a
+new CLI or serving mode.
+
+Native indexing, per-head losses, trainer/generator adoption, and executable
+iteration remain gated. Existing commands cannot train or run this Gen1 artifact
+format. No old artifact, index, dataset, or model weights are converted.
 
 The unused curriculum, callback-only generation coordinator, and callback-only
 policy-iteration wrapper have been removed. **There is no executable complete
