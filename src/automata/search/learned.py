@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from typing import Never
+
 from automata.models.contracts import (
     ArtifactError,
     DecisionObservation,
     LearnedModelOutput,
     LearnedModelRuntime,
+    LearnedPolicyOutput,
+    LearnedPolicyRuntime,
+    LearnedStableValueOutput,
+    LearnedStableValueRuntime,
+    StableValueObservation,
 )
 from automata.observation import encode_search_context, legal_keys_for_decision
+from automata.observation.value_encoder import encode_stable_value
 from goa2.domain.state import GameState
 
 from .contracts import (
@@ -18,7 +26,31 @@ from .contracts import (
     PolicyScores,
     ScoreSemantics,
     SearchContext,
+    StableValueContext,
 )
+
+
+def _translate_runtime_error(exc: Exception) -> Never:
+    """Preserve the search component's availability/inference error boundary."""
+    if isinstance(exc, ArtifactError):
+        raise ComponentUnavailableError(str(exc)) from exc
+    if isinstance(exc, RuntimeError):
+        raise ComponentInferenceError(str(exc)) from exc
+    raise exc
+
+
+def _evaluate_policy(
+    runtime: LearnedPolicyRuntime | LearnedModelRuntime,
+    observation: DecisionObservation,
+) -> LearnedPolicyOutput | LearnedModelOutput:
+    try:
+        if isinstance(runtime, LearnedPolicyRuntime):
+            return runtime.evaluate_policy(observation)
+        return runtime.evaluate(observation)
+    except (ComponentUnavailableError, ComponentInferenceError):
+        raise
+    except Exception as exc:
+        _translate_runtime_error(exc)
 
 
 def _evaluate(runtime: LearnedModelRuntime, observation: DecisionObservation) -> LearnedModelOutput:
@@ -27,19 +59,25 @@ def _evaluate(runtime: LearnedModelRuntime, observation: DecisionObservation) ->
     except (ComponentUnavailableError, ComponentInferenceError):
         raise
     except Exception as exc:
-        # Artifact compatibility is an availability failure. Keep this import
-        # lazy so classic H/H processes never load Torch.
-        if isinstance(exc, ArtifactError):
-            raise ComponentUnavailableError(str(exc)) from exc
-        if isinstance(exc, RuntimeError):
-            raise ComponentInferenceError(str(exc)) from exc
+        _translate_runtime_error(exc)
+
+
+def _evaluate_stable_value(
+    runtime: LearnedStableValueRuntime,
+    observation: StableValueObservation,
+) -> LearnedStableValueOutput:
+    try:
+        return runtime.evaluate_stable_value(observation)
+    except (ComponentUnavailableError, ComponentInferenceError):
         raise
+    except Exception as exc:
+        _translate_runtime_error(exc)
 
 
 class LearnedSearchPolicy:
     """Score a canonical observation and return logits in the caller's legal order."""
 
-    def __init__(self, runtime: LearnedModelRuntime) -> None:
+    def __init__(self, runtime: LearnedPolicyRuntime | LearnedModelRuntime) -> None:
         self.runtime = runtime
 
     def score(self, context: SearchContext, state: GameState, legal_actions) -> PolicyScores:
@@ -48,7 +86,7 @@ class LearnedSearchPolicy:
         if len(legal) != len(canonical) or any(action not in legal for action in canonical):
             raise ValueError("caller actions must contain the exact canonical legal candidates")
         observation = encode_search_context(context, state, canonical)
-        output = _evaluate(self.runtime, observation)
+        output = _evaluate_policy(self.runtime, observation)
         expected = tuple(candidate.candidate_id for candidate in observation.candidates)
         if output.candidate_ids != expected:
             raise ValueError("runtime candidates must preserve exact legal action order")
@@ -74,4 +112,31 @@ class LearnedLeafEvaluator:
         return LeafEvaluation(value=output.value)
 
 
-__all__ = ["LearnedLeafEvaluator", "LearnedSearchPolicy"]
+class LearnedStableValueEvaluator:
+    """Evaluate an authoritative stable boundary with native value inference."""
+
+    recipe_id = "learned-stable-boundary-value-v1"
+
+    def __init__(self, runtime: LearnedStableValueRuntime) -> None:
+        if not isinstance(runtime, LearnedStableValueRuntime):
+            raise TypeError("runtime must implement LearnedStableValueRuntime")
+        self.runtime = runtime
+
+    def evaluate_stable_value(
+        self, context: StableValueContext, state: GameState
+    ) -> LeafEvaluation:
+        observation = encode_stable_value(
+            state,
+            context.boundary,
+            viewer_hero_id=context.root_viewer_id,
+            perspective_team=context.perspective_team,
+        )
+        output = _evaluate_stable_value(self.runtime, observation)
+        return LeafEvaluation(value=output.value)
+
+
+__all__ = [
+    "LearnedLeafEvaluator",
+    "LearnedSearchPolicy",
+    "LearnedStableValueEvaluator",
+]

@@ -7,7 +7,13 @@ from pathlib import Path
 
 import torch
 
-from ..contracts import ArtifactError, DecisionObservation, LearnedModelOutput, RuntimeRequirements
+from ..contracts import (
+    ArtifactError,
+    DecisionObservation,
+    LearnedModelOutput,
+    LearnedPolicyOutput,
+    RuntimeRequirements,
+)
 from .artifacts import load_model_artifact
 from .batching import collate_decisions, masked_softmax
 from .model import JointPolicyValueModel
@@ -57,6 +63,14 @@ class SharedEncoderRuntime:
 
     def evaluate(self, observation: DecisionObservation) -> LearnedModelOutput:
         return self.evaluate_batch((observation,))[0]
+
+    def evaluate_policy(self, observation: DecisionObservation) -> LearnedPolicyOutput:
+        """Expose the policy-only contract without changing legacy evaluation."""
+        output = self.evaluate(observation)
+        return LearnedPolicyOutput(
+            candidate_ids=output.candidate_ids,
+            policy_logits=output.policy_logits,
+        )
 
     def evaluate_batch(
         self, observations: tuple[DecisionObservation, ...] | list[DecisionObservation]

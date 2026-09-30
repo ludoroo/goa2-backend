@@ -46,8 +46,24 @@ class RuntimeRequirements:
     hero_adapter_versions: Mapping[str, int]
 
 
+@dataclass(frozen=True, slots=True)
+class Gen1RuntimeRequirements:
+    """Exact serving requirements for a Gen1 policy/stable-value artifact."""
+
+    runtime_compatibility_version: int
+    decision_observation_schema_version: int
+    stable_value_observation_schema_version: int
+    graph_observation_schema_version: int
+    map_schema_version: int
+    heroes: frozenset[str]
+    map_id: str
+    game_type: str
+    hero_adapter_versions: Mapping[str, int]
+
+
 __all__ = [
     "ArtifactError",
     "ArtifactScope",
+    "Gen1RuntimeRequirements",
     "RuntimeRequirements",
 ]

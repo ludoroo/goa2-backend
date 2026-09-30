@@ -4,8 +4,9 @@
 > and leaf-evaluation contract is being reset; see
 > [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md) for the target and
 > [AI_EXPERIMENT_JOURNAL.md](AI_EXPERIMENT_JOURNAL.md) for implementation status.
-> Opt-in `STABLE_TRANSITION` now implements the heuristic-valued search boundary.
-> Existing defaults, learned-value inference, and training remain transitional.
+> Opt-in `STABLE_TRANSITION` supports heuristic or native Gen1 boundary values.
+> Existing serving defaults and joint-data training remain transitional; native
+> runtime support does not authorize Gen1 training or generation.
 
 ## Implementation status
 
@@ -16,12 +17,14 @@
   joint model, batching, artifact, `SharedEncoderRuntime`, and serving cache;
   `LearnedSearchPolicy` and `LearnedLeafEvaluator`; independent
   `policy_source`/`value_source` server composition.
-- **Gen1 tensor preparation:** shared graph vectorization/collation plus
-  `StableValueTensorSchema` and candidate-free `StableValueBatch`. This is only
-  schema/batching support, not a new model, artifact loader, or runtime capability.
+- **Gen1 model/runtime:** shared graph vectorization/collation and distinct
+  `StableValueTensorSchema` / `StableValueBatch`; separate policy/value forwards
+  in `Gen1PolicyValueModel`, schema-3 artifacts, and CPU `Gen1SharedEncoderRuntime`.
+  This native API is separate from the retained joint trainer and serving cache.
 - **Gen1 search boundary:** opt-in complete-transition search shares the live
-  boundary detector and exposes a candidate-free value interface. Only heuristic
-  value implements it so far; incompatible value evaluators fail explicitly.
+  boundary detector and exposes a candidate-free value interface implemented by
+  heuristic evaluation and `LearnedStableValueEvaluator`. Legacy joint-value
+  evaluators remain incompatible and fail explicitly.
 - **Offline boundary:** `automata.training` owns generation, datasets, replay,
   training, experiment declarations, and the registry. The unused curriculum
   and callback-only pipeline/iteration wrappers have been retired; a complete
@@ -146,7 +149,7 @@ checkpoint or immutable model artifact must be discarded and training/export
 restarted at a fresh destination. Never relabel or hand-edit a schema, manifest,
 checkpoint, or artifact to make it appear compatible.
 
-Only the current native observation/tensor/model/runtime format is supported.
+The retained joint path supports only its current observation/tensor/model/runtime format.
 The observation-v3/tensor-v1 execution path, old digest-loading exceptions, and
 self-play/arena bridge flags have been removed. Unsupported versions fail closed;
 artifact integrity, scope, and candidate validation have not been relaxed.
@@ -176,16 +179,74 @@ Collation checks float32-representable finite values, schema identity, required
 references, graph endpoints and context indexes, including prevectorized inputs.
 This is layout validation, not proof that an arbitrary graph was information-safe
 or a real completed transition: use `encode_stable_value` and the native record
-validators for boundary/viewer semantics. Artifact/scope validation is still a
-later runtime responsibility.
+validators for boundary/viewer semantics. The native runtime additionally checks
+artifact/scope and graph viewer/actor consistency; it cannot prove an arbitrary
+caller-built graph came from a real completed transition.
 
 The legacy `DecisionBatch` keeps its flattened fields and positional constructor;
 its `.graph` property is a nonserialized view of the existing graph tensors.
 Released `TensorFeatureSchema.current()` remains decision v2 with the same canonical
 bytes and digest. Joint indexes, model v2, runtime v2, and CLI behavior remain
-unchanged. The new tensor schema is **not** a model/artifact version: distinct
-Gen1 model/artifact identity, native inference, and stable search integration still
-follow. Existing decision-trained artifacts cannot be relabelled to supply them.
+unchanged. The new tensor schema is **not** a model/artifact version; the distinct
+Gen1 model and artifacts below explicitly declare their new semantics.
+Existing decision-trained artifacts cannot be relabelled to supply them.
+
+## Native Gen1 model, artifacts, and runtime
+
+`Gen1PolicyValueModel` has architecture identity
+`goa2-gen1-policy-stable-value-v1`. Its shared graph trunk and state encoder feed
+separate entry points:
+
+- `forward_policy(DecisionBatch)` returns only candidate-aligned `policy_logits`.
+- `forward_stable_value(StableValueBatch)` returns only a tanh-bounded `value`.
+
+There is no joint forward. The value path does not construct candidates, gather
+candidate targets, invoke the decision/policy components, or compute policy
+logits. `parameter_groups()` is an exhaustive, disjoint `shared` / `policy` /
+`value` partition. Each head has its own context encoder; policy and value
+backpropagate into the shared trunk but not the other head's private parameters.
+The released joint model is unchanged; there is no weight migration.
+
+`export_gen1_model_artifact` / `load_gen1_model_artifact` use
+`Gen1ModelArtifactManifest` schema 3, artifact kind `GEN1_POLICY_STABLE_VALUE`,
+runtime compatibility 1, and value semantics `stable-boundary-outcome-v1`.
+These are format identities, not training generations; legacy joint runtime
+compatibility remains 2. Artifacts contain `decision_schema.json`,
+`stable_value_schema.json`, `weights.pt`, `manifest.json`, and optional
+`provenance.json`. Both tensor schemas, model config, supported scope, file
+hashes, and tensor inventory are pinned. Loading validates canonical declarations,
+allowlisted files, scope, and hashes before `weights_only` deserialization and
+strict model loading. Architecture config and schema/config identity bindings
+are checked before weight deserialization too. Publication reserves the target
+directory exclusively, installs payloads, then publishes `manifest.json` last.
+A racing existing directory is never replaced. Whole-directory visibility is not
+atomic: a process crash can leave an incomplete target without a manifest; loaders
+fail closed, and that incomplete destination must be inspected and removed before
+retrying. Legacy and Gen1 loaders reject each other's manifests before
+deserializing weights.
+
+The torch-free contracts expose `LearnedPolicyOutput`, `LearnedStableValueOutput`,
+`LearnedPolicyRuntime`, `LearnedStableValueRuntime`, and
+`Gen1RuntimeRequirements`. `Gen1SharedEncoderRuntime.from_artifact(...)` provides
+CPU eval/inference-only `evaluate_policy[_batch]` and
+`evaluate_stable_value[_batch]`; it deliberately has no joint `evaluate()`.
+It validates exact map/game/hero scope, SELF/private-viewer/team consistency,
+output shapes/finiteness, and stable actor/owner context. An allied policy decision
+owner may differ from the fixed private viewer; a stable boundary's actor may be
+foreign without gaining access to that actor's hidden cards.
+
+`LearnedSearchPolicy` prefers the policy-only protocol while preserving custom
+legacy evaluate-only runtimes. `SharedEncoderRuntime.evaluate_policy` is only an
+additive compatibility wrapper; its joint APIs remain intact.
+`LearnedStableValueEvaluator` requires the native capability and uses
+`encode_stable_value` with the fixed search viewer/perspective and authoritative
+boundary. Its recipe is `learned-stable-boundary-value-v1`. Legacy leaf/fallback
+wrappers remain rejected for `STABLE_TRANSITION`; terminal outcomes bypass model
+inference. Artifact and inference failures preserve existing search error
+boundaries; malformed outputs are not silently replaced with heuristic values.
+
+This checkpoint adds no server/cache/CLI composition, native index, losses,
+trainer, or executable learning loop. Those remain separate adoption gates.
 
 ## Leaf contract
 
@@ -549,9 +610,11 @@ coverage target.
 The shared-encoder runtime, observation encoder, artifact loading, and batching
 remain reusable foundations. The leaf and dataset changes required for fresh
 Gen1 are tracked in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md).
-`STABLE_TRANSITION` now supplies the heuristic search boundary, with byte-for-byte
-search/live candidate-free observation parity tests. The historical modes remain
-operational until the data/model replacement exists. No mode alone constitutes
-the complete learning contract: separate policy/value publication, candidate-free
-model batching/runtime, parent initialization, durable holdouts, and executable
-iteration still gate fresh Gen1 generation.
+`STABLE_TRANSITION` supplies the shared heuristic/native-learned search boundary,
+with byte-for-byte search/live candidate-free observation parity tests. Native
+policy/value publication, batching, and library-level model/runtime support now
+exist separately from the retained joint commands. Historical modes remain
+operational during adoption. No mode alone constitutes the complete learning
+contract: native indexing/losses, trainer/generator integration, parent
+initialization, durable holdouts, and executable iteration still gate fresh Gen1
+generation.

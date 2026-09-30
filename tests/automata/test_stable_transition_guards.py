@@ -23,7 +23,7 @@ from automata.search.ismcts.engine import (
     SearchDeadlineExceeded,
     SearchProgressionError,
 )
-from automata.search.learned import LearnedLeafEvaluator
+from automata.search.learned import LearnedLeafEvaluator, LearnedStableValueEvaluator
 from automata.search.root import RootTarget
 from goa2.domain.models import CardState, GamePhase, TargetType, TeamColor
 from goa2.domain.types import HeroID
@@ -302,6 +302,27 @@ def test_terminal_transition_bypasses_candidate_free_value_on_every_visit(winner
 
     assert result.root.visits == 3
     assert result.root.q == expected
+
+
+def test_terminal_transition_bypasses_native_learned_value_runtime():
+    state, target, legal = _root(ending=TriggerGameOverStep(condition="TEST", winner=TeamColor.RED))
+
+    class UnreadStableRuntime:
+        def evaluate_stable_value(self, _observation):
+            pytest.fail("terminal outcome was sent to stable value inference")
+
+    result = search(
+        state,
+        TeamColor.RED,
+        legal,
+        HeuristicAgent(0),
+        SearchConfig(iterations=3, leaf_mode=LeafMode.STABLE_TRANSITION),
+        root_target=target,
+        leaf_evaluator=LearnedStableValueEvaluator(UnreadStableRuntime()),
+    )
+
+    assert result.root.visits == 3
+    assert result.root.q == 1.0
 
 
 @pytest.mark.parametrize("singleton", [False, True])

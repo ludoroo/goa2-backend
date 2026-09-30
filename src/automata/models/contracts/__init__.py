@@ -3,6 +3,7 @@
 from .artifacts import (
     ArtifactError,
     ArtifactScope,
+    Gen1RuntimeRequirements,
     RuntimeRequirements,
 )
 from .candidates import (
@@ -23,9 +24,19 @@ from .compatibility import (
     CURRENT_DECISION_OBSERVATION_SCHEMA_VERSION,
     CURRENT_MAP_SCHEMA_VERSION,
     CURRENT_RUNTIME_COMPATIBILITY_VERSION,
+    GEN1_RUNTIME_COMPATIBILITY_VERSION,
     INITIAL_RELATIONSHIP_NAMES,
 )
-from .inference import LearnedModelOutput, LearnedModelRuntime, PolicyValueOutput, SearchOutcome
+from .inference import (
+    LearnedModelOutput,
+    LearnedModelRuntime,
+    LearnedPolicyOutput,
+    LearnedPolicyRuntime,
+    LearnedStableValueOutput,
+    LearnedStableValueRuntime,
+    PolicyValueOutput,
+    SearchOutcome,
+)
 from .observation import (
     LearnedObservation,
     ObservationRelationship,
@@ -40,6 +51,7 @@ __all__ = [
     "CURRENT_DECISION_OBSERVATION_SCHEMA_VERSION",
     "CURRENT_MAP_SCHEMA_VERSION",
     "CURRENT_RUNTIME_COMPATIBILITY_VERSION",
+    "GEN1_RUNTIME_COMPATIBILITY_VERSION",
     "INITIAL_RELATIONSHIP_NAMES",
     "ActionCandidateID",
     "ArtifactError",
@@ -50,10 +62,15 @@ __all__ = [
     "EncodedCandidate",
     "EntityCandidateID",
     "FinishCandidateID",
+    "Gen1RuntimeRequirements",
     "HexCandidateID",
     "LearnedModelOutput",
     "LearnedModelRuntime",
     "LearnedObservation",
+    "LearnedPolicyOutput",
+    "LearnedPolicyRuntime",
+    "LearnedStableValueOutput",
+    "LearnedStableValueRuntime",
     "NumberCandidateID",
     "ObservationRelationship",
     "ObservationToken",
