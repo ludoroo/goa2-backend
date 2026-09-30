@@ -44,9 +44,11 @@ Native indexing, per-head losses, and trainer/generator/iteration adoption remai
 separate gates; existing joint commands are not native Gen1 commands.
 
 Publication follow-up: the owner approved committing, publishing, and merging
-this verified model/runtime checkpoint as one direct PR into `main`. This
-changes delivery status only; no source/test or training-gate change accompanies
-publication.
+this verified model/runtime checkpoint as one direct PR into `main`:
+[#18](https://github.com/ludoroo/goa2-backend/pull/18),
+`ai-gen1-stable-value-runtime` → `main`. Source/tests are pinned at `dc8742a`.
+Subsequent publication changes are documentation only; no source/test or
+training-gate change accompanies publication.
 
 ## Candidate-free tensor preparation — 2026-09-29
 

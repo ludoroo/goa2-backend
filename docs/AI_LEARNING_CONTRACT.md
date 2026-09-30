@@ -28,7 +28,8 @@ Local verification: **5,091 full-suite tests**, **161 focused tests**, Ruff and
 Black over `src tests`, mypy over `src`, and **87.76%** GoA2 branch-aware coverage
 (80% gate). Independent read-only review found no blockers and ran no tests.
 The owner approved committing, publishing, and merging this checkpoint directly
-into `main`; delivery is tracked in the PR reset handoff.
+into `main`: [#18](https://github.com/ludoroo/goa2-backend/pull/18), with source/test
+checkpoint `dc8742a`. Publication changes after it are documentation only.
 
 This does **not** make Gen1 training ready: bounded indexing, separate losses,
 and trainer/generator/iteration integration remain separate checkpoints.

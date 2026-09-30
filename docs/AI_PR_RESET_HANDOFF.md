@@ -13,8 +13,11 @@ Verification: **5,091 full-suite tests**, **161 focused tests**, Ruff/Black over
 Independent read-only review found no blockers and ran no tests. Model-only
 review also found no blockers. These are local checks, not remote CI or strength
 evidence. The owner approved committing, publishing, and merging this checkpoint
-as one direct PR into `main`. No training, generation, or arena run is authorized
-by that delivery approval.
+as one direct PR into `main`:
+[#18](https://github.com/ludoroo/goa2-backend/pull/18),
+`ai-gen1-stable-value-runtime` → `main`. Source/test checkpoint is `dc8742a`;
+subsequent publication changes are documentation only. No training, generation,
+or arena run is authorized by that delivery approval.
 
 Artifact hardening rejects incompatible config before weight loading and preserves
 a competing empty destination directory. Publication reserves the destination
