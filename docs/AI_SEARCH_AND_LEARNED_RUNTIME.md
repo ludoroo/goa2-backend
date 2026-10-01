@@ -613,8 +613,11 @@ Gen1 are tracked in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md).
 `STABLE_TRANSITION` supplies the shared heuristic/native-learned search boundary,
 with byte-for-byte search/live candidate-free observation parity tests. Native
 policy/value publication, batching, and library-level model/runtime support now
-exist separately from the retained joint commands. Historical modes remain
-operational during adoption. No mode alone constitutes the complete learning
-contract: native indexing/losses, trainer/generator integration, parent
-initialization, durable holdouts, and executable iteration still gate fresh Gen1
-generation.
+exist separately from the retained joint commands. The subsequent native-index
+checkpoint adds receipt-bound head chunks, typed training batches, and independent
+weighted losses; see the learning contract for its verification/delivery status.
+No product runtime or search module imports that offline training implementation.
+Historical modes remain operational during adoption. No mode alone constitutes
+the complete learning contract: trusted generator receipt issuance, native
+split/replay/trainer integration, parent initialization, durable holdouts, and
+executable iteration still gate fresh Gen1 generation.
