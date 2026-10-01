@@ -12,8 +12,11 @@ hardening follow-up, found no remaining blockers. Reviewers also ran focused
 checks; these are local results, not remote CI or playing-strength evidence.
 
 The owner approved committing, publishing, and merging this checkpoint as one
-direct PR into `main`, then continuing the next integration checkpoint. No
-training/generation run is authorized by delivery approval. Final logs and
+direct PR into `main`: [#19](https://github.com/ludoroo/goa2-backend/pull/19),
+`ai-gen1-native-index-losses` → `main`, source/test checkpoint `73d187a`.
+Publication follow-ups are documentation only. The owner also approved continuing
+the next integration checkpoint; no training/generation run is authorized.
+Final logs and
 source/test fingerprints are recorded outside the repository at
 `/tmp/goa2-clean-stack.e0SwTB/index-losses-verification.json`.
 

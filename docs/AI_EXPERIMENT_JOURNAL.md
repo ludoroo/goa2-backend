@@ -48,9 +48,11 @@ artifact conversion, or training/generation/arena experiments have been made in
 this checkpoint.
 
 Publication follow-up: the owner approved committing, publishing, and merging
-this verified index/loss checkpoint directly into `main`, then continuing native
-integration. Publication adds no source/test changes and opens no experimental
-training or generation gate.
+this verified index/loss checkpoint directly into `main`:
+[#19](https://github.com/ludoroo/goa2-backend/pull/19),
+`ai-gen1-native-index-losses` → `main`, source/test checkpoint `73d187a`.
+The owner also approved continuing native integration. Publication adds no
+source/test changes and opens no experimental training or generation gate.
 
 ## Native Gen1 model/runtime integration — 2026-09-30
 

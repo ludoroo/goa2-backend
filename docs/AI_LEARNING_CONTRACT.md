@@ -40,7 +40,8 @@ row weights, with no implicit chunk/minibatch renormalization. Final verificatio
 mypy over `src`, and **87.76%** GoA2 branch-aware coverage (80% gate). Independent
 loss and index reviews, including hardening follow-up, found no remaining blockers.
 The owner approved committing, publishing, and merging this checkpoint directly
-into `main`; delivery is tracked in the PR reset handoff.
+into `main`: [#19](https://github.com/ludoroo/goa2-backend/pull/19), with source/test
+checkpoint `73d187a`. Publication follow-ups are documentation only.
 
 This does **not** make Gen1 training ready: recorder/generator receipt issuance,
 native splits/replay, and trainer/generator/iteration adoption remain separate gates.
