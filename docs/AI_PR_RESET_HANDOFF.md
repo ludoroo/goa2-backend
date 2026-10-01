@@ -1,10 +1,47 @@
 # AI PR reset: merge/rebase handoff
 
-## Current checkpoint — native Gen1 model/runtime integration
+## Current checkpoint — native indexing and separate losses
 
-Current branch: `ai-gen1-stable-value-runtime`, based on merged main `f8469f4`.
+Current branch: `ai-gen1-native-index-losses`, based on merged main `5fae662`.
 Work and reviews use `/tmp/goa2-clean-stack.e0SwTB/repo`; do not create additional
-agent workspaces or alter the original parked checkout.
+agent workspaces or alter the original parked checkout. Fresh baseline: **5,091
+tests passed**. Final local verification: **5,184 full-suite tests**, **249 focused
+tests**, Ruff/Black over `src tests`, mypy over `src`, and **87.76%** GoA2
+branch-aware coverage (80% gate). Independent loss and index reviews, including
+hardening follow-up, found no remaining blockers. Reviewers also ran focused
+checks; these are local results, not remote CI or playing-strength evidence.
+
+The owner approved committing, publishing, and merging this checkpoint as one
+direct PR into `main`: [#19](https://github.com/ludoroo/goa2-backend/pull/19),
+`ai-gen1-native-index-losses` → `main`, source/test checkpoint `73d187a`.
+Publication follow-ups are documentation only. The owner also approved continuing
+the next integration checkpoint; no training/generation run is authorized.
+Final logs and
+source/test fingerprints are recorded outside the repository at
+`/tmp/goa2-clean-stack.e0SwTB/index-losses-verification.json`.
+
+Scope: explicit canonical source receipts, bounded homogeneous policy/value
+index chunks, separate typed training batches/metrics, and independently weighted
+head losses. Full-game head counts define row weights; chunk boundaries must not
+change losses or gradients. Receipt construction inventories expected file bytes,
+not proof of completed legitimate gameplay. No recorder/generator issuance,
+split/replay/trainer integration, CLI, or experimental training is included.
+
+Red/green fixes protect sources/receipts from cache overlap, reject unrelated
+cache/staging paths through exact ownership markers, recompute dataset identity
+on reuse, validate completed checkpoint ranges, reject duplicate normalizer game
+IDs, and bound single-frame decompression before output allocation. Integration
+coverage checks full-game per-head mass and identical model gradients across
+chunk sizes. Cold cache open still performs full source/chunk validation; abnormal
+publication interruption can discard resumable work or leave backups, without
+authorizing deletion of source data. Recovery limits are in the operations guide.
+
+### Landed native Gen1 model/runtime checkpoint
+
+[#18](https://github.com/ludoroo/goa2-backend/pull/18) merged at `5fae662`.
+Its tree equals published `d55e0e1`; source/tests/dependencies equal verified
+`dc8742a`. No separate full test run was claimed for the merge operation; the
+fresh baseline above is the new checkpoint's pre-change run.
 
 The verified local slice adds separate policy/stable-value model forwards,
 distinct Gen1 artifacts and CPU inference, and the native stable-search adapter.
@@ -26,9 +63,10 @@ closed and can require manual cleanup of its incomplete directory before retry.
 Logs and source/test fingerprints are recorded outside the repository at
 `/tmp/goa2-clean-stack.e0SwTB/runtime-verification.json`. The original checkout's
 HEAD, branch, and all nine parked file fingerprints remain unchanged.
-Bounded native indexing, per-head losses, and trainer/generator/iteration adoption
-are the next checkpoints, not included here. Existing joint commands and artifacts
-retain their old identities; native inference is not a training-readiness claim.
+Bounded native indexing and per-head losses are the current local checkpoint;
+trainer/generator/iteration adoption follows separately. Existing joint commands
+and artifacts retain their old identities; native inference is not a
+training-readiness claim.
 
 ### Landed schema/batching and native-data foundations
 

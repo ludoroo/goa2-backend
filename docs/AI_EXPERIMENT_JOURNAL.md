@@ -1,5 +1,59 @@
 # AI experiment journal
 
+## Native index and head-loss checkpoint — 2026-09-30
+
+Model/runtime #18 merged at `5fae662`, tree-identical to publication `d55e0e1`,
+with source/tests matching verified `dc8742a`. The next branch is
+`ai-gen1-native-index-losses` in the same shared workspace; its fresh pre-change
+baseline passes **5,091 tests**. Original parked work remains untouched.
+
+This checkpoint separates native indexing, training-batch preparation, and head
+losses from the retained joint pipeline. Explicit canonical source receipts pin
+expected complete-file bytes/counts; semantic dataset identity hashes canonical
+rows independently of physical root and compression. Receipts inventory expected
+files, not proof of legitimate terminal gameplay. Native recorder/generator
+issuance and persistent split/replay adoption remain later gates.
+
+Policy and value chunks are homogeneous. Each row's weight uses its full-game
+count for that head; losses sum weighted contributions under one explicit
+head-wide normalizer, never re-normalizing per chunk. Policy-only and value-only
+games affect only their own head's denominator. Value batches/metrics do not
+require candidate metadata or synthetic decisions. Cross-head coefficients,
+regularization, scheduling, and optimization are not adopted here.
+
+The independent loss review found no blockers; its reviewer ran 47 focused tests
+and additional numerical probes. Parent follow-up adds float32 analytic and
+partition coverage (49 loss tests pass). Integration red/green regressions exposed
+cache/source/receipt path overlap and trust in a modified manifest dataset digest;
+both now reject or rebuild safely. Index review also identified replacement of
+unrelated cache destinations, duplicate selected game IDs in head normalization,
+and insufficient completed-checkpoint range validation. Ownership hardening had
+six failing targeted regressions before correction; markers now distinguish
+disposable native cache/staging data from unrelated files. Valid-cache rebuild
+failure and internally consistent-but-wrong receipts have direct behavioral
+coverage, not only pre-build validation tests. Decompression verifies the exact
+compressed bytes, prechecks known frame sizes, and uses a declared output limit
+for unknown-size frames; malformed/oversized/truncated/multi-frame chunks reject.
+
+The first complete integrated run passed **5,172 tests** before ownership
+hardening. Final verification after corrections: **5,184 full-suite tests**, **249
+focused native/legacy/model tests**, **87.76%** GoA2 branch-aware coverage (80%
+gate), Ruff/Black over `src tests`, mypy over `src`, and diff checks. Independent
+index hardening follow-up found **no remaining blockers** and ran all 31 targeted
+index/integration tests; the parent full-suite results are separate evidence.
+Cold-open cost and process-crash recovery limitations remain documented, not
+claims of constant-time cache opens or lossless resume after every kill point.
+No commits, pushes, PRs, dependencies, engine/server/client changes, historical
+artifact conversion, or training/generation/arena experiments have been made in
+this checkpoint.
+
+Publication follow-up: the owner approved committing, publishing, and merging
+this verified index/loss checkpoint directly into `main`:
+[#19](https://github.com/ludoroo/goa2-backend/pull/19),
+`ai-gen1-native-index-losses` → `main`, source/test checkpoint `73d187a`.
+The owner also approved continuing native integration. Publication adds no
+source/test changes and opens no experimental training or generation gate.
+
 ## Native Gen1 model/runtime integration — 2026-09-30
 
 Schema/batching #17 merged at `f8469f4`, tree-identical to published `e66249f`;

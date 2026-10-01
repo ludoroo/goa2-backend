@@ -1,6 +1,6 @@
 # Gen1 learning contract
 
-**Current status — native data landed:** #15 merged into `main` at `2f1bc92`,
+**Current status — native data/model/runtime landed; indexing/losses verified locally:** #15 merged into `main` at `2f1bc92`,
 with a tree identical to the verified landing `1406cac`. The reviewed AI stack
 and newer upstream Swift fix are both present. The merged foundation passes
 4,963 tests. The native rows/recorder checkpoint is now verified locally at
@@ -18,7 +18,7 @@ tree as published `e66249f` and source/tests matching verified `52f5085`:
 Ruff/Black/mypy checks, and 87.76% GoA2 branch coverage. Independent read-only
 follow-up review found no blockers and ran no tests.
 
-The current local branch, `ai-gen1-stable-value-runtime`, adds separate policy
+The landed `ai-gen1-stable-value-runtime` checkpoint adds separate policy
 and candidate-free stable-value model forwards, distinct Gen1 artifacts, CPU
 runtime inference, and `LearnedStableValueEvaluator`. Model identity is
 `goa2-gen1-policy-stable-value-v1`; manifest schema 3 declares
@@ -27,12 +27,24 @@ artifacts are rejected, not relabelled or used to initialize this model.
 Local verification: **5,091 full-suite tests**, **161 focused tests**, Ruff and
 Black over `src tests`, mypy over `src`, and **87.76%** GoA2 branch-aware coverage
 (80% gate). Independent read-only review found no blockers and ran no tests.
-The owner approved committing, publishing, and merging this checkpoint directly
-into `main`: [#18](https://github.com/ludoroo/goa2-backend/pull/18), with source/test
-checkpoint `dc8742a`. Publication changes after it are documentation only.
+[#18](https://github.com/ludoroo/goa2-backend/pull/18) merged at `5fae662`,
+tree-identical to published `d55e0e1`; source/tests match verified `dc8742a`.
+A fresh baseline for the next checkpoint passes all 5,091 tests.
 
-This does **not** make Gen1 training ready: bounded indexing, separate losses,
-and trainer/generator/iteration integration remain separate checkpoints.
+Current branch `ai-gen1-native-index-losses` implements bounded receipt-bound
+indexing, separate native training batches, and independent head losses. Source
+identity binds exact file inventory; dataset identity binds canonical rows,
+independent of physical root and compression. Full-game head counts determine
+row weights, with no implicit chunk/minibatch renormalization. Final verification:
+**5,184 full-suite tests**, **249 focused tests**, Ruff/Black over `src tests`,
+mypy over `src`, and **87.76%** GoA2 branch-aware coverage (80% gate). Independent
+loss and index reviews, including hardening follow-up, found no remaining blockers.
+The owner approved committing, publishing, and merging this checkpoint directly
+into `main`: [#19](https://github.com/ludoroo/goa2-backend/pull/19), with source/test
+checkpoint `73d187a`. Publication follow-ups are documentation only.
+
+This does **not** make Gen1 training ready: recorder/generator receipt issuance,
+native splits/replay, and trainer/generator/iteration adoption remain separate gates.
 Existing joint-data commands are not Gen1 commands; no generation is authorized.
 
 **Cleaned-stack scope:** follow
@@ -352,7 +364,7 @@ checkpoint. No native CLI, dataset conversion, or training run is added here.
    terminal labels without policy candidates. Coverage includes per-viewer
    deduplication, unsorted 2v2 rosters, perspective orientation, atomic publication,
    corruption/count mismatch, canonical target alignment, and whole-game discard.
-2. **Candidate-free model/runtime — local integration checkpoint.** Schema/batching
+2. **Candidate-free model/runtime — merged in #18, source `dc8742a`.** Schema/batching
    landed in #17: `GraphBatch`, `StableValueBatch`, `collate_stable_values`, and
    torch-free `StableValueTensorSchema` (`goa2-stable-value-tensor-v1`). The new
    model shares graph processing but separates decision/candidate policy inputs
@@ -363,10 +375,17 @@ checkpoint. No native CLI, dataset conversion, or training run is added here.
    with a fixed viewer/perspective; exact terminal scoring still bypasses it.
    Legacy decision-v2 batching/cache and joint model/runtime remain operational.
    No serving/CLI adoption or decision-trained artifact reinterpretation occurs.
-3. **Bounded indexing and separate losses.** Index tagged policy/value chunks with
-   source/dataset identity checks. Normalize each head independently per game;
-   policy metrics must ignore value rows and value metrics need no candidate
-   metadata. Test interrupted indexing, digest/range validation, and weighting.
+3. **Bounded indexing and separate losses — verified local checkpoint.** Index
+   explicit receipt inventories into homogeneous policy/value chunks, with exact
+   source hashes, canonical semantic dataset identity, schema pinning, and
+   complete-game validation before publication. Each head uses row weight
+   `1 / full_game_head_count`; separate losses sum those weights and divide by a
+   caller-supplied head-wide normalizer, shared across every chunk in the logical
+   batch. Never re-normalize by the current chunk or include absent heads in its
+   contributing-game count. Value batches/metrics require no candidate metadata.
+   Receipt inventory is not proof of legitimate terminal gameplay; actual recorder
+   issuance and split/replay/trainer adoption remain later gates. Preserve world
+   seed metadata for later split grouping across repeated-seed replay games.
 4. **Trainer and generation integration.** Wire native training and actual-play
    recording end to end, then retire the replaced joint path deliberately. The
    retained joint commands stay operational during these checkpoints, not as a

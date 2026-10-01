@@ -37,14 +37,85 @@ compatibility 1 are distinct from the retained joint path; both loaders reject
 the other format. The stable search adapter is an explicit library API, not a
 new CLI or serving mode.
 
-Native indexing, per-head losses, trainer/generator adoption, and executable
-iteration remain gated. Existing commands cannot train or run this Gen1 artifact
-format. No old artifact, index, dataset, or model weights are converted.
+The verified local checkpoint adds separate native indexing, training-batch, and
+loss APIs; its verification/delivery status is recorded in the learning contract. This is
+library support, not trainer/generator adoption. Existing commands cannot train
+or run this Gen1 artifact format. No old artifact, index, dataset, or model
+weights are converted. Native source-receipt issuance by actual-play generation,
+persistent splits/replay, and executable iteration remain gated.
 
 The unused curriculum, callback-only generation coordinator, and callback-only
 policy-iteration wrapper have been removed. **There is no executable complete
 learning loop yet.** Their removal does not remove the replay, registry,
 checkpoint, split, or arena primitives needed to implement that loop.
+
+## Native index and loss contract
+
+`training.native_indexed_dataset` consumes an explicit canonical source receipt
+and a physical source root. The ordered receipt names each per-game `.jsonl` or
+`.jsonl.zst` file and pins its game ID, exact SHA-256/size, and total/head/boundary
+counts. There is no implicit directory glob. `create_native_source_receipt`
+constructs an inventory from explicit logical names; it is **not** evidence that
+an arbitrary file came from legitimate terminal gameplay. Trusted recorder/
+generator receipt issuance remains a separate integration requirement.
+
+The source digest hashes canonical receipt bytes. The dataset digest hashes
+canonical uncompressed record bytes in receipt order. Moving the physical source
+root preserves both; changing compression changes the source digest, not the
+semantic dataset digest. Reordering sources changes semantic dataset identity.
+Game/seed/provenance remains available for later split/replay adoption; repeated
+world seeds across distinct games are not separate train/validation entitlements.
+
+The index stores homogeneous policy/value JSONL-zstd chunks, pinned to both
+native tensor schemas. Opening/rebuilding validates the explicit receipt and
+source files. Cache reuse is intentionally a full integrity check, not a cheap
+handle open: it reconstructs source order, verifies semantic identity, and checks
+schema collation. Budget for full source/chunk scans at open; a later optimized
+cache must preserve those guarantees. Each completed game is the resumable staging
+unit, and only a complete verified index is published. Native cache/staging
+ownership is explicit: unrelated files/directories and any path overlapping a
+source or receipt must never be replaced. Owned cache contents are disposable;
+keep user files elsewhere. Loading validates chunk hashes, canonical rows, tags,
+offsets, and record contracts before collation. JSON chunks are not
+pickle or a tensor-cache migration. Memory is bounded by chunk buffers plus
+per-game/per-chunk metadata, not accumulated game observations. Compressed input
+and decoded output are bounded by their declared chunk sizes, with frame-size
+checks before decompression; this is not an absolute process-memory quota for an
+arbitrarily rewritten manifest.
+
+Recovery is deliberately fail-closed, not lossless at every process-kill point.
+A kill near publication can discard resumable staging work or leave an `.old`
+backup; a self-consistently rewritten stage that disagrees with its sources can
+require manual removal. Inspect and remove only verified, owned native cache/
+staging data before retrying. Never remove source files/receipts, and never add
+an ownership marker to unrelated data just to make cleanup proceed. Valid source
+receipts/files remain the authority for rebuilding a disposable index.
+
+`training.native_batches` collates policy records into `DecisionBatch` and value
+records into `StableValueBatch`. Policy targets preserve exact candidate order
+and visit probabilities; priors remain separate diagnostic metadata. Value
+batches and metrics contain no candidate table or policy target. Missing heads
+produce no batch; game-level head masks/counts identify which games contribute.
+
+`training.native_losses` exposes `native_policy_loss` (CE and optional entropy)
+and `native_stable_value_loss` (bounded-score probability BCE). For each head:
+
+```text
+row_weight = 1 / full_game_row_count_for_this_head
+head_loss = sum(row_weight * row_loss) / head_normalizer
+```
+
+The default normalizer `1` gives an additive sum of game contributions. For a
+mean over a complete logical batch, pass its number of contributing games for
+that head to **every** chunk; never use the chunk's row count, current weight
+sum, or number of represented games. Sum chunk contributions before the future
+optimizer step. Policy-only games do not enter the value denominator and vice
+versa. Use independent row masks when needed; inactive/empty heads yield a
+differentiable zero without a fabricated observation from the other head.
+Outputs, targets, and weights must use matching floating dtypes/devices; this
+checkpoint uses float32 CPU batches and does not add mixed-precision training.
+Cross-head coefficients, regularization (once per optimizer step), scheduling,
+and optimizer behavior belong to the later trainer checkpoint.
 
 ## Retained command entry points
 
