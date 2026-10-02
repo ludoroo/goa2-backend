@@ -38,6 +38,11 @@ from automata.training.native_dataset import (
     ValueDatasetRecord,
     iter_native_game_records,
 )
+from automata.training.native_receipts import (
+    NativeDatasetCompletionReceipt,
+    _strict_completion,
+    validate_native_dataset_completion,
+)
 
 INDEX_SCHEMA_VERSION: Literal[1] = 1
 DEFAULT_CHUNK_SIZE = 32
@@ -541,6 +546,30 @@ def create_native_source_receipt(
             )
         )
     return NativeDatasetSourceReceipt(games=tuple(games))
+
+
+def create_native_source_receipt_from_completions(
+    source_root: str | Path,
+    completion: NativeDatasetCompletionReceipt,
+) -> NativeDatasetSourceReceipt:
+    """Adapt fully validated completion provenance to the index inventory contract."""
+    validated = _strict_completion(completion)
+    validate_native_dataset_completion(source_root, validated)
+    return NativeDatasetSourceReceipt(
+        games=tuple(
+            NativeGameSourceReceipt(
+                logical_name=game.logical_name,
+                file_sha256=game.file_sha256,
+                file_size=game.file_size,
+                game_id=game.game.game_id,
+                row_count=game.row_count,
+                policy_row_count=game.policy_row_count,
+                value_row_count=game.value_row_count,
+                boundary_count=game.boundary_count,
+            )
+            for game in validated.games
+        )
+    )
 
 
 def _validate_source_files(root: Path, receipt: NativeDatasetSourceReceipt) -> None:
@@ -1431,6 +1460,7 @@ __all__ = [
     "NativeIndexedGameMetadata",
     "build_native_indexed_dataset",
     "create_native_source_receipt",
+    "create_native_source_receipt_from_completions",
     "load_native_source_receipt",
     "open_native_indexed_dataset",
 ]

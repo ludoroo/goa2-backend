@@ -1,8 +1,41 @@
 # AI PR reset: merge/rebase handoff
 
-## Current checkpoint — native indexing and separate losses
+## Current checkpoint — native completion, splits, and replay
 
-Current branch: `ai-gen1-native-index-losses`, based on merged main `5fae662`.
+Current branch: `ai-gen1-native-training-integration`, based on merged main
+`2485c6a`. This is a library-only prerequisite checkpoint: controlled recorder
+completion receipts, an immutable seed-only split ledger, and a single atomic
+replay catalog. Trainer/generator/CLI/optimizer/iteration adoption is excluded.
+No training, generation, or arena experiment is authorized.
+
+Fresh pre-change baseline: **5,184 tests passed**. Final local verification:
+**5,251 full-suite tests**, **248 focused tests**, Ruff/Black over `src tests`,
+mypy over `src`, and **87.76%** GoA2 branch-aware coverage (80% gate). Independent
+receipt and replay/split reviews, including hardening follow-ups, found no
+remaining blockers. The bounded integration fixture exercises actual played
+decisions and stable boundaries through recorder completion → inventory → native
+index → replay admission, including repeated seeds, validation isolation,
+censoring, reload, and eviction. Concurrent first updates and bootstrap-to-learned
+catalog continuation have behavioral regression coverage.
+
+All changes remain local and uncommitted; no new PR or remote CI result is claimed.
+Final logs and 733 unchanged source/test/dependency fingerprints are recorded at
+`/tmp/goa2-clean-stack.e0SwTB/training-integration-verification.json`. Documentation
+status updates follow the tested source snapshot without changing source/tests.
+Next: owner review/approval to commit and publish this bounded checkpoint; do not
+begin trainer/generator adoption or experiments implicitly.
+All work stays in `/tmp/goa2-clean-stack.e0SwTB/repo`; the original parked checkout
+must remain untouched. The exact worker interface/ownership plan is outside the
+repository at `/tmp/goa2-clean-stack.e0SwTB/native-integration-interface-plan.md`.
+
+## Landed native indexing and separate losses
+
+PR [#19](https://github.com/ludoroo/goa2-backend/pull/19) merged at `2485c6a`.
+Its tree equals published `182a68f`; source/tests/dependencies equal verified
+`73d187a`. No separate full test run was claimed for the merge operation; the
+fresh baseline above is this checkpoint's pre-change run.
+
+Previous branch: `ai-gen1-native-index-losses`, based on merged main `5fae662`.
 Work and reviews use `/tmp/goa2-clean-stack.e0SwTB/repo`; do not create additional
 agent workspaces or alter the original parked checkout. Fresh baseline: **5,091
 tests passed**. Final local verification: **5,184 full-suite tests**, **249 focused

@@ -1,5 +1,53 @@
 # AI experiment journal
 
+## Native completion, seed splits, and replay — 2026-10-01
+
+Index/loss #19 merged at `2485c6a`, tree-identical to publication `182a68f`, with
+source/tests matching verified `73d187a`. The owner approved continuing the next
+integration checkpoint. Branch `ai-gen1-native-training-integration` uses the
+same shared workspace and starts from a fresh **5,184-test** passing baseline.
+
+This library-only slice adds recorder-issued normal-decisive completion sidecars,
+explicit seed-purpose configuration with immutable seed-only hash assignments,
+and a single atomic replay catalog embedding the ledger and generation history.
+Inventory receipts remain distinct from completion evidence. Admission validates
+both the full completion/index pair and bootstrap or exact compatible Gen1 parent
+provenance; only TRAIN games enter replay. The first selection recipe is uniform
+whole-game sampling without replacement, with separate head contributing-game
+counts. Eviction retains the split ledger and generation history.
+
+A bounded synthetic integration fixture now exercises actual played decisions,
+search, stable-boundary recording, normal/censored callbacks, native indexing,
+replay admission/reload, repeated seeds, validation segregation, and eviction.
+This is test coverage, not a generation or playing-strength experiment. Receipt
+hardening had seven failing regressions before correction: nested source/sidecar
+collisions, schema-literal coercion, unsafe constructed-model handling,
+working-directory redirection, changed directory topology, and interrupt rollback
+now have explicit coverage. Controlled paths are anchored at construction;
+raw/default behavior is unchanged.
+
+Catalog validation now checks the ledger once and uses a seed lookup, avoiding
+quadratic repeated hashing. Review confirmed the improvement with a metadata-only
+probe (roughly 2.95 seconds to 0.01–0.02 seconds at 1,000 seeds); this is not a
+training-throughput claim. A red-before/green-after concurrent first-update test
+caught the empty-lock initialization window; atomic marker publication closes it.
+Lifecycle coverage includes evicted-generation re-enrollment rejection, mixed
+generation/model rejection, bootstrap-to-Gen1 continuation, and incompatible
+catalog rejection without mutation.
+
+The initial integrated suite passed **5,246 tests**. After final lock/lifecycle
+hardening, final verification passed **5,251 full-suite tests**, **248 focused
+tests**, **87.76%** GoA2 branch-aware coverage (80% gate), Ruff/Black over `src tests`,
+mypy over `src`, and diff checks. Independent receipt and replay/split follow-up
+reviews found no remaining blockers and ran separate focused checks/probes.
+All 733 source/test/dependency fingerprints were stable across final verification.
+These are local results, not remote CI. Original parked file fingerprints and
+branch/HEAD remain unchanged. Changes are uncommitted and no new PR was created.
+
+No trainer/generator/CLI/optimizer/iteration adoption, dependencies, engine/server/
+client changes, historical artifact conversion, or training/generation/arena
+experiments are included. All experimental gates remain closed.
+
 ## Native index and head-loss checkpoint — 2026-09-30
 
 Model/runtime #18 merged at `5fae662`, tree-identical to publication `d55e0e1`,

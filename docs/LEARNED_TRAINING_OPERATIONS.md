@@ -37,12 +37,14 @@ compatibility 1 are distinct from the retained joint path; both loaders reject
 the other format. The stable search adapter is an explicit library API, not a
 new CLI or serving mode.
 
-The verified local checkpoint adds separate native indexing, training-batch, and
-loss APIs; its verification/delivery status is recorded in the learning contract. This is
-library support, not trainer/generator adoption. Existing commands cannot train
-or run this Gen1 artifact format. No old artifact, index, dataset, or model
-weights are converted. Native source-receipt issuance by actual-play generation,
-persistent splits/replay, and executable iteration remain gated.
+Merged #19 adds separate native indexing, training-batch, and loss APIs. The
+current locally verified library checkpoint adds opt-in recorder completion
+provenance and persistent seed splits/replay; final verification and review
+results are recorded in the learning contract.
+This is not trainer/generator adoption. Existing commands cannot train or run
+this Gen1 artifact format. No old artifact, index, dataset, or model weights are
+converted. Full generator adoption, trainer/optimizer/parent initialization, and
+executable iteration remain gated.
 
 The unused curriculum, callback-only generation coordinator, and callback-only
 policy-iteration wrapper have been removed. **There is no executable complete
@@ -56,15 +58,16 @@ and a physical source root. The ordered receipt names each per-game `.jsonl` or
 `.jsonl.zst` file and pins its game ID, exact SHA-256/size, and total/head/boundary
 counts. There is no implicit directory glob. `create_native_source_receipt`
 constructs an inventory from explicit logical names; it is **not** evidence that
-an arbitrary file came from legitimate terminal gameplay. Trusted recorder/
-generator receipt issuance remains a separate integration requirement.
+an arbitrary file came from legitimate terminal gameplay. Controlled recorder
+completion receipts are a distinct type and admission requirement (see below);
+actual generator adoption remains separate.
 
 The source digest hashes canonical receipt bytes. The dataset digest hashes
 canonical uncompressed record bytes in receipt order. Moving the physical source
 root preserves both; changing compression changes the source digest, not the
 semantic dataset digest. Reordering sources changes semantic dataset identity.
-Game/seed/provenance remains available for later split/replay adoption; repeated
-world seeds across distinct games are not separate train/validation entitlements.
+Game/seed/provenance is retained for split/replay admission; repeated world seeds
+across distinct games are not separate train/validation entitlements.
 
 The index stores homogeneous policy/value JSONL-zstd chunks, pinned to both
 native tensor schemas. Opening/rebuilding validates the explicit receipt and
@@ -116,6 +119,93 @@ Outputs, targets, and weights must use matching floating dtypes/devices; this
 checkpoint uses float32 CPU batches and does not add mixed-precision training.
 Cross-head coefficients, regularization (once per optimizer step), scheduling,
 and optimizer behavior belong to the later trainer checkpoint.
+
+## Native completion, splits, and replay
+
+These are library APIs, not new commands or authorization to generate data.
+
+### Controlled completion, not a directory scan
+
+Opt into `NativeDatasetRecorder(..., completion_target=NativeCompletionTarget(...))`
+to issue `normal-decisive-native-game-v1` sidecars. Raw/default recording is
+unchanged and supplies no completion provenance. The controlled path requires
+nonzero recorded rows, a normal decisive `game_over` callback with a canonical
+RED/BLUE winner, complete spool validation against live recorder counts, and
+successful no-clobber source publication. Its durable canonical sidecar binds
+full game identity, exact bytes/hash, and policy/value/boundary counts. The
+recorder and receipt contracts remain Torch-free. Controlled paths are anchored
+at construction, so later working-directory changes cannot redirect publication.
+Equal or nested source/sidecar destinations reject before filesystem changes.
+
+`create_native_dataset_completion_receipt` combines an explicit ordered list of
+sidecars after validating their sources; it never discovers or blesses raw files.
+`create_native_source_receipt_from_completions` creates the separate inventory
+needed by the native index. Replay still requires the completion set itself and
+binds its digest; an inventory alone cannot enroll games.
+
+Ordinary sidecar-publication failure rolls back this recorder's newly published
+source, without replacing a competing sidecar. A process kill between source and
+sidecar publication can leave an untrusted orphan. Future reconciliation must
+identify and delete/rerun such orphans, never promote them by scanning. No cleanup
+command is added here. Completion is controlled-pipeline evidence, **not** a
+cryptographic signature proving honest execution against hostile callers.
+
+### Immutable seed-only membership
+
+`NativeSplitConfig` requires explicit, disjoint, nonnegative half-open purpose
+ranges plus a fixed namespace, salt, and validation fraction. No phase-0 seed
+registry is inherited. The `native-seed-split-v1` SHA256 threshold depends only on
+the recipe, namespace, salt, and world seed—not generation, game ID, map,
+composition, or arrival order. The comparison uses the float fraction's exact
+integer ratio. Bootstrap/training ranges use the threshold; dedicated validation
+ranges are always validation. Evaluation, arena, screen, and promotion seeds
+cannot be enrolled. Repeated seeds retain the same assignment across generations
+and reloads. Exact per-cohort/per-stratum quotas and advanced map/composition
+holdouts are not supplied by this recipe.
+
+The pure ledger is embedded in the replay catalog. Do not create a separately
+mutable ledger file whose publication could drift from replay admission.
+
+### Atomic replay admission and whole-game selection
+
+`update_native_replay_catalog` validates under a sibling lock, then atomically
+publishes one canonical manifest. The complete lock ownership marker is also
+published atomically, so cooperating first writers cannot observe a partial
+marker. Completion sources must match the native index
+one-for-one and in order, including identities, exact bytes, counts, and semantic
+dataset identity. One enrollment has one generation and one source-model digest.
+Bootstrap requires both model digest and parent artifact to be `None`. Learned
+enrollment requires the exact compatible Gen1 parent, both tensor schemas,
+stable-outcome semantics, and the **complete current runtime scope**: all current
+maps, game types, heroes, and exact adapter versions—not only the subset present
+in one generation. Future native trainer/exporter wiring must satisfy this; the
+retained trainer's observed-dataset scope must not be reused blindly. Legacy joint
+artifacts are not compatible parents. Admission deliberately performs multiple
+source scans plus index validation; budget for full I/O, not a cheap metadata open.
+
+All generation seeds enter the ledger; only TRAIN game references enter replay.
+Duplicate generations, game IDs, datasets, incompatible configuration, and
+forbidden seed purposes fail without publishing a partial catalog. Optional
+capacity evicts oldest retained whole-game references, preserving generation
+history and the seed ledger. Capacity limits retained games, not accumulated
+history or ledger size. Keep the catalog outside disposable index caches; its
+portable references bind digests and logical names, not physical roots.
+
+Controlled publication and catalog paths reject symlinks in ancestor directories
+as well as final files. Use canonical physical directories (for example,
+`/private/tmp/...` rather than macOS's `/tmp` alias). This deliberate strictness
+is stronger than the raw recorder/index path policy. Topology is rechecked before
+controlled publication, but hostile concurrent filesystem replacement after that
+check is outside this contract; directory-descriptor-relative hardening is not
+implemented.
+
+`sample_native_replay` implements `uniform-train-games-v1`: deterministic uniform
+sampling without replacement over complete game references, with separate policy
+and value contributing-game counts. It loads no rows or tensors. A head with no
+contributors must be skipped, not given a synthetic denominator. Optimizer
+scheduling, strata such as latest/recent/hard, physical dataset resolution and
+revalidation at future training consumption, and the executable learning loop
+remain future work.
 
 ## Retained command entry points
 

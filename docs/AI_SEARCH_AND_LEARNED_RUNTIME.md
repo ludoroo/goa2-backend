@@ -613,11 +613,16 @@ Gen1 are tracked in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md).
 `STABLE_TRANSITION` supplies the shared heuristic/native-learned search boundary,
 with byte-for-byte search/live candidate-free observation parity tests. Native
 policy/value publication, batching, and library-level model/runtime support now
-exist separately from the retained joint commands. The subsequent native-index
-checkpoint adds receipt-bound head chunks, typed training batches, and independent
-weighted losses; see the learning contract for its verification/delivery status.
+exist separately from the retained joint commands. Merged #19 adds receipt-bound
+head chunks, typed training batches, and independent weighted losses. The current
+library checkpoint adds controlled recorder completion sidecars, immutable
+seed-only split membership, and atomic replay admission/selection; see the
+learning contract for review and verification status. Inventory receipts alone
+cannot enroll games, validation seeds cannot enter training replay, and learned
+enrollment requires an exact compatible Gen1 parent artifact.
 No product runtime or search module imports that offline training implementation.
 Historical modes remain operational during adoption. No mode alone constitutes
-the complete learning contract: trusted generator receipt issuance, native
-split/replay/trainer integration, parent initialization, durable holdouts, and
-executable iteration still gate fresh Gen1 generation.
+the complete learning contract: full generator adoption, native trainer/optimizer
+and parent initialization, and executable iteration still gate fresh Gen1
+generation. Advanced map/composition holdouts and stratified replay are deferred;
+the initial replay recipe is uniform whole-game TRAIN-only sampling.
