@@ -37,6 +37,16 @@ from automata.training.native_dataset import (
     native_sample_id,
     publish_native_game,
 )
+from automata.training.native_receipts import (
+    NativeCompletionTarget,
+    NativeDatasetCompletionReceipt,
+    NativeGameCompletionReceipt,
+    _file_sha256,
+    _publish_completion_receipt,
+    _require_no_symlink_components,
+    _unlink_if_same_file,
+    validate_native_dataset_completion,
+)
 from automata.training.search_targets import SearchPolicyTarget
 from goa2.domain.models import TeamColor
 from goa2.domain.state import GameState
@@ -64,15 +74,34 @@ class NativeDatasetRecorder:
     leaves and unsearched decisions cannot enter the native dataset by accident.
     """
 
-    def __init__(self, path: str | Path, *, game: NativeGameIdentity) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        game: NativeGameIdentity,
+        completion_target: NativeCompletionTarget | None = None,
+    ) -> None:
         self._path = Path(path)
+        self._completion_target = (
+            self._anchored_completion_target(completion_target)
+            if completion_target is not None
+            else None
+        )
+        if self._completion_target is not None:
+            # Raw mode intentionally retains its historical relative-path behavior.
+            self._path = Path(os.path.abspath(self._path))
+        self._completion_receipt: NativeGameCompletionReceipt | None = None
         # Revalidate inputs before creating any filesystem state.
         self._game = NativeGameIdentity.model_validate_json(canonical_json_bytes(game))
         if not (self._path.name.endswith(".jsonl") or self._path.name.endswith(".jsonl.zst")):
             raise ValueError("native dataset destination must end in .jsonl or .jsonl.zst")
         if self._path.exists():
             raise FileExistsError(f"native dataset destination already exists: {self._path}")
+        if self._completion_target is not None:
+            self._validate_completion_paths(self._completion_target)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        if self._completion_target is not None:
+            self._completion_target.receipt_path.parent.mkdir(parents=True, exist_ok=True)
         spool = tempfile.NamedTemporaryFile(  # noqa: SIM115 - recorder lifetime owns it
             mode="w+b",
             dir=self._path.parent,
@@ -81,6 +110,12 @@ class NativeDatasetRecorder:
             delete=False,
         )
         self._spool_path = Path(spool.name)
+        if self._completion_target is not None and self._same_path(
+            self._spool_path, self._completion_target.receipt_path
+        ):
+            spool.close()
+            self._spool_path.unlink(missing_ok=True)
+            raise ValueError("native completion source, receipt, and spool paths must not collide")
         self._spool_file: Any | None = spool
         compressor = zstandard.ZstdCompressor(level=3, threads=0, write_checksum=True)
         self._spool_writer: Any | None = compressor.stream_writer(spool, closefd=False)
@@ -88,6 +123,11 @@ class NativeDatasetRecorder:
         self._policy_index = 0
         self._boundary_index = 0
         self._closed = False
+
+    @property
+    def completion_receipt(self) -> NativeGameCompletionReceipt | None:
+        """Return the issued controlled receipt, or ``None`` until it exists."""
+        return self._completion_receipt
 
     def record_policy(
         self,
@@ -210,14 +250,45 @@ class NativeDatasetRecorder:
                 return
 
             typed_winner = cast(Literal["RED", "BLUE"], winner_side)
+            if self._completion_target is not None:
+                self._revalidate_completion_paths_for_publication(self._completion_target)
             publish_native_game(
                 self._path,
                 self._completed_records(terminal_winner=typed_winner),
             )
+            if self._completion_target is not None:
+                self._issue_completion_receipt(terminal_winner=typed_winner)
             self._spool_path.unlink(missing_ok=True)
         except BaseException:
             self._poison()
             raise
+
+    def _issue_completion_receipt(self, *, terminal_winner: Literal["RED", "BLUE"]) -> None:
+        target = self._completion_target
+        if target is None:  # pragma: no cover - caller guards the raw path
+            return
+        published_identity = self._path.stat(follow_symlinks=False)
+        try:
+            file_sha256, file_size = _file_sha256(self._path)
+            receipt = NativeGameCompletionReceipt(
+                logical_name=self._controlled_logical_name(target),
+                game=self._game,
+                file_sha256=file_sha256,
+                file_size=file_size,
+                row_count=self._sample_index,
+                policy_row_count=self._policy_index,
+                value_row_count=self._sample_index - self._policy_index,
+                boundary_count=self._boundary_index,
+                reason="game_over",
+                terminal_winner=terminal_winner,
+            )
+            completion = NativeDatasetCompletionReceipt(games=(receipt,))
+            validate_native_dataset_completion(target.source_root, completion)
+            _publish_completion_receipt(target.receipt_path, receipt)
+        except BaseException:
+            _unlink_if_same_file(self._path, published_identity)
+            raise
+        self._completion_receipt = receipt
 
     def _completed_records(
         self, *, terminal_winner: Literal["RED", "BLUE"]
@@ -319,6 +390,81 @@ class NativeDatasetRecorder:
         if len(current) != 1 or len(owners) != 1 or current[0].local_ref != owners[0].local_ref:
             raise ValueError("actor boundary must identify one matching actor and decision owner")
         return viewer_ref, current[0].local_ref
+
+    @staticmethod
+    def _anchored_completion_target(target: NativeCompletionTarget) -> NativeCompletionTarget:
+        if not isinstance(target, NativeCompletionTarget):
+            raise TypeError("completion_target must be a NativeCompletionTarget")
+        if not isinstance(target.source_root, Path) or not isinstance(target.receipt_path, Path):
+            raise TypeError("native completion target paths must be pathlib.Path values")
+        return NativeCompletionTarget(
+            source_root=Path(os.path.abspath(target.source_root)),
+            receipt_path=Path(os.path.abspath(target.receipt_path)),
+        )
+
+    @staticmethod
+    def _same_path(left: Path, right: Path) -> bool:
+        return Path(os.path.abspath(left)) == Path(os.path.abspath(right))
+
+    @staticmethod
+    def _paths_overlap(left: Path, right: Path) -> bool:
+        left = left.resolve(strict=False)
+        right = right.resolve(strict=False)
+        return left == right or left in right.parents or right in left.parents
+
+    @staticmethod
+    def _safe_parent_chain(path: Path, *, label: str) -> None:
+        current = path.parent
+        while not current.exists():
+            if current.is_symlink():
+                raise ValueError(f"native completion {label} path must not contain symlinks")
+            current = current.parent
+        if current.is_symlink() or not current.is_dir():
+            raise ValueError(f"native completion {label} parent must lead from a regular directory")
+        while current != current.parent:
+            if current.is_symlink():
+                raise ValueError(f"native completion {label} path must not contain symlinks")
+            current = current.parent
+
+    def _controlled_logical_name(self, target: NativeCompletionTarget) -> str:
+        root = Path(os.path.abspath(target.source_root))
+        source = Path(os.path.abspath(self._path))
+        try:
+            relative = source.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("native completion source must remain inside its source root") from exc
+        return relative.as_posix()
+
+    def _validate_completion_path_topology(self, target: NativeCompletionTarget) -> None:
+        root = target.source_root
+        _require_no_symlink_components(root, label="native completion source root")
+        if not root.is_dir():
+            raise ValueError("native completion source root must be a regular directory")
+        _require_no_symlink_components(self._path, label="native completion source")
+        _require_no_symlink_components(target.receipt_path, label="native completion receipt")
+        if self._paths_overlap(self._path, target.receipt_path):
+            raise ValueError("native completion source and receipt paths overlap")
+        logical_name = self._controlled_logical_name(target)
+        current = root
+        for part in Path(logical_name).parts[:-1]:
+            current /= part
+            if current.is_symlink():
+                raise ValueError("native completion source path must not contain symlinks")
+            if current.exists() and not current.is_dir():
+                raise ValueError("native completion source parent must be a directory")
+        self._safe_parent_chain(target.receipt_path, label="receipt")
+
+    def _validate_completion_paths(self, target: NativeCompletionTarget) -> None:
+        self._validate_completion_path_topology(target)
+        if target.receipt_path.exists():
+            raise FileExistsError(
+                f"native completion receipt already exists: {target.receipt_path}"
+            )
+
+    def _revalidate_completion_paths_for_publication(self, target: NativeCompletionTarget) -> None:
+        self._validate_completion_path_topology(target)
+        if not self._path.parent.is_dir() or not target.receipt_path.parent.is_dir():
+            raise ValueError("native completion publication parents must remain directories")
 
     def _require_open(self) -> None:
         if self._closed:

@@ -1,6 +1,6 @@
 # Gen1 learning contract
 
-**Current status — native data/model/runtime landed; indexing/losses verified locally:** #15 merged into `main` at `2f1bc92`,
+**Current status — native data/model/index/losses landed; completion/splits/replay verified locally:** #15 merged into `main` at `2f1bc92`,
 with a tree identical to the verified landing `1406cac`. The reviewed AI stack
 and newer upstream Swift fix are both present. The merged foundation passes
 4,963 tests. The native rows/recorder checkpoint is now verified locally at
@@ -31,7 +31,7 @@ Black over `src tests`, mypy over `src`, and **87.76%** GoA2 branch-aware covera
 tree-identical to published `d55e0e1`; source/tests match verified `dc8742a`.
 A fresh baseline for the next checkpoint passes all 5,091 tests.
 
-Current branch `ai-gen1-native-index-losses` implements bounded receipt-bound
+The landed `ai-gen1-native-index-losses` checkpoint implements bounded receipt-bound
 indexing, separate native training batches, and independent head losses. Source
 identity binds exact file inventory; dataset identity binds canonical rows,
 independent of physical root and compression. Full-game head counts determine
@@ -39,12 +39,33 @@ row weights, with no implicit chunk/minibatch renormalization. Final verificatio
 **5,184 full-suite tests**, **249 focused tests**, Ruff/Black over `src tests`,
 mypy over `src`, and **87.76%** GoA2 branch-aware coverage (80% gate). Independent
 loss and index reviews, including hardening follow-up, found no remaining blockers.
-The owner approved committing, publishing, and merging this checkpoint directly
-into `main`: [#19](https://github.com/ludoroo/goa2-backend/pull/19), with source/test
-checkpoint `73d187a`. Publication follow-ups are documentation only.
+[#19](https://github.com/ludoroo/goa2-backend/pull/19) merged at `2485c6a`,
+tree-identical to published `182a68f`; source/tests match verified `73d187a`.
+The next branch's fresh baseline passes all 5,184 tests.
 
-This does **not** make Gen1 training ready: recorder/generator receipt issuance,
-native splits/replay, and trainer/generator/iteration adoption remain separate gates.
+Current branch `ai-gen1-native-training-integration` establishes persistent
+seed-level split/replay rules and recorder-issued completion provenance before
+trainer/generator wiring. Splits use a fixed seed-only hash threshold, independent
+of generation arrival order; repeated world seeds cannot cross train/validation.
+Explicit seed-purpose ranges exclude evaluation/arena/screen/promotion data.
+Exact per-cohort or per-stratum quotas are not promised by this recipe. Controlled
+completion sidecars bind normal decisive callbacks and recorder-owned counts to
+exact source bytes. Atomic replay admission validates completion/index identity,
+keeps validation games out of TRAIN replay, and requires compatible Gen1 parent
+provenance for learned generations. Whole-game eviction preserves history and
+seed membership.
+
+Final local verification: **5,251 full-suite tests**, **248 focused tests**,
+Ruff/Black over `src tests`, mypy over `src`, and **87.76%** GoA2 branch-aware
+coverage (80% gate). Independent receipt and replay/split reviews, including
+hardening follow-ups, found no remaining blockers. The 733 source/test/dependency
+file fingerprints remained unchanged through final verification. The owner
+approved publication and merge as [#20](https://github.com/ludoroo/goa2-backend/pull/20),
+source/test checkpoint `3545a15`. Publication follow-ups are documentation only;
+these verification numbers describe local checks, not remote CI.
+
+This does **not** make Gen1 training ready: full generator adoption, trainer/
+optimizer/parent initialization, and executable iteration remain separate gates.
 Existing joint-data commands are not Gen1 commands; no generation is authorized.
 
 **Cleaned-stack scope:** follow
@@ -375,7 +396,7 @@ checkpoint. No native CLI, dataset conversion, or training run is added here.
    with a fixed viewer/perspective; exact terminal scoring still bypasses it.
    Legacy decision-v2 batching/cache and joint model/runtime remain operational.
    No serving/CLI adoption or decision-trained artifact reinterpretation occurs.
-3. **Bounded indexing and separate losses — verified local checkpoint.** Index
+3. **Bounded indexing and separate losses — merged in #19, source `73d187a`.** Index
    explicit receipt inventories into homogeneous policy/value chunks, with exact
    source hashes, canonical semantic dataset identity, schema pinning, and
    complete-game validation before publication. Each head uses row weight
@@ -383,10 +404,19 @@ checkpoint. No native CLI, dataset conversion, or training run is added here.
    caller-supplied head-wide normalizer, shared across every chunk in the logical
    batch. Never re-normalize by the current chunk or include absent heads in its
    contributing-game count. Value batches/metrics require no candidate metadata.
-   Receipt inventory is not proof of legitimate terminal gameplay; actual recorder
-   issuance and split/replay/trainer adoption remain later gates. Preserve world
-   seed metadata for later split grouping across repeated-seed replay games.
-4. **Trainer and generation integration.** Wire native training and actual-play
+   Receipt inventory is not proof of legitimate terminal gameplay; completion
+   provenance is a separate gate. World seed metadata supports immutable split
+   grouping across repeated-seed replay games.
+4. **Controlled completion and persistent replay — verified local checkpoint.**
+   Opt-in recorder sidecars bind a normal decisive terminal callback and live
+   counts to exact published bytes. Seed-only assignments use explicit purpose
+   ranges; validation games never enter the training replay pool. A single atomic
+   catalog embeds the ledger and generation history, admitting only fully checked
+   completion/index pairs with bootstrap or compatible Gen1 parent provenance.
+   Initial selection is `uniform-train-games-v1`, whole-game and without
+   replacement; advanced strata and map/composition holdouts are deferred.
+   Sidecars are controlled-pipeline evidence, not hostile-caller signatures.
+5. **Trainer and generation integration.** Wire native training and actual-play
    recording end to end, then retire the replaced joint path deliberately. The
    retained joint commands stay operational during these checkpoints, not as a
    permanent legacy-format bridge. Only after these checks and the separate
