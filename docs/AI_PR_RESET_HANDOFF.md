@@ -18,12 +18,14 @@ index → replay admission, including repeated seeds, validation isolation,
 censoring, reload, and eviction. Concurrent first updates and bootstrap-to-learned
 catalog continuation have behavioral regression coverage.
 
-All changes remain local and uncommitted; no new PR or remote CI result is claimed.
+The owner approved publication and merge as
+[#20](https://github.com/ludoroo/goa2-backend/pull/20),
+`ai-gen1-native-training-integration` → `main`, source/test checkpoint `3545a15`.
 Final logs and 733 unchanged source/test/dependency fingerprints are recorded at
-`/tmp/goa2-clean-stack.e0SwTB/training-integration-verification.json`. Documentation
+`/tmp/goa2-clean-stack.e0SwTB/training-integration-verification.json`. Publication
 status updates follow the tested source snapshot without changing source/tests.
-Next: owner review/approval to commit and publish this bounded checkpoint; do not
-begin trainer/generator adoption or experiments implicitly.
+These are local results, not remote CI. Merge approval opens no experimental gate;
+trainer/generator adoption and executable iteration remain separate work.
 All work stays in `/tmp/goa2-clean-stack.e0SwTB/repo`; the original parked checkout
 must remain untouched. The exact worker interface/ownership plan is outside the
 repository at `/tmp/goa2-clean-stack.e0SwTB/native-integration-interface-plan.md`.

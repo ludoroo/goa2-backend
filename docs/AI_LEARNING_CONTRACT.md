@@ -59,8 +59,10 @@ Final local verification: **5,251 full-suite tests**, **248 focused tests**,
 Ruff/Black over `src tests`, mypy over `src`, and **87.76%** GoA2 branch-aware
 coverage (80% gate). Independent receipt and replay/split reviews, including
 hardening follow-ups, found no remaining blockers. The 733 source/test/dependency
-file fingerprints remained unchanged through final verification. Changes are
-local and uncommitted; no new PR or remote CI result is claimed.
+file fingerprints remained unchanged through final verification. The owner
+approved publication and merge as [#20](https://github.com/ludoroo/goa2-backend/pull/20),
+source/test checkpoint `3545a15`. Publication follow-ups are documentation only;
+these verification numbers describe local checks, not remote CI.
 
 This does **not** make Gen1 training ready: full generator adoption, trainer/
 optimizer/parent initialization, and executable iteration remain separate gates.

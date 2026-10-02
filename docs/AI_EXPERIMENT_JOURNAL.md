@@ -42,7 +42,12 @@ mypy over `src`, and diff checks. Independent receipt and replay/split follow-up
 reviews found no remaining blockers and ran separate focused checks/probes.
 All 733 source/test/dependency fingerprints were stable across final verification.
 These are local results, not remote CI. Original parked file fingerprints and
-branch/HEAD remain unchanged. Changes are uncommitted and no new PR was created.
+branch/HEAD remain unchanged.
+
+Publication follow-up: the owner approved committing, publishing, and merging
+this checkpoint as [#20](https://github.com/ludoroo/goa2-backend/pull/20),
+`ai-gen1-native-training-integration` → `main`, source/test checkpoint `3545a15`.
+Publication follow-ups change documentation only and open no experimental gate.
 
 No trainer/generator/CLI/optimizer/iteration adoption, dependencies, engine/server/
 client changes, historical artifact conversion, or training/generation/arena
