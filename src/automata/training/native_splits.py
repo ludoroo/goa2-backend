@@ -184,6 +184,14 @@ def _purpose_for_seed(config: NativeSplitConfig, world_seed: int) -> NativeSeedP
     raise ValueError(f"world seed {world_seed} is not declared by the native split config")
 
 
+def native_seed_purpose(config: NativeSplitConfig, world_seed: int) -> NativeSeedPurpose:
+    """Return the declared purpose after strictly revalidating both inputs."""
+    if not isinstance(config, NativeSplitConfig):
+        raise TypeError("config must be a NativeSplitConfig")
+    validated = NativeSplitConfig.model_validate(config.model_dump(mode="python"), strict=True)
+    return _purpose_for_seed(validated, _strict_world_seed(world_seed))
+
+
 def _recipe_digest(config: NativeSplitConfig, world_seed: int) -> bytes:
     payload = _RecipeInput(
         recipe=_RECIPE,
@@ -252,4 +260,5 @@ __all__ = [
     "NativeSplitName",
     "create_native_split_ledger",
     "extend_native_split_ledger",
+    "native_seed_purpose",
 ]

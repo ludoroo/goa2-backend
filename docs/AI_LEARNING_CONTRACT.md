@@ -1,6 +1,6 @@
 # Gen1 learning contract
 
-**Current status — native data/model/index/losses landed; completion/splits/replay verified locally:** #15 merged into `main` at `2f1bc92`,
+**Current status — native trainer/generator library checkpoint verified locally; local commit approved, publication gated:** #15 merged into `main` at `2f1bc92`,
 with a tree identical to the verified landing `1406cac`. The reviewed AI stack
 and newer upstream Swift fix are both present. The merged foundation passes
 4,963 tests. The native rows/recorder checkpoint is now verified locally at
@@ -43,7 +43,7 @@ loss and index reviews, including hardening follow-up, found no remaining blocke
 tree-identical to published `182a68f`; source/tests match verified `73d187a`.
 The next branch's fresh baseline passes all 5,184 tests.
 
-Current branch `ai-gen1-native-training-integration` establishes persistent
+The merged `ai-gen1-native-training-integration` checkpoint establishes persistent
 seed-level split/replay rules and recorder-issued completion provenance before
 trainer/generator wiring. Splits use a fixed seed-only hash threshold, independent
 of generation arrival order; repeated world seeds cannot cross train/validation.
@@ -61,12 +61,30 @@ coverage (80% gate). Independent receipt and replay/split reviews, including
 hardening follow-ups, found no remaining blockers. The 733 source/test/dependency
 file fingerprints remained unchanged through final verification. The owner
 approved publication and merge as [#20](https://github.com/ludoroo/goa2-backend/pull/20),
-source/test checkpoint `3545a15`. Publication follow-ups are documentation only;
+merged at `9754edf`, tree-identical to published `da36af2`, with source/tests
+matching verified `3545a15`. Publication follow-ups were documentation only;
 these verification numbers describe local checks, not remote CI.
 
-This does **not** make Gen1 training ready: full generator adoption, trainer/
-optimizer/parent initialization, and executable iteration remain separate gates.
-Existing joint-data commands are not Gen1 commands; no generation is authorized.
+Current branch `ai-gen1-native-trainer-generator` starts from merged #20 with a
+fresh **5,251-test** passing baseline. This locally verified checkpoint implements
+explicit physical replay binding, one logical CPU-float32 optimizer update, exact
+Gen1 parent-weight initialization with a fresh optimizer, full-scope artifact
+export, and concrete single-game heuristic/Gen1 generation. Final local checks:
+**5,316 full-suite tests**, **366 focused tests**, Ruff/Black over `src tests`,
+mypy over `src`, and **87.76%** GoA2 branch-aware coverage (80% gate). All **740**
+source/test/dependency fingerprints and file modes stayed unchanged through the
+final runs; the parked checkout's HEAD, branch, and nine changed/untracked files
+are preserved. Independent generator/parent and trainer reviews, including
+hardening follow-ups, found no remaining blockers. These are local checks and
+agent reviews, not remote CI or GitHub approvals. The owner approved a local
+commit of this verified checkpoint; push, PR, merge, and experiments remain gated.
+
+These are library APIs, not an epoch trainer, checkpoint resume, multiworker
+coordinator, or iteration loop. Full run orchestration, CLI/native paired-evaluation
+adoption (including fixed-policy controls), executable iteration, and explicit
+experiment authorization remain separate gates. Existing joint-data commands are
+not Gen1 commands. No training, generation, or arena experiment was performed or
+authorized.
 
 **Cleaned-stack scope:** follow
 [AI_STACK_CLEANUP.md](AI_STACK_CLEANUP.md) for the original PR decomposition. The separate

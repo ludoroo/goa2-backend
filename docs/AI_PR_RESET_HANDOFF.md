@@ -1,8 +1,52 @@
 # AI PR reset: merge/rebase handoff
 
-## Current checkpoint — native completion, splits, and replay
+## Current checkpoint — native trainer/generator integration
 
-Current branch: `ai-gen1-native-training-integration`, based on merged main
+Current branch: `ai-gen1-native-trainer-generator`, based on merged #20 at
+`9754edf`. Fresh baseline: **5,251 tests passed** (408.77 seconds). Implementation
+is complete and locally verified for shared current-Gen1 scope/parent validation,
+path-bound replay consumption and one logical optimizer update/export, and
+concrete single-game heuristic/Gen1 generation. No CLI, epoch scheduling,
+checkpoint resume, multiworker coordination, or executable iteration is included.
+
+Final verification: **5,316 full-suite tests** (1,042.85 seconds), **366 focused
+tests** (327.23 seconds), **87.76%** GoA2 branch-aware coverage (80% gate), and
+Ruff/Black/mypy/diff checks passed. All **740** source/test/dependency fingerprints
+and file modes remained unchanged. Independent generator/parent and trainer
+reviews and follow-ups found no remaining blockers; these are agent reviews,
+not GitHub approvals. These results are local, not remote CI. The original
+parked HEAD, branch, and nine changed/untracked files remain byte-identical.
+The owner approved committing this verified checkpoint locally; it remains
+unpublished.
+
+Verification evidence is under `/tmp/goa2-clean-stack.e0SwTB/`:
+`trainer-generator-verification.json`, `trainer-generator-source-fingerprint.json`,
+`trainer-generator-final-full.log`, `trainer-generator-final-focused.log`, and
+`trainer-generator-final-quality.log`. Documentation-only finalization followed
+the tested source freeze. Local commit approval does not authorize publication,
+merge, or experiments; those still need separate authorization.
+
+All work remains in `/tmp/goa2-clean-stack.e0SwTB/repo`. The temporary clone had
+disappeared and was restored at that same path from the published merged commit;
+the original parked checkout was not modified. Earlier ephemeral verification
+logs/plans are no longer present; historical results remain recorded in the
+merged docs and PR comments. Current interface and parent refinement plans are
+`/tmp/goa2-clean-stack.e0SwTB/trainer-generator-interface-plan.md` and
+`/tmp/goa2-clean-stack.e0SwTB/trainer-generator-parent-addendum.md`.
+
+Parent owns integration tests, docs, reviews, and full verification. No new
+workspaces, dependencies, historical conversions, engine/server/client changes,
+pushes/PR, or training/generation/arena experiments are authorized here. The
+verified checkpoint's local commit is explicitly approved.
+
+## Landed native completion, splits, and replay
+
+PR [#20](https://github.com/ludoroo/goa2-backend/pull/20) merged at `9754edf`.
+Its tree equals published `da36af2`; source/tests/dependencies equal verified
+`3545a15`. No separate full-suite run was claimed for the merge operation; the
+fresh baseline above is the current checkpoint's pre-change run.
+
+Previous branch: `ai-gen1-native-training-integration`, based on merged main
 `2485c6a`. This is a library-only prerequisite checkpoint: controlled recorder
 completion receipts, an immutable seed-only split ledger, and a single atomic
 replay catalog. Trainer/generator/CLI/optimizer/iteration adoption is excluded.

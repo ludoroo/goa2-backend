@@ -13,15 +13,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
-from automata.models.contracts import (
-    CURRENT_MAP_SCHEMA_VERSION,
-    GEN1_RUNTIME_COMPATIBILITY_VERSION,
-    canonical_json_bytes,
-)
+from automata.models.contracts import canonical_json_bytes
 from automata.models.shared_encoder.artifacts import Gen1ModelArtifactManifest
-from automata.observation.hero_adapters import HeroObservationAdapterRegistry
 from automata.training.io import atomic_write_bytes, fsync_directory
 from automata.training.native_dataset import NativeGameIdentity
+from automata.training.native_gen1 import (
+    current_gen1_artifact_scope,
+    validate_current_gen1_parent_manifest,
+)
 from automata.training.native_indexed_dataset import (
     INDEX_SCHEMA_VERSION,
     IndexedNativeDataset,
@@ -38,8 +37,6 @@ from automata.training.native_splits import (
     create_native_split_ledger,
     extend_native_split_ledger,
 )
-from goa2.data.heroes import HeroRegistry
-from goa2.domain.models import GameType
 
 _SELECTION_RECIPE: Literal["uniform-train-games-v1"] = "uniform-train-games-v1"
 _MODEL_ID: Literal["goa2-gen1-policy-stable-value-v1"] = "goa2-gen1-policy-stable-value-v1"
@@ -308,25 +305,11 @@ def _revalidate_manifest(dataset: IndexedNativeDataset) -> NativeIndexedDatasetM
     )
 
 
-def _current_scope() -> tuple[set[str], set[str], dict[str, int]]:
-    maps_root = Path(__file__).parents[2] / "goa2" / "data" / "maps"
-    maps = {path.stem for path in maps_root.glob("*.json") if path.is_file()}
-    heroes = set(HeroRegistry.list_heroes())
-    game_types = {game_type.value for game_type in GameType}
-    if not maps or not heroes or not game_types:  # pragma: no cover - packaging guard
-        raise ValueError("current native runtime scope could not be enumerated")
-    registry = HeroObservationAdapterRegistry()
-    registered = registry.registered_versions
-    adapters = {
-        "generic": registry.generic_version,
-        **{hero: registered.get(hero, registry.generic_version) for hero in heroes},
-    }
-    return maps, game_types, adapters
-
-
 def _validate_native_scope(games: tuple[NativeGameIdentity, ...]) -> None:
-    maps, game_types, adapters = _current_scope()
-    heroes = set(adapters) - {"generic"}
+    scope = current_gen1_artifact_scope()
+    maps = set(scope.supported_maps)
+    game_types = set(scope.supported_game_types)
+    heroes = set(scope.supported_heroes)
     for game in games:
         if (
             game.map_id not in maps
@@ -342,24 +325,10 @@ def _validate_parent(
     manifest: NativeIndexedDatasetManifest,
     source_model_digest: str,
 ) -> Gen1ModelArtifactManifest:
-    if not isinstance(parent, Gen1ModelArtifactManifest):
-        raise TypeError("learned native replay requires an actual Gen1 model artifact manifest")
-    validated = Gen1ModelArtifactManifest.model_validate(
-        parent.model_dump(mode="python"), strict=True
+    validated = validate_current_gen1_parent_manifest(
+        parent,
+        expected_model_digest=source_model_digest,
     )
-    if validated.model_digest != source_model_digest:
-        raise ValueError("native generation source model digest does not match its Gen1 parent")
-    if validated.runtime_compatibility_version != GEN1_RUNTIME_COMPATIBILITY_VERSION:
-        raise ValueError("Gen1 parent runtime compatibility identity is invalid")
-    if (
-        validated.decision_observation_schema_version != 4
-        or validated.stable_value_observation_schema_version != 1
-        or validated.graph_observation_schema_version != 2
-        or validated.map_schema_version != CURRENT_MAP_SCHEMA_VERSION
-        or validated.model_id != _MODEL_ID
-        or validated.value_semantics != _VALUE_SEMANTICS
-    ):
-        raise ValueError("Gen1 parent executable schema or semantics are incompatible")
     if (
         validated.decision_tensor_schema_id,
         validated.decision_tensor_schema_version,
@@ -376,16 +345,6 @@ def _validate_parent(
         manifest.stable_value_tensor_schema_digest,
     ):
         raise ValueError("Gen1 parent and native dataset tensor schemas are incompatible")
-
-    maps, game_types, adapters = _current_scope()
-    heroes = set(adapters) - {"generic"}
-    if (
-        set(validated.supported_maps) != maps
-        or set(validated.supported_game_types) != game_types
-        or set(validated.supported_heroes) != heroes
-        or validated.hero_adapter_versions != adapters
-    ):
-        raise ValueError("Gen1 parent must have the exact complete current runtime scope")
     return validated
 
 
