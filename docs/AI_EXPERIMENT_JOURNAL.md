@@ -1,5 +1,111 @@
 # AI experiment journal
 
+## Native run/evaluation publication approval
+
+After final verification, the owner approved two logical commits (bounded run
+driver, then paired evaluation) on `ai-gen1-native-run-driver` and one draft PR
+against `main`, accepting the combined 16-file, +8,205/-68-line review size before
+this documentation update. The proposed title is
+`feat(ai): add bounded native Gen1 runs and paired evaluation`.
+This supersedes the commit/publication restrictions recorded at the verification
+freeze below. It does not authorize merge, training, or arena experiments.
+Source/tests remain the exact 751-file verified snapshot; publication documentation
+is updated afterward. The checks below are local, not remote CI.
+
+## Native paired gameplay evaluation — 2026-10-06 (locally verified, uncommitted)
+
+After the 5,359-test run-driver checkpoint, the owner approved implementing the
+remaining paired-gameplay evaluation slice. This is not authorization to generate
+training data or run an arena experiment. The previous 746 source/test/dependency
+fingerprints remain the preservation baseline; only two new evaluation modules,
+three new test files, and four parent-owned documentation files changed in this slice.
+
+Pairs keep board rosters and setup seed fixed and swap the candidate/baseline
+agents, exposing each policy to both sides and lineups. A policy-only control must
+perform zero search; temperature-zero ISMCTS is not that control. Normal native
+games require a normalized winning side, not an invented draw. Censored cases are
+reported but cannot contribute an eligible paired score. Planned cases do not get
+replacement games or adaptive budgets. No ancestry-wide seed-isolation or
+playing-strength claim is established by implementation tests.
+
+Final local verification on the corrected, frozen source: **5,399 full-suite tests**
+(1,309.35 seconds), **508 focused tests** (513.52 seconds), **87.76%** GoA2
+branch-aware coverage (80% gate), Ruff/Black over 734 source/test files, mypy over
+302 source files, and diff checks. All **751** current fingerprints remained
+unchanged; all **746** prior run-driver hashes/modes and the parked checkout's
+HEAD, branch, and nine changed/untracked paths are preserved. The final independent
+review found no remaining blockers and separately ran the 40 new tests. These are
+local tests and agent review, not remote CI or GitHub approval.
+
+The earlier 5,393-test/502-focused passing runs were insufficient: review exposed
+fresh-process effect-registration scope drift, legitimate round-limit observations
+rejected at `max_rounds + 1`, and failure-message truncation at whitespace boundaries.
+Those results are archived as `native-evaluation-pre-review-*`, not final evidence.
+Corrections include bootstrap-before-scope derivation, runtime preflight before
+output ownership, truthful round counters, and UTF-8-safe truncate-then-strip error
+messages. Fresh-process and real engine round-censor regressions pass; the final
+suites above cover the corrected bytes. Matched stream seeds use canonical JSON
+tuples so namespace/fixture separator characters cannot alias.
+
+Nonblocking follow-ups: diagnostic failure categories still use some message
+matching, and zero-search behavior has recipe-level coverage rather than an
+explicit real-flow search-call counter. Exact artifact scope enforcement remains
+in the strict parent loader; placeholder Knight/Rogue scope membership is inherited
+from existing code. No broader scope change is included.
+
+Final evidence is `native-evaluation-verification.json`, the source fingerprint,
+and `native-evaluation-final-{focused,full,quality}.log` beside the checkout.
+Documentation finalization follows source freeze. Both this checkpoint and the
+run driver remain uncommitted. No training or arena experiment was performed;
+commit/publication and an explicitly budgeted pilot each need separate approval.
+
+## Bounded native run driver — 2026-10-06 (locally verified, uncommitted)
+
+The owner approved continuing with the library-only run driver after PR #21
+merged at `8178fa6`, tree-identical to verified/published `30580b9`.
+Branch `ai-gen1-native-run-driver` uses the same designated temporary checkout.
+Its fresh baseline passes **5,316 tests** (610.17 seconds).
+
+This slice connects one explicitly budgeted generation and optimizer run to a
+pinned manifest, controlled replay admission, before/after validation diagnostics,
+and final artifact/result publication. No experiments, CLI, resume, automatic
+iteration, distributed coordination, dependencies, engine changes, or new
+publication are authorized. Implementation and local verification are complete;
+no local commit has been authorized for this checkpoint.
+
+Final checks: **5,359 full-suite tests** (1,304.06 seconds), **420 focused tests**
+(521.77 seconds), **87.76%** GoA2 branch-aware coverage (80% gate), Ruff/Black
+across `src tests`, mypy across 300 source files, and diff checks passed. The
+**746** source/test/dependency hashes and modes stayed unchanged throughout the
+final runs. The parked checkout's HEAD, branch, and nine changed/untracked paths
+remain byte-identical. Independent validation and driver reviews plus follow-ups
+found no remaining blockers. These are local results and agent reviews, not
+remote CI or GitHub approvals.
+
+Actual-play pytest fixtures cover bootstrap and explicit Gen1-parent runs, a
+fresh optimizer, fixed seeded whole-game samples, split-isolated metrics, and
+full-scope runtime-loadable artifacts. Censoring preserves earlier certified
+games without attempting replacements or later games. Review-driven regressions
+fixed mixed-dataset inventory omissions, redundant source decoding, duplicate CPU
+shape-check allocation, numeric-zero dropout compatibility, publication-inode
+ownership, error-message truncation, partial status-write recovery, and artifact
+training-provenance crosschecks. Source/receipt/inventory/schema/cache tampering
+fails read-only. These bounded fixtures provide no playing-strength evidence.
+
+Nonblocking follow-ups: surrogate-safe exception text, comparing artifact source
+revision/dirty-tree annotations against run configuration in the completed-run
+loader, and a direct competitor-result-file regression. Existing ownership/error
+handling was independently repro-tested; those follow-ups do not authorize a new
+experiment or widen this checkpoint. Documentation-only finalization follows the
+source freeze; evidence is `native-run-verification.json` beside the checkout.
+
+A provenance review established an important limit: current artifacts identify
+parent weights and consumed replay catalog digests, but do not embed complete
+ancestor catalogs/ledgers. New metrics must therefore say **held out from current
+run updates**, not globally unseen by parent training. Cross-run ancestry and
+split-policy verification remain separate work; changing/resetting catalog or
+split context cannot be assumed to preserve historical isolation.
+
 ## Native trainer/generator library integration — 2026-10-03
 
 PR #20 merged at `9754edf`, matching published `da36af2` and verified source/tests
@@ -13,8 +119,9 @@ own shared current-Gen1 scope/parent helpers, replay-backed one-logical-batch
 training/export, and concrete single-game heuristic/Gen1 generation. Parent owns
 the actual-play → replay → optimizer → artifact → learned-play integration
 fixture, documentation, review, and final verification. The checkpoint is now
-locally verified. The owner subsequently approved its local commit; publication
-and experiments remain unauthorized.
+locally verified. The owner subsequently approved its local commit, publication,
+and merge as PR #21 (`8178fa6`, tree-identical to `30580b9`). Experiments remained
+unauthorized; those publication approvals do not cover the run-driver checkpoint.
 
 Final checks passed: **5,316 full-suite tests** (65 more than baseline), **366
 focused tests**, **87.76%** GoA2 branch-aware coverage (80% gate), Ruff/Black over
@@ -44,9 +151,8 @@ training-run evidence.
 Tests may execute bounded optimizer and terminal-game fixtures, not actual
 training/generation/arena experiments. No CLI, run resume, epoch scheduler,
 multiworker coordinator, executable iteration, dependency or engine/server/client
-changes, historical conversions, or publication are included. Local commit
-approval preserves the tested source; the approval-status updates are documentation
-only.
+changes, or historical conversions are included. Its later publication approval
+preserved the tested source; approval-status updates were documentation only.
 
 ## Native completion, seed splits, and replay — 2026-10-01
 

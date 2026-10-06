@@ -135,7 +135,12 @@ class NativeTrainerInitialization(BaseModel):
 
 
 class NativeReplayDatasetBinding(BaseModel):
-    """Explicit physical authority for one replay dataset digest."""
+    """Explicit physical authority for one replay dataset digest.
+
+    Authority paths must be absolute physical paths: symlinks in any ancestor
+    component are rejected so aliases such as ``/tmp`` for ``/private/tmp``
+    are not interchangeable controlled authorities.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
@@ -226,42 +231,73 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     )
 
 
-def _validate_dataset_binding(
+def _require_no_symlink_components(path: Path) -> None:
+    if any(component.is_symlink() for component in (path, *path.parents)):
+        raise ValueError("native dataset binding authority paths must not contain symlinks")
+
+
+def open_bound_native_dataset(
     binding: NativeReplayDatasetBinding,
-    references: tuple[NativeReplayGameRef, ...],
     *,
-    rebuild_index: bool,
+    rebuild_index: bool = False,
 ) -> IndexedNativeDataset:
-    if _paths_overlap(binding.index_cache_dir, binding.completion_receipt_path):
-        raise ValueError("native index cache must not overlap its completion receipt")
-    completion = load_native_dataset_completion_receipt(binding.completion_receipt_path)
-    if completion.digest != binding.completion_receipt_digest:
+    """Strictly bind completion, inventory, source bytes, and index identity.
+
+    ``rebuild_index=False`` is read-only/fail-closed. ``True`` may rebuild only
+    the binding's disposable owned index cache. Every authority must use its
+    physical path without symlinked ancestors (for example ``/private/tmp``,
+    not its ``/tmp`` alias). This helper makes no TRAIN or validation membership
+    claim.
+    """
+    validated = _strict_model(binding, NativeReplayDatasetBinding, label="binding")
+    if type(rebuild_index) is not bool:
+        raise TypeError("rebuild_index must be a strict boolean")
+    all_authorities = (
+        validated.source_root,
+        validated.source_receipt_path,
+        validated.completion_receipt_path,
+        validated.index_cache_dir,
+    )
+    for authority in all_authorities:
+        _require_no_symlink_components(authority)
+    physical_authorities = all_authorities[1:]
+    if any(
+        _paths_overlap(left, right)
+        for index, left in enumerate(physical_authorities)
+        for right in physical_authorities[index + 1 :]
+    ):
+        raise ValueError("native dataset binding physical authorities must not overlap")
+
+    completion = load_native_dataset_completion_receipt(validated.completion_receipt_path)
+    if completion.digest != validated.completion_receipt_digest:
         raise ValueError("native completion receipt digest does not match replay binding")
-    completion_semantic_digest = validate_native_dataset_completion(binding.source_root, completion)
-    source_receipt = load_native_source_receipt(binding.source_receipt_path)
-    derived_receipt = create_native_source_receipt_from_completions(binding.source_root, completion)
-    if source_receipt != derived_receipt or source_receipt.digest != binding.source_digest:
+    completion_semantic_digest = validate_native_dataset_completion(
+        validated.source_root, completion
+    )
+    source_receipt = load_native_source_receipt(validated.source_receipt_path)
+    derived_receipt = create_native_source_receipt_from_completions(
+        validated.source_root, completion
+    )
+    if source_receipt != derived_receipt or source_receipt.digest != validated.source_digest:
         raise ValueError("native source receipt does not match completion provenance or binding")
 
     dataset = open_native_indexed_dataset(
-        binding.source_root,
-        binding.source_receipt_path,
-        binding.index_cache_dir,
-        chunk_size=binding.chunk_size,
+        validated.source_root,
+        validated.source_receipt_path,
+        validated.index_cache_dir,
+        chunk_size=validated.chunk_size,
         rebuild=rebuild_index,
     )
     manifest = dataset.manifest
     if (
-        dataset.digest != binding.dataset_digest
-        or completion_semantic_digest != binding.dataset_digest
-        or dataset.source_digest != binding.source_digest
+        dataset.digest != validated.dataset_digest
+        or completion_semantic_digest != validated.dataset_digest
+        or dataset.source_digest != validated.source_digest
         or manifest.source_receipt != source_receipt
     ):
         raise ValueError("native index identity does not match replay binding")
 
-    completed_by_id = {item.game.game_id: item for item in completion.games}
-    indexed_by_id = {item.game_id: item for item in manifest.games}
-    if tuple(completed_by_id) != dataset.game_ids:
+    if tuple(item.game.game_id for item in completion.games) != dataset.game_ids:
         raise ValueError("completion and native index game order or identity differs")
     for completed, indexed in zip(completion.games, manifest.games, strict=True):
         if (
@@ -273,7 +309,19 @@ def _validate_dataset_binding(
             or completed.boundary_count != indexed.boundary_count
         ):
             raise ValueError("completion and native index game metadata differs")
+    return dataset
 
+
+def _validate_dataset_binding(
+    binding: NativeReplayDatasetBinding,
+    references: tuple[NativeReplayGameRef, ...],
+    *,
+    rebuild_index: bool,
+) -> IndexedNativeDataset:
+    dataset = open_bound_native_dataset(binding, rebuild_index=rebuild_index)
+    completion = load_native_dataset_completion_receipt(binding.completion_receipt_path)
+    completed_by_id = {item.game.game_id: item for item in completion.games}
+    indexed_by_id = {item.game_id: item for item in dataset.manifest.games}
     for reference in references:
         selected_completion = completed_by_id.get(reference.game.game_id)
         selected_index = indexed_by_id.get(reference.game.game_id)
@@ -379,7 +427,10 @@ def bind_native_replay_sample(
     *,
     bindings: Sequence[NativeReplayDatasetBinding],
 ) -> BoundNativeReplaySample:
-    """Bind sampled TRAIN references, rebuilding their physical indexes if needed."""
+    """Bind sampled TRAIN references to non-symlinked physical authorities.
+
+    Disposable physical indexes may be rebuilt when needed.
+    """
     return _bind_native_replay_sample(
         catalog,
         sample,
@@ -923,4 +974,5 @@ __all__ = [
     "NativeTrainingStepResult",
     "bind_native_replay_sample",
     "create_native_trainer",
+    "open_bound_native_dataset",
 ]

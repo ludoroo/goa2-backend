@@ -1,10 +1,16 @@
 # Learned training and evaluation operations
 
-**Status: cleanup before the fresh Gen1 pipeline.** Working generation, training,
-and arena tools remain available, but they still use decision-level joint
-training data and historical search leaves. Do not use them to declare a fresh
-Gen1 run until [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md) is implemented
-end to end.
+**Publication approval:** the owner approved two logical commits and one combined
+draft PR for the verified native run/evaluation checkpoint. Verification-time
+references below to uncommitted/unpublished work describe the frozen test state;
+commit/PR publication is now authorized. Merge and experiments are not.
+
+**Status: native Gen1 run and paired-evaluation libraries locally verified;
+pilot not authorized.** Existing generation, training, and arena CLI tools still
+use decision-level joint data and historical search leaves. They are not native
+Gen1 commands. Use the library contracts below and
+[AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md); do not start a campaign without
+an explicitly approved budget.
 
 Historical findings and verdicts live in
 [AI_EXPERIMENT_JOURNAL.md](AI_EXPERIMENT_JOURNAL.md) and the
@@ -39,15 +45,15 @@ new CLI or serving mode.
 
 Merged #19 adds separate native indexing, training-batch, and loss APIs. Merged
 #20 adds opt-in recorder completion provenance and persistent seed splits/replay.
-The current locally verified, unpublished library checkpoint implements replay-bound one-logical-batch
-training/export and concrete single-game generation. Local verification passes
-5,316 full-suite and 366 focused tests, 87.76% branch-aware GoA2 coverage (80% gate),
-and Ruff/Black/mypy; independent follow-up reviews found no remaining blockers.
+Merged #21 implements replay-bound one-logical-batch training/export and concrete
+single-game generation (5,316 full-suite and 366 focused tests at that checkpoint).
+The subsequent bounded run driver and native paired-evaluation library checkpoints
+are locally verified but uncommitted: latest verification passes **5,399 full-suite
+and 508 focused tests**, **87.76%** branch-aware GoA2 coverage (80% gate), and
+Ruff/Black/mypy/diff checks; independent final review found no remaining blockers.
 Existing commands cannot train or run this Gen1 artifact format. No old artifact,
-index, dataset, or model weights are converted. Full run orchestration, checkpoint
-resume, CLI and native paired-evaluation adoption (including fixed-policy
-controls), executable iteration, and experiment authorization remain separate
-gates.
+index, dataset, or model weights are converted. Checkpoint resume, CLI adoption,
+executable iteration, and experiment authorization remain separate gates.
 
 The unused curriculum, callback-only generation coordinator, and callback-only
 policy-iteration wrapper have been removed. **There is no executable complete
@@ -210,7 +216,7 @@ scheduling, strata such as latest/recent/hard, and the executable learning loop
 remain future work. Physical binding and consumption-time revalidation are
 provided by the native trainer below.
 
-## Native trainer and single-game generator (locally verified, unpublished)
+## Native trainer and single-game generator (merged in PR #21)
 
 This checkpoint adds callable library paths, not an epoch runner or a complete
 learning loop. Bounded optimizer and terminal-game tests are not authorization to
@@ -233,8 +239,10 @@ parameter storage. This is not an absolute quota for hostile metadata.
 
 `bind_native_replay_sample` resolves a catalog/sample through explicit physical
 source, inventory, completion-set, and index-cache paths. All four paths must be
-absolute so binding authority cannot change with the working directory. Bindings
-must match exact
+absolute so binding authority cannot change with the working directory. Opening
+bindings also rejects symlinked ancestors: use physical `/private/tmp` rather
+than macOS's `/tmp` alias. This tightens native binding path acceptance; legacy
+joint APIs are unchanged. Bindings must match exact
 retained TRAIN references and all dataset/source/completion digests. Metadata-only
 references and raw inventories do not bypass completion or split validation.
 Binding and training consumption revalidate the physical data; budget for full
@@ -291,6 +299,121 @@ must preserve competing/preexisting files. There is no wall-clock watchdog,
 multiworker coordinator, reconciliation/resume command, automatic catalog
 admission, or automatic next generation in this API. Those remain separate
 implementation and authorization gates.
+
+## Bounded native run driver (locally verified, uncommitted)
+
+`native_run_contracts.create_native_run_manifest` pins the explicit configuration
+and physical authorities; `native_run.run_native_one` executes it;
+`native_run_contracts.load_completed_native_run` verifies completion and products.
+There is no command-line entry point.
+
+This library checkpoint connects the verified primitives into one finite run,
+not an automatic learning loop. Its manifest pins an ordered game cohort, one
+teacher/initialization pairing, immutable split configuration, explicit search
+and game caps, index chunk size, replay capacity, a fixed optimizer-step count,
+and one explicit sampling seed per step. There is no replacement generation:
+a censored, empty, or exceptional game fails the run and leaves later games
+unattempted. Parent weights always get a fresh optimizer.
+
+The output root must be new, absolute, and reached without symlink components
+(use physical `/private/tmp`, not macOS's `/tmp` alias). Controlled dataset
+binding authorities follow the same physical-path rule. An immutable manifest and atomic
+RUNNING/FAILED/SUCCEEDED snapshots describe progress; a digest-bound completion
+marker is published last. Partial products remain available for diagnosis after
+failure, without implying that the run succeeded or can be resumed. Only the
+completed-run loader may treat a matching manifest/result/marker as completion.
+
+Validation reports separate equal-game-weighted policy CE, policy entropy, and
+stable-value BCE, before and after the fixed updates, over the same certified
+validation set. Missing heads report `None` with zero contributing counts.
+Validation must be read-only: no model/gradient/mode/RNG mutation, no cache repair,
+and no optimization, adaptive budget, or best-model choice from validation data.
+Its portable ledger records every explicitly supplied dataset authority, including
+TRAIN-only datasets with no validation references. Bindings must match this exact
+inventory; metric authority arrays describe that inventory, while game IDs and
+head counts describe only validation games. The general validation API permits
+unrelated previously enrolled seeds outside the explicit inventory. The run driver
+additionally requires its validation IDs to equal the complete planned held-out
+cohort. Model-shape checks use meta tensors instead of allocating duplicate CPU
+weights; both numeric zero representations of disabled dropout are accepted.
+Mutation detection still snapshots model parameters, gradients, and buffers:
+chunk streaming bounds data memory, not this model-sized safety overhead. Current
+Gen1 policy output is expected to be finite even at masked candidate positions.
+
+**The guarantee is held out from current-run updates.** The run creates one local
+catalog; it does not resume a previous catalog or verify an ancestor's complete
+training exposure. Artifact-only parent loading cannot establish globally unseen
+validation seeds. Results identify this scope explicitly and report inherited
+parent training exposure as unknown. Preserving and verifying cross-run split
+ancestry requires a separate protocol; resetting/changing split context is not
+silently declared safe.
+
+There is no CLI, wall-clock watchdog, optimizer checkpoint resume, multiworker
+coordination, automatic next generation, arena evaluation, or experiment
+authorization in this checkpoint. Final verification passes **5,359 full-suite
+tests**, **420 focused tests**, **87.76%** GoA2 branch-aware coverage, and all
+Ruff/Black/mypy/diff checks. Independent reviews and follow-ups found no remaining
+blockers. All 746 source/test/dependency fingerprints remained unchanged; the
+original parked checkout is preserved. These are local bounded fixtures, not
+remote CI, experiments, or playing-strength evidence. Commit and publication
+require separate approval.
+
+## Native paired gameplay evaluation (locally verified, uncommitted)
+
+This library-only slice evaluates frozen Gen1 artifacts against explicit
+controls, without training, recording training rows, or admitting replay data.
+Its public APIs are `training.native_paired_contracts.create_native_paired_evaluation_manifest`,
+`training.native_paired.run_native_paired_evaluation`, and
+`training.native_paired_contracts.load_completed_native_paired_evaluation`.
+Native artifact evaluation belongs to the training-owned workflow, alongside
+existing artifact evaluators; the generic evaluation package stays independent.
+The architecture test and all previously verified files are unchanged.
+
+Three comparisons are mandatory: full candidate-versus-heuristic search; the
+same candidate policy/continuation with learned versus heuristic value leaves;
+and candidate-versus-heuristic policy argmax with **zero search**. An optional
+fourth compares full candidate search with an explicitly pinned Gen1 parent.
+Search modes use identical fixed budgets and an explicit common heuristic
+opponent model; that model is not a claim to simulate the played opponent exactly.
+Nonbranchable requests, including simultaneous/UPGRADE decisions, use the common
+heuristic environment in every arm; the learned comparison applies to supported
+branchable decisions. Within each pair, board rosters, map, game type,
+and world seed stay fixed while candidate and baseline swap sides. This lets both
+policies play both lineups instead of confounding policy quality with a dedicated
+candidate roster.
+
+The native engine has no draw rule: normal completion requires a normalized
+winning side. Censored games retain no winner or score; only pairs with two normal
+decisive games contribute to a paired score. Remaining declared cases still run
+once after censoring, without replacement or budget adaptation. Unexpected engine
+or inference errors fail the evaluation rather than being hidden as censoring or
+heuristic fallback. Declared evaluation seed ranges do not prove that an artifact's
+ancestors never trained on those seeds. Results make this explicit with
+`evaluation_scope="DECLARED_EVALUATION_SEEDS"`,
+`artifact_training_exposure="UNKNOWN"`, and
+`strength_claim="DESCRIPTIVE_COMPLETED_PAIRS_ONLY"`. A completed protocol can
+contain only censored pairs and legitimately report no score. Matching streams
+start with the same physical-side seeds in both legs, but divergent actions need
+not consume subsequent random events identically. Seed tuples use canonical JSON
+encoding, preserving namespace/fixture boundaries even with embedded separators.
+
+`rounds` records the harness's absolute counter, not completed-round count. Games
+start at round 1; a `max_rounds` censor normally reports `max_rounds + 1`.
+The observation validator accepts that truthful counter and rejects larger values.
+Effects are registered before canonical full-scope capture/revalidation, so a fresh
+process and a process that has already played games agree. All artifact/runtime
+compatibility preflight completes before claiming the output directory. Failure
+messages are UTF-8-safe and stripped after truncation; valid FAILED evidence does
+not replace the original exception.
+
+Final local verification: **5,399 full-suite tests**, **508 focused tests**,
+**87.76%** GoA2 branch-aware coverage, Ruff/Black/mypy/diff checks, and independent
+follow-up review with no remaining blockers. All 751 frozen fingerprints and the
+746-file prior checkpoint are preserved. Real pytest fixtures cover the trained
+artifact handoff, censoring at step and round limits, and inference failure without
+fallback. These are correctness fixtures, not performance or playing-strength
+experiments. No evaluation experiment, CLI, resume, automatic promotion, or
+iterative training campaign is authorized.
 
 ## Retained command entry points
 
@@ -369,8 +492,8 @@ and replacement cache space. Do not delete staging directories during active
 work. Tensor chunks are loaded with `torch.load(..., weights_only=True)`.
 
 Current training checkpoints resume model, optimizer, RNG, and progress for the
-**same run**. This is not cross-generation parent initialization, which remains
-part of the Gen1 implementation work. No immutable artifact should be published
+**same run** on the retained joint path. This is distinct from the native Gen1
+library's verified parent-weight initialization with a fresh optimizer. No immutable artifact should be published
 from a failed or interrupted training run.
 
 ## Reading evidence
@@ -394,7 +517,9 @@ from a failed or interrupted training run.
 
 ## Verification before fresh generation
 
-Run the full suite plus Ruff, Black checks, and mypy. Once the new search/data/
-model contract is integrated, run a tiny generate → train → native runtime load
-→ paired gameplay diagnostic before scaling. Until then, use tests and CLI
-`--help` smoke checks; do not launch another historical-style generation.
+The full suite plus Ruff, Black checks, and mypy pass for the current native
+library snapshot. A tiny generate → train → native runtime load → paired gameplay
+handoff is also covered by pytest, without establishing useful learning or strength.
+The next experimental step is a separately approved, explicitly budgeted pilot
+before scaling. Do not launch another historical-style generation or reuse the
+retained CLI commands as native Gen1 entry points.
