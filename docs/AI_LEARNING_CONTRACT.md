@@ -1,6 +1,50 @@
 # Gen1 learning contract
 
-**Current status — native trainer/generator library checkpoint verified locally; local commit approved, publication gated:** #15 merged into `main` at `2f1bc92`,
+**Current status — native run driver and paired evaluation locally verified;
+commit and draft-PR publication approved.**
+After the verification freeze, the owner approved two logical commits on
+`ai-gen1-native-run-driver` and one combined draft PR against `main`. This
+supersedes the earlier commit/publication restrictions recorded below, not the
+experiment gate. No merge, training pilot, or arena experiment is authorized.
+The owner approved implementing native matched-seed gameplay evaluation after the
+run-driver checkpoint, not launching training or arena experiments. This adds
+zero-search frozen-policy controls and bounded-search comparisons with agent-side
+swaps over fixed board rosters. Completion, censoring, and score eligibility must
+remain distinct. The previous uncommitted run-driver source/tests stay unchanged.
+Final paired-evaluation verification: **5,399 full-suite tests**, **508 focused
+tests**, **87.76%** GoA2 branch-aware coverage (80% gate), Ruff/Black/mypy and diff
+checks passed. Independent follow-up review found no remaining blockers after
+fixes for fresh-process scope initialization, truthful round-limit counters, and
+failure persistence. All **751** current source/test/dependency fingerprints stayed
+fixed, including the **746** prior run-driver files; the parked checkout remains
+unchanged. Evidence is `native-evaluation-verification.json` beside the checkout.
+This is library readiness for a separately approved bounded pilot, not a strength
+claim, remote CI result, publication approval, or authorization to start training.
+
+**Verified bounded native run driver (uncommitted):**
+PR [#21](https://github.com/ludoroo/goa2-backend/pull/21) merged at `8178fa6`,
+with the entire tree equal to verified/published `30580b9`. The next branch,
+`ai-gen1-native-run-driver`, starts from a fresh **5,316-test** passing baseline
+and connects the existing library primitives into one explicitly budgeted run:
+manifest, fixed game cohort and update seeds, controlled replay admission,
+initial/final validation, and final artifact/result publication. Final local checks:
+**5,359 full-suite tests** (43 above baseline), **420 focused tests**, **87.76%**
+GoA2 branch-aware coverage (80% gate), Ruff/Black over `src tests`, mypy over
+300 source files, and diff checks passed. All **746** source/test/dependency
+hashes and file modes stayed unchanged through verification. Independent
+validation and run-driver reviews, including follow-ups, found no remaining
+blockers. These are local tests and agent reviews, not remote CI or GitHub
+approvals. The parked checkout remains unchanged. No commit, publication, or
+experiment is authorized for this checkpoint.
+
+Validation is **current-run split-isolated**, not proof that inherited parent
+weights never saw the validation seeds. Current artifacts carry catalog digests,
+not full ancestor catalogs/ledgers. The driver must make that limitation explicit
+in both machine-readable results and documentation. It does not resume history or
+silently reconstruct ancestral splits. No experiments, new publication, CLI,
+optimizer resume, automatic iteration, or multiworker coordination are authorized.
+
+**Earlier verified checkpoints:** #15 merged into `main` at `2f1bc92`,
 with a tree identical to the verified landing `1406cac`. The reviewed AI stack
 and newer upstream Swift fix are both present. The merged foundation passes
 4,963 tests. The native rows/recorder checkpoint is now verified locally at
@@ -65,7 +109,7 @@ merged at `9754edf`, tree-identical to published `da36af2`, with source/tests
 matching verified `3545a15`. Publication follow-ups were documentation only;
 these verification numbers describe local checks, not remote CI.
 
-Current branch `ai-gen1-native-trainer-generator` starts from merged #20 with a
+Previous branch `ai-gen1-native-trainer-generator` started from merged #20 with a
 fresh **5,251-test** passing baseline. This locally verified checkpoint implements
 explicit physical replay binding, one logical CPU-float32 optimizer update, exact
 Gen1 parent-weight initialization with a fresh optimizer, full-scope artifact
@@ -76,13 +120,17 @@ source/test/dependency fingerprints and file modes stayed unchanged through the
 final runs; the parked checkout's HEAD, branch, and nine changed/untracked files
 are preserved. Independent generator/parent and trainer reviews, including
 hardening follow-ups, found no remaining blockers. These are local checks and
-agent reviews, not remote CI or GitHub approvals. The owner approved a local
-commit of this verified checkpoint; push, PR, merge, and experiments remain gated.
+agent reviews, not remote CI or GitHub approvals. The owner approved publication
+and merge as #21; merge verification is recorded at
+https://github.com/ludoroo/goa2-backend/pull/21#issuecomment-6009339276.
+No separate merge-commit test run was claimed; the fresh baseline above is the
+new run-driver checkpoint's pre-change test run. Experiments remain gated.
 
 These are library APIs, not an epoch trainer, checkpoint resume, multiworker
-coordinator, or iteration loop. Full run orchestration, CLI/native paired-evaluation
-adoption (including fixed-policy controls), executable iteration, and explicit
-experiment authorization remain separate gates. Existing joint-data commands are
+coordinator, or iteration loop. The bounded one-run and native paired-evaluation
+library paths (including fixed-policy value and zero-search controls) are verified.
+CLI adoption, executable iteration, and explicit experiment authorization remain
+separate gates. Existing joint-data commands are
 not Gen1 commands. No training, generation, or arena experiment was performed or
 authorized.
 

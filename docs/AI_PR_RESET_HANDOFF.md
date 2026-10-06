@@ -1,8 +1,100 @@
 # AI PR reset: merge/rebase handoff
 
-## Current checkpoint — native trainer/generator integration
+## Current checkpoint — native paired gameplay evaluation (verified; publication approved)
 
-Current branch: `ai-gen1-native-trainer-generator`, based on merged #20 at
+The owner approved two logical commits (run driver, then paired evaluation) on
+the existing branch and one combined draft PR against `main`, accepting the large
+review size and proposed title/description. This supersedes the verification-time
+commit/publication restrictions below. Merge and experiments remain unauthorized.
+The 751-file source/test/dependency snapshot stays fixed; only publication notes
+follow verification.
+
+The owner approved continuing with native paired evaluation, not running an
+experiment. Work stays in `/tmp/goa2-clean-stack.e0SwTB/repo` on
+`ai-gen1-native-run-driver`. The verified, uncommitted run-driver source/test
+snapshot below is preserved and supplies the **5,359-test** pre-change baseline.
+No new workspace, commit, publication, dependency, engine/server/client change,
+CLI, resume, automatic promotion, or training/arena experiment is authorized.
+
+This slice compares frozen native Gen1 and heuristic policies both without
+search and with explicitly budgeted stable-transition search. Matched pairs keep
+board rosters, map, game type, and world seed fixed while swapping agent sides,
+so each policy plays both lineups. Native terminal outcomes require a decisive
+winner: there is no engine draw rule. Censored legs remain diagnostic observations;
+only pairs with two normal decisive results contribute to paired scores.
+
+Planning: `native-evaluation-interface-plan.md` and authoritative
+`native-evaluation-parent-addendum.md`, beside the checkout. Parent owns real-flow
+tests, documentation, independent review, final full-suite checks, and preservation
+of both the parked checkout and the previous run-driver fingerprint. Implementation
+and final verification are complete: **5,399 full-suite tests** (1,309.35 seconds),
+**508 focused tests** (513.52 seconds), **87.76%** GoA2 branch-aware coverage (80%
+gate), Ruff/Black over 734 files, mypy over 302 source files, and diff checks passed.
+Independent final review found no remaining blockers and ran the 40 new tests.
+All **751** current fingerprints stayed fixed; all **746** prior run-driver hashes
+and modes plus the parked checkout remain unchanged.
+
+Review found bugs missed by the earlier green suite: bootstrap-dependent scope,
+round-limit counter rejection, and whitespace-boundary failure messages. Final
+verification above includes their fixes and fresh-process/real engine regressions;
+`native-evaluation-pre-review-*` files retain superseded evidence. Optional follow-ups
+are diagnostic message classification and an explicit real-flow zero-search call
+counter. No production-source changes remain pending for this checkpoint.
+
+Current evidence beside the checkout: `native-evaluation-verification.json`,
+`native-evaluation-source-fingerprint.json`, and
+`native-evaluation-final-{focused,full,quality}.log`. Documentation was finalized
+after source freeze. Both checkpoints remain uncommitted; no remote CI, training,
+or arena experiment is claimed. Next action: obtain approval for a focused local
+commit plan. A budgeted pilot and any publication require separate authorization.
+
+## Verified bounded native run driver (uncommitted)
+
+PR [#21](https://github.com/ludoroo/goa2-backend/pull/21) merged at
+`8178fa61e90a0407d613292cd4745340d4e145f0`, with the entire tree identical to
+verified/published `30580b9`. Merge verification:
+https://github.com/ludoroo/goa2-backend/pull/21#issuecomment-6009339276.
+No remote CI was reported at merge preflight; its verification was local.
+
+The owner approved implementation of the next bounded library checkpoint, not
+experiments or publication. Current branch: `ai-gen1-native-run-driver`, based on
+that merge, in the same `/tmp/goa2-clean-stack.e0SwTB/repo` workspace. Fresh
+baseline: **5,316 tests passed** (610.17 seconds), recorded in
+`/tmp/goa2-clean-stack.e0SwTB/native-run-baseline.log`.
+
+The slice connects explicit run/game/update budgets, a pinned run manifest,
+controlled generation and replay, held-out prediction metrics, and final artifact
+and run-result publication. No CLI, optimizer resume, automatic generations,
+multiworker coordinator, arena experiment, dependencies, or engine/server/client
+changes are included. Existing source/test preservation and parked-checkout rules
+still apply. Final local verification passed: **5,359 full-suite tests**
+(1,304.06 seconds), **420 focused tests** (521.77 seconds), **87.76%** GoA2
+branch-aware coverage (80% gate), Ruff/Black over 729 source/test files, mypy over
+300 source files, and diff checks. All **746** source/test/dependency hashes and
+file modes stayed unchanged. Independent validation and driver reviews plus
+follow-ups found no remaining blockers; these are agent reviews, not GitHub
+approvals. No remote CI is claimed. The parked HEAD, branch, and nine changed or
+untracked files remain unchanged.
+
+The concrete flow covers bootstrap and parent initialization with fresh Adam,
+fixed TRAIN samples, initial/final current-run validation, runtime-loadable export,
+and no replacement after a censored game. Failure and tamper regressions cover
+publication ownership, partial status writes, original-exception preservation,
+complete artifact-step provenance, and read-only authority checks. A temporary
+implementation-specific decode-call-count test was removed after proving the
+redundant-scan fix; durable physical validation/tamper tests remain.
+
+Evidence under `/tmp/goa2-clean-stack.e0SwTB/`: `native-run-verification.json`,
+`native-run-source-fingerprint.json`, `native-run-final-full.log`,
+`native-run-final-focused.log`, and `native-run-final-quality.log`. Planning is
+in `native-run-interface-plan.md`, with authoritative refinements in
+`native-run-parent-addendum.md`. Documentation finalization follows the tested
+source freeze. Next action: obtain separate approval for the local commit.
+No commit, push, PR, merge, or experiment was performed for this checkpoint.
+
+## Landed native trainer/generator integration
+
+Previous branch: `ai-gen1-native-trainer-generator`, based on merged #20 at
 `9754edf`. Fresh baseline: **5,251 tests passed** (408.77 seconds). Implementation
 is complete and locally verified for shared current-Gen1 scope/parent validation,
 path-bound replay consumption and one logical optimizer update/export, and
@@ -16,15 +108,16 @@ and file modes remained unchanged. Independent generator/parent and trainer
 reviews and follow-ups found no remaining blockers; these are agent reviews,
 not GitHub approvals. These results are local, not remote CI. The original
 parked HEAD, branch, and nine changed/untracked files remain byte-identical.
-The owner approved committing this verified checkpoint locally; it remains
-unpublished.
+The owner subsequently approved its local commit, publication, and merge as
+PR #21; merge `8178fa6` is tree-identical to verified/published `30580b9`.
+Those approvals do not cover the current run-driver checkpoint.
 
 Verification evidence is under `/tmp/goa2-clean-stack.e0SwTB/`:
 `trainer-generator-verification.json`, `trainer-generator-source-fingerprint.json`,
 `trainer-generator-final-full.log`, `trainer-generator-final-focused.log`, and
 `trainer-generator-final-quality.log`. Documentation-only finalization followed
-the tested source freeze. Local commit approval does not authorize publication,
-merge, or experiments; those still need separate authorization.
+the tested source freeze. Separate publication and merge approval was later given
+for #21 only. No experiment was authorized.
 
 All work remains in `/tmp/goa2-clean-stack.e0SwTB/repo`. The temporary clone had
 disappeared and was restored at that same path from the published merged commit;
@@ -34,10 +127,10 @@ merged docs and PR comments. Current interface and parent refinement plans are
 `/tmp/goa2-clean-stack.e0SwTB/trainer-generator-interface-plan.md` and
 `/tmp/goa2-clean-stack.e0SwTB/trainer-generator-parent-addendum.md`.
 
-Parent owns integration tests, docs, reviews, and full verification. No new
-workspaces, dependencies, historical conversions, engine/server/client changes,
-pushes/PR, or training/generation/arena experiments are authorized here. The
-verified checkpoint's local commit is explicitly approved.
+Parent owns integration tests, docs, reviews, and full verification. For the
+current run-driver work, no new workspaces, dependencies, historical conversions,
+engine/server/client changes, commits, pushes/PR, or training/generation/arena
+experiments are authorized.
 
 ## Landed native completion, splits, and replay
 
