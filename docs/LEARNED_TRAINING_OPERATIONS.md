@@ -37,14 +37,17 @@ compatibility 1 are distinct from the retained joint path; both loaders reject
 the other format. The stable search adapter is an explicit library API, not a
 new CLI or serving mode.
 
-Merged #19 adds separate native indexing, training-batch, and loss APIs. The
-current locally verified library checkpoint adds opt-in recorder completion
-provenance and persistent seed splits/replay; final verification and review
-results are recorded in the learning contract.
-This is not trainer/generator adoption. Existing commands cannot train or run
-this Gen1 artifact format. No old artifact, index, dataset, or model weights are
-converted. Full generator adoption, trainer/optimizer/parent initialization, and
-executable iteration remain gated.
+Merged #19 adds separate native indexing, training-batch, and loss APIs. Merged
+#20 adds opt-in recorder completion provenance and persistent seed splits/replay.
+The current locally verified, unpublished library checkpoint implements replay-bound one-logical-batch
+training/export and concrete single-game generation. Local verification passes
+5,316 full-suite and 366 focused tests, 87.76% branch-aware GoA2 coverage (80% gate),
+and Ruff/Black/mypy; independent follow-up reviews found no remaining blockers.
+Existing commands cannot train or run this Gen1 artifact format. No old artifact,
+index, dataset, or model weights are converted. Full run orchestration, checkpoint
+resume, CLI and native paired-evaluation adoption (including fixed-policy
+controls), executable iteration, and experiment authorization remain separate
+gates.
 
 The unused curriculum, callback-only generation coordinator, and callback-only
 policy-iteration wrapper have been removed. **There is no executable complete
@@ -60,7 +63,7 @@ counts. There is no implicit directory glob. `create_native_source_receipt`
 constructs an inventory from explicit logical names; it is **not** evidence that
 an arbitrary file came from legitimate terminal gameplay. Controlled recorder
 completion receipts are a distinct type and admission requirement (see below);
-actual generator adoption remains separate.
+the native single-game generator below issues these through the controlled recorder.
 
 The source digest hashes canonical receipt bytes. The dataset digest hashes
 canonical uncompressed record bytes in receipt order. Moving the physical source
@@ -203,9 +206,91 @@ implemented.
 sampling without replacement over complete game references, with separate policy
 and value contributing-game counts. It loads no rows or tensors. A head with no
 contributors must be skipped, not given a synthetic denominator. Optimizer
-scheduling, strata such as latest/recent/hard, physical dataset resolution and
-revalidation at future training consumption, and the executable learning loop
-remain future work.
+scheduling, strata such as latest/recent/hard, and the executable learning loop
+remain future work. Physical binding and consumption-time revalidation are
+provided by the native trainer below.
+
+## Native trainer and single-game generator (locally verified, unpublished)
+
+This checkpoint adds callable library paths, not an epoch runner or a complete
+learning loop. Bounded optimizer and terminal-game tests are not authorization to
+run an actual training, generation, or arena experiment.
+
+### Replay-bound optimization and export
+
+`native_gen1` centralizes complete-current-scope enumeration and exact Gen1 parent
+validation for replay, training, and generation. Full scope tuples must use
+canonical sorted order, deliberately stricter than the earlier replay-only set
+comparison. Parent artifacts supply verified
+CPU-float32 weights only. Legacy artifacts, incompatible schemas/scopes/digests,
+and silently cast floating weights must reject. A fresh Adam optimizer is created
+for both fresh bootstrap initialization and cross-generation parent initialization;
+this is **not** optimizer resume. The first trainer requires `dropout=0.0`;
+nonzero dropout, mixed precision, and non-CPU training are not supported. Parent
+loading and fresh initialization preserve the caller's CPU Torch RNG state.
+Manifest-only shape/dtype validation uses meta tensors rather than allocating
+parameter storage. This is not an absolute quota for hostile metadata.
+
+`bind_native_replay_sample` resolves a catalog/sample through explicit physical
+source, inventory, completion-set, and index-cache paths. All four paths must be
+absolute so binding authority cannot change with the working directory. Bindings
+must match exact
+retained TRAIN references and all dataset/source/completion digests. Metadata-only
+references and raw inventories do not bypass completion or split validation.
+Binding and training consumption revalidate the physical data; budget for full
+source/index scans, not a cheap hot-path handle lookup. Initial binding may build
+or rebuild a disposable cache. Training consumption uses strict read-only opening
+(`open_native_indexed_dataset(..., rebuild=False)`): invalid or missing caches,
+including corrupt chunks in unselected games, reject rather than being repaired.
+Use distinct cache directories for different chunk-size configurations; an
+explicit rebuild can invalidate earlier handles.
+
+`NativeTrainer.train_logical_batch` streams separate policy/value chunks under the
+sample-wide contributing-game denominator for each head. Head coefficients are
+explicit. L2 is the sum of trainable parameter squares, applied once per logical
+batch when enabled, with no additional Adam weight decay. Disabled L2 does not
+create zero gradients or Adam state for otherwise unused heads; its reported
+regularization term is zero. Clipping and the optimizer step each
+occur once after all chunk gradients are accumulated. An absent or disabled head
+gets no synthetic row or denominator mass; a selection with no enabled contributor
+rejects. Nonfinite losses/gradients fail before stepping. If the optimizer itself
+fails after potentially changing state, the trainer must become unusable rather
+than claim transactional rollback.
+
+Export uses the full current runtime scope, not merely observed maps or heroes.
+Provenance binds configuration, initialization/parent, successful optimizer-step
+lineage, replay/sample/dataset/source/completion identities, and source revision.
+Physical paths are not portable artifact identity. Stale, foreign, or failed-step
+results cannot authorize export. Configuration and initialization identity are
+pinned at trainer creation; changing them mid-lineage rejects instead of
+mislabeling earlier updates. Chunk parity is tested to float32 tolerance, not
+bit-exact reproducibility from exported provenance alone.
+
+### Concrete actual-play generation
+
+`generate_native_game` constructs one real stable-transition ISMCTS teacher per
+side and runs one explicitly configured game through the existing harness. It
+records only played root search targets and actual live stable boundaries. The
+recording wrapper follows visit sampling so the target's selected action is the
+one actually played; counterfactual leaves never become terminal-labeled rows.
+
+Heuristic bootstrap uses heuristic prior/continuation/value. Exact Gen1 parents
+provide learned root policy, sampled controlled continuations, and candidate-free
+stable values, with explicit heuristic environment/foreign routing. Separate
+SEARCH/ACTION/ENVIRONMENT streams are derived per side and world seed from a
+pinned namespace. The generator-settings ID excludes generation ID and source
+revision/dirty-tree hash; those remain separate game-identity fields. No Phase-0
+experiment defaults are imported. Seed purpose must
+match explicit split ranges; evaluation/arena/screen/promotion seeds reject before
+play. Search is iteration-bounded with deterministic progression guards, no
+cooperative decision deadline, and no incompatible request schedule.
+
+Only normal decisive nonempty games receive controlled completion receipts.
+Max-step/round caps and exceptions leave no newly certified training game and
+must preserve competing/preexisting files. There is no wall-clock watchdog,
+multiworker coordinator, reconciliation/resume command, automatic catalog
+admission, or automatic next generation in this API. Those remain separate
+implementation and authorization gates.
 
 ## Retained command entry points
 

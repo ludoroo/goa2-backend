@@ -1,5 +1,53 @@
 # AI experiment journal
 
+## Native trainer/generator library integration — 2026-10-03
+
+PR #20 merged at `9754edf`, matching published `da36af2` and verified source/tests
+`3545a15`. The temporary working clone disappeared; it was restored at the same
+designated path from that merged commit, without modifying the parked checkout.
+Branch `ai-gen1-native-trainer-generator` has a fresh **5,251-test** passing
+baseline (408.77 seconds).
+
+The owner approved implementation of the next bounded checkpoint. Three workers
+own shared current-Gen1 scope/parent helpers, replay-backed one-logical-batch
+training/export, and concrete single-game heuristic/Gen1 generation. Parent owns
+the actual-play → replay → optimizer → artifact → learned-play integration
+fixture, documentation, review, and final verification. The checkpoint is now
+locally verified. The owner subsequently approved its local commit; publication
+and experiments remain unauthorized.
+
+Final checks passed: **5,316 full-suite tests** (65 more than baseline), **366
+focused tests**, **87.76%** GoA2 branch-aware coverage (80% gate), Ruff/Black over
+`src tests`, mypy over `src`, and diff checks. All **740** source/test/dependency
+hashes and file modes stayed unchanged throughout final verification. The parked
+checkout's HEAD, branch, and nine changed/untracked file contents are preserved.
+Independent generator/parent and trainer reviews plus follow-ups found no
+remaining blockers; no remote CI or GitHub approval is claimed.
+
+Review-driven regressions fixed parent-load CPU RNG leakage, consumption-time
+silent cache rebuilding (including unselected chunks), mutable configuration
+mislabeling lineage, repeated whole-ledger hashing, accelerator reseeding,
+disabled-L2 gradients/state, and CWD-dependent binding paths. Manifest-only tensor
+inventory checks use meta storage. Played selections are checked against actual
+applied decisions in order, including non-argmax visit sampling; generator settings
+identity excludes per-generation provenance, which remains in game identity.
+Full source/index scans remain an explicit correctness-first cost, not a fast
+training throughput claim. Nonblocking future work includes clearer strict-open
+failure causes and broader configuration-digest sensitivity tests.
+
+The actual-play fixture covers heuristic generation → certified/indexed TRAIN
+replay → one optimizer update → full-scope export/runtime inference → exact parent
+initialization → learned generation/admission, plus validation exclusion and a
+censored sibling. This is bounded behavior coverage, not playing-strength or
+training-run evidence.
+
+Tests may execute bounded optimizer and terminal-game fixtures, not actual
+training/generation/arena experiments. No CLI, run resume, epoch scheduler,
+multiworker coordinator, executable iteration, dependency or engine/server/client
+changes, historical conversions, or publication are included. Local commit
+approval preserves the tested source; the approval-status updates are documentation
+only.
+
 ## Native completion, seed splits, and replay — 2026-10-01
 
 Index/loss #19 merged at `2485c6a`, tree-identical to publication `182a68f`, with

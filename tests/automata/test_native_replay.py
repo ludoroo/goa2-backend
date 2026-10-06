@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import threading
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +21,9 @@ from automata.models.shared_encoder.artifacts import (
     Gen1ModelArtifactManifest,
     ModelArtifactManifest,
 )
+from automata.models.shared_encoder.gen1_model import Gen1ModelConfig, Gen1PolicyValueModel
 from automata.models.shared_encoder.schema import StableValueTensorSchema, TensorFeatureSchema
 from automata.observation import encode_decision
-from automata.observation.hero_adapters import HeroObservationAdapterRegistry
 from automata.runtime.effects import register_all_effects
 from automata.training.native_dataset import (
     NativeGameIdentity,
@@ -31,6 +32,7 @@ from automata.training.native_dataset import (
     native_sample_id,
     publish_native_game,
 )
+from automata.training.native_gen1 import current_gen1_artifact_scope
 from automata.training.native_indexed_dataset import (
     IndexedNativeDataset,
     build_native_indexed_dataset,
@@ -58,8 +60,7 @@ from automata.training.native_splits import (
     extend_native_split_ledger,
 )
 from automata.training.search_targets import SearchActionTarget, SearchPolicyTarget
-from goa2.data.heroes import HeroRegistry
-from goa2.domain.models import GameType, TeamColor
+from goa2.domain.models import TeamColor
 from goa2.engine.setup import GameSetup
 
 
@@ -194,35 +195,45 @@ def _indexed_generation(
 def _parent(digest: str) -> Gen1ModelArtifactManifest:
     decision = TensorFeatureSchema.current()
     value = StableValueTensorSchema.current()
-    adapters = HeroObservationAdapterRegistry()
-    heroes = tuple(HeroRegistry.list_heroes())
-    versions = {
-        "generic": adapters.generic_version,
-        **{
-            hero: adapters.registered_versions.get(hero, adapters.generic_version)
-            for hero in heroes
-        },
-    }
-    maps_root = Path(__file__).parents[2] / "src" / "goa2" / "data" / "maps"
+    scope = current_gen1_artifact_scope()
+    config = Gen1ModelConfig(
+        decision_schema_digest=decision.digest,
+        stable_value_schema_digest=value.digest,
+        token_width=8,
+        state_width=12,
+        candidate_width=8,
+        message_passing_layers=1,
+    )
+    model = Gen1PolicyValueModel(
+        decision_schema=decision,
+        stable_value_schema=value,
+        config=config,
+    )
     files = {
         name: ArtifactFile(length=1, sha256="f" * 64)
         for name in ("decision_schema.json", "stable_value_schema.json", "weights.pt")
     }
     return Gen1ModelArtifactManifest(
         model_digest=digest,
-        map_schema_version=CURRENT_MAP_SCHEMA_VERSION,
-        hero_adapter_versions=versions,
-        supported_heroes=heroes,
-        supported_maps=tuple(sorted(path.stem for path in maps_root.glob("*.json"))),
-        supported_game_types=tuple(game_type.value for game_type in GameType),
+        map_schema_version=scope.map_schema_version,
+        hero_adapter_versions=dict(scope.hero_adapter_versions),
+        supported_heroes=scope.supported_heroes,
+        supported_maps=scope.supported_maps,
+        supported_game_types=scope.supported_game_types,
         decision_tensor_schema_id=decision.schema_id,
         decision_tensor_schema_version=decision.schema_version,
         decision_tensor_schema_digest=decision.digest,
         stable_value_tensor_schema_id=value.schema_id,
         stable_value_tensor_schema_version=value.schema_version,
         stable_value_tensor_schema_digest=value.digest,
-        architecture_config={"architecture": "test"},
-        tensors={"weight": ArtifactTensor(shape=(1,), dtype="float32")},
+        architecture_config=asdict(config),
+        tensors={
+            name: ArtifactTensor(
+                shape=tuple(tensor.shape),
+                dtype=str(tensor.dtype).removeprefix("torch."),
+            )
+            for name, tensor in model.state_dict().items()
+        },
         files=files,
     )
 

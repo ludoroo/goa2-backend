@@ -245,8 +245,10 @@ wrappers remain rejected for `STABLE_TRANSITION`; terminal outcomes bypass model
 inference. Artifact and inference failures preserve existing search error
 boundaries; malformed outputs are not silently replaced with heuristic values.
 
-This checkpoint adds no server/cache/CLI composition, native index, losses,
-trainer, or executable learning loop. Those remain separate adoption gates.
+That model/runtime checkpoint added no server/cache/CLI composition or native
+training orchestration. Subsequent native library checkpoints are summarized in
+[Fresh Gen1 integration](#fresh-gen1-integration); an executable learning loop
+remains a separate adoption gate.
 
 ## Leaf contract
 
@@ -614,15 +616,19 @@ Gen1 are tracked in [AI_LEARNING_CONTRACT.md](AI_LEARNING_CONTRACT.md).
 with byte-for-byte search/live candidate-free observation parity tests. Native
 policy/value publication, batching, and library-level model/runtime support now
 exist separately from the retained joint commands. Merged #19 adds receipt-bound
-head chunks, typed training batches, and independent weighted losses. The current
-library checkpoint adds controlled recorder completion sidecars, immutable
-seed-only split membership, and atomic replay admission/selection; see the
-learning contract for review and verification status. Inventory receipts alone
+head chunks, typed training batches, and independent weighted losses. Merged #20
+adds controlled recorder completion sidecars, immutable seed-only split membership,
+and atomic replay admission/selection. The locally verified, unpublished checkpoint adds
+shared full-current Gen1 parent validation, replay-backed logical optimization and
+export, and concrete single-game heuristic/Gen1 teacher generation; see the
+learning contract for verification status. Inventory receipts alone
 cannot enroll games, validation seeds cannot enter training replay, and learned
 enrollment requires an exact compatible Gen1 parent artifact.
 No product runtime or search module imports that offline training implementation.
 Historical modes remain operational during adoption. No mode alone constitutes
-the complete learning contract: full generator adoption, native trainer/optimizer
-and parent initialization, and executable iteration still gate fresh Gen1
-generation. Advanced map/composition holdouts and stratified replay are deferred;
+the complete learning contract. The library checkpoint passes 5,316 full-suite
+and 366 focused tests, with independent follow-up reviews clear. Run/checkpoint
+orchestration, CLI/native paired-evaluation adoption, executable iteration, and
+explicit experiment authorization remain separate gates. Advanced map/composition
+holdouts and stratified replay are deferred;
 the initial replay recipe is uniform whole-game TRAIN-only sampling.

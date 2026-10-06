@@ -429,6 +429,65 @@ def test_empty_cache_and_staging_directories_are_safe_to_use(tmp_path: Path) -> 
     assert (cache / _OWNER_MARKER_NAME).read_bytes() == _OWNER_MARKER_CONTENT
 
 
+def test_readonly_open_rejects_missing_or_corrupt_cache_without_filesystem_changes(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    names, identities = _publish_sources(source)
+    receipt_path = tmp_path / "receipt.json"
+    _write_receipt(source, names, receipt_path)
+    missing = tmp_path / "missing-cache"
+    before_missing = _tree_bytes(tmp_path)
+
+    with pytest.raises(ValueError, match=r"cache|compatible|rebuild"):
+        open_native_indexed_dataset(
+            source,
+            receipt_path,
+            missing,
+            chunk_size=2,
+            rebuild=False,
+        )
+
+    assert _tree_bytes(tmp_path) == before_missing
+    cache = tmp_path / "cache"
+    indexed = open_native_indexed_dataset(source, receipt_path, cache, chunk_size=2)
+    chunk = indexed.game(identities[0].game_id).policy_chunks[0]
+    (cache / chunk.path).write_bytes(b"corrupt")
+    before_corrupt = _tree_bytes(cache)
+
+    with pytest.raises(ValueError, match=r"cache|compatible|rebuild"):
+        open_native_indexed_dataset(
+            source,
+            receipt_path,
+            cache,
+            chunk_size=2,
+            rebuild=False,
+        )
+
+    assert _tree_bytes(cache) == before_corrupt
+
+
+@pytest.mark.parametrize("rebuild", [0, 1, None, "false"])
+def test_open_requires_strict_boolean_rebuild_before_filesystem_effects(
+    tmp_path: Path, rebuild: object
+) -> None:
+    source = tmp_path / "source"
+    names, _ = _publish_sources(source)
+    receipt_path = tmp_path / "receipt.json"
+    _write_receipt(source, names, receipt_path)
+    before = _tree_bytes(tmp_path)
+
+    with pytest.raises((TypeError, ValueError), match="rebuild"):
+        open_native_indexed_dataset(
+            source,
+            receipt_path,
+            tmp_path / "cache",
+            rebuild=rebuild,  # type: ignore[arg-type]
+        )
+
+    assert _tree_bytes(tmp_path) == before
+
+
 def test_malformed_marked_native_cache_is_safely_rebuilt(tmp_path: Path) -> None:
     source = tmp_path / "source"
     names, identities = _publish_sources(source)

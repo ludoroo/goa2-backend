@@ -1418,8 +1418,11 @@ def open_native_indexed_dataset(
     cache_dir: str | Path,
     *,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    rebuild: bool = True,
 ) -> IndexedNativeDataset:
-    """Open an exact cache, or safely rebuild a stale/corrupt disposable cache."""
+    """Open an exact cache, optionally rebuilding a stale/corrupt disposable cache."""
+    if type(rebuild) is not bool:
+        raise TypeError("rebuild must be a strict boolean")
     _validate_chunk_size(chunk_size)
     source = Path(source_root)
     destination = Path(cache_dir)
@@ -1441,6 +1444,8 @@ def open_native_indexed_dataset(
     )
     if compatible is not None:
         return IndexedNativeDataset(destination, source, compatible)
+    if not rebuild:
+        raise ValueError("native index cache is missing or incompatible and rebuild is disabled")
     return build_native_indexed_dataset(
         source,
         source_receipt_path,
